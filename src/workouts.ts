@@ -96,14 +96,24 @@ export function logExercise(db: Database.Database, sessionId: string, exercises:
 
   const insertEx = db.prepare('INSERT INTO exercises (id, session_id, name, sort_order) VALUES (?, ?, ?, ?)');
   const insertSet = db.prepare('INSERT INTO exercise_sets (exercise_id, set_num, weight_lbs, reps) VALUES (?, ?, ?, ?)');
+  const findEx = db.prepare('SELECT id FROM exercises WHERE session_id = ? AND name = ? COLLATE NOCASE');
+  const maxSetNum = db.prepare('SELECT MAX(set_num) as m FROM exercise_sets WHERE exercise_id = ?');
 
   db.transaction(() => {
     let order = maxOrder + 1;
     for (const ex of exercises) {
-      const exId = uuid();
-      insertEx.run(exId, id, ex.name.trim(), order++);
-      for (let i = 0; i < ex.sets.length; i++) {
-        insertSet.run(exId, i + 1, ex.sets[i].weight_lbs, ex.sets[i].reps);
+      const existing = findEx.get(id, ex.name.trim()) as { id: string } | undefined;
+      if (existing) {
+        const base = ((maxSetNum.get(existing.id) as any)?.m ?? 0);
+        for (let i = 0; i < ex.sets.length; i++) {
+          insertSet.run(existing.id, base + i + 1, ex.sets[i].weight_lbs, ex.sets[i].reps);
+        }
+      } else {
+        const exId = uuid();
+        insertEx.run(exId, id, ex.name.trim(), order++);
+        for (let i = 0; i < ex.sets.length; i++) {
+          insertSet.run(exId, i + 1, ex.sets[i].weight_lbs, ex.sets[i].reps);
+        }
       }
     }
   })();
