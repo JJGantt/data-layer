@@ -2,7 +2,7 @@ import type Database from 'better-sqlite3';
 import { randomUUID } from 'node:crypto';
 
 export function now(): string {
-  return new Date().toISOString().replace(/\.\d{3}Z$/, '').replace('Z', '');
+  return new Date().toLocaleString('sv-SE', { timeZone: 'America/New_York', hour12: false }).replace(' ', 'T');
 }
 
 export function uuid(): string {
@@ -10,8 +10,7 @@ export function uuid(): string {
 }
 
 export function today(): string {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  return now().slice(0, 10);
 }
 
 /** Resolve an ID by full match or unique prefix. */
