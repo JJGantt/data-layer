@@ -207,6 +207,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: 'get_nutrition_targets',
+      description: 'Get the current daily nutrition targets (calories, protein, carbs, fat) and recent target history.',
+      inputSchema: { type: 'object' as const, properties: {} },
+    },
+    {
       name: 'set_nutrition_targets',
       description: 'Set daily nutrition targets (calories, protein, carbs, fat). Appends a new entry to the target log so history is preserved. The most recent entry becomes the current target, shown in get_health_profile.',
       inputSchema: {
@@ -590,6 +595,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   if (name === 'log_weight') {
     const entry = health.logWeight(db, a.weight_lbs as number, a.date as string | undefined);
     return text(`Logged ${entry.weight_lbs} lbs on ${entry.date}.`);
+  }
+  if (name === 'get_nutrition_targets') {
+    const targets = health.recentTargets(db);
+    if (!targets.length) return text('No nutrition targets set yet.');
+    const t = targets[0];
+    const lines = [`Current nutrition targets (as of ${t.date}): ${t.calories} cal, ${t.protein_g}g protein, ${t.carbs_g}g carbs, ${t.fat_g}g fat`];
+    if (targets.length > 1) {
+      lines.push(`\nTarget history (last ${targets.length}):`);
+      for (const e of targets) {
+        lines.push(`  ${e.date}: ${e.calories} cal, ${e.protein_g}g P / ${e.carbs_g}g C / ${e.fat_g}g F`);
+      }
+    }
+    return text(lines.join('\n'));
   }
   if (name === 'set_nutrition_targets') {
     const entry = health.setNutritionTargets(db, {
