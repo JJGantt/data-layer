@@ -180,7 +180,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     // Health
     {
       name: 'get_health_profile',
-      description: 'Returns height and recent weight log entries.',
+      description: 'Returns height, recent weight log entries, and current nutrition targets (calories, protein, carbs, fat).',
       inputSchema: { type: 'object' as const, properties: {} },
     },
     {
@@ -204,6 +204,21 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           date: { type: 'string', description: 'Date in YYYY-MM-DD format. Defaults to today.' },
         },
         required: ['weight_lbs'],
+      },
+    },
+    {
+      name: 'set_nutrition_targets',
+      description: 'Set daily nutrition targets (calories, protein, carbs, fat). Appends a new entry to the target log so history is preserved. The most recent entry becomes the current target, shown in get_health_profile.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          calories: { type: 'number', description: 'Daily calorie target.' },
+          protein_g: { type: 'number', description: 'Daily protein target in grams.' },
+          carbs_g: { type: 'number', description: 'Daily carbs target in grams.' },
+          fat_g: { type: 'number', description: 'Daily fat target in grams.' },
+          date: { type: 'string', description: 'Date these targets take effect (YYYY-MM-DD). Defaults to today.' },
+        },
+        required: ['calories', 'protein_g', 'carbs_g', 'fat_g'],
       },
     },
     // Workout catalog
@@ -562,7 +577,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   if (name === 'get_health_profile') {
     const profile = health.getProfile(db);
     const weights = health.recentWeights(db);
-    return text(health.formatProfile(profile, weights));
+    const targets = health.recentTargets(db);
+    return text(health.formatProfile(profile, weights, targets));
   }
   if (name === 'set_height') {
     health.setHeight(db, a.height_in as number);
@@ -574,6 +590,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   if (name === 'log_weight') {
     const entry = health.logWeight(db, a.weight_lbs as number, a.date as string | undefined);
     return text(`Logged ${entry.weight_lbs} lbs on ${entry.date}.`);
+  }
+  if (name === 'set_nutrition_targets') {
+    const entry = health.setNutritionTargets(db, {
+      calories: a.calories as number,
+      protein_g: a.protein_g as number,
+      carbs_g: a.carbs_g as number,
+      fat_g: a.fat_g as number,
+    }, a.date as string | undefined);
+    return text(`Nutrition targets set (${entry.date}): ${entry.calories} cal, ${entry.protein_g}g protein, ${entry.carbs_g}g carbs, ${entry.fat_g}g fat`);
   }
 
   // Workout catalog

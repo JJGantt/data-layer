@@ -71,6 +71,16 @@ function initSchema(db: Database.Database) {
       logged_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS nutrition_targets (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      date TEXT NOT NULL,
+      calories REAL NOT NULL,
+      protein_g REAL NOT NULL,
+      carbs_g REAL NOT NULL,
+      fat_g REAL NOT NULL,
+      logged_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS workout_sessions (
       id TEXT PRIMARY KEY,
       date TEXT NOT NULL,

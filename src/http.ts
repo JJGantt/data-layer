@@ -122,7 +122,8 @@ const server = http.createServer(async (req, res) => {
     if (path === '/data/health/profile' && method === 'GET') {
       const profile = health.getProfile(db);
       const weights = health.recentWeights(db);
-      return json(res, { profile, weights });
+      const targets = health.recentTargets(db);
+      return json(res, { profile, weights, targets });
     }
     if (path === '/data/health/height' && method === 'PUT') {
       const body = await parseBody(req);
@@ -133,6 +134,20 @@ const server = http.createServer(async (req, res) => {
       const body = await parseBody(req);
       const entry = health.logWeight(db, body.weight_lbs, body.date);
       return json(res, { entry });
+    }
+    if (path === '/data/health/targets' && method === 'POST') {
+      const body = await parseBody(req);
+      const entry = health.setNutritionTargets(db, {
+        calories: body.calories,
+        protein_g: body.protein_g,
+        carbs_g: body.carbs_g,
+        fat_g: body.fat_g,
+      }, body.date);
+      return json(res, { entry });
+    }
+    if (path === '/data/health/targets' && method === 'GET') {
+      const targets = health.recentTargets(db);
+      return json(res, { targets });
     }
 
     // ── Workouts ──
