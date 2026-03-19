@@ -1,10 +1,11 @@
 import type Database from 'better-sqlite3';
-import { now, uuid, today, ensureEasternDate } from './helpers.js';
+import { uuid } from './helpers.js';
 import { getRecipeNutrition } from './recipes.js';
 
 export interface NutritionEntry {
   id: string;
   date: string;
+  occurred_at: string;
   name: string;
   quantity: number;
   calories: number | null;
@@ -21,6 +22,30 @@ interface NutritionValues {
   fat_g?: number | null;
 }
 
+function pad(v: number): string {
+  return String(v).padStart(2, '0');
+}
+
+function localTimestamp(d: Date): string {
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+function nowLocal(): string {
+  return localTimestamp(new Date());
+}
+
+function normalizeOccurredAt(value?: string): string {
+  const raw = (value || '').trim();
+  if (!raw) return nowLocal();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return `${raw}T00:00:00`;
+  return raw;
+}
+
+function dateFromOccurredAt(value: string): string {
+  const match = value.match(/^(\d{4}-\d{2}-\d{2})/);
+  return match ? match[1] : nowLocal().slice(0, 10);
+}
+
 function scaleNutrition(n: NutritionValues, qty: number): NutritionValues {
   return {
     calories: n.calories != null ? Math.round(n.calories * qty * 10) / 10 : null,
@@ -31,46 +56,47 @@ function scaleNutrition(n: NutritionValues, qty: number): NutritionValues {
 }
 
 export function logNutrition(db: Database.Database, items: {
-  name: string;
-  quantity?: number;
+  name?: string;
   recipe?: string;
+  servings?: number;
   nutrition?: NutritionValues;
-}[], date?: string): NutritionEntry[] {
-  const day = date ? ensureEasternDate(date) : today();
-  const n = now();
+  occurred_at?: string;
+}[]): NutritionEntry[] {
+  const loggedAt = nowLocal();
   const added: NutritionEntry[] = [];
 
-  const insert = db.prepare('INSERT INTO nutrition_entries (id, date, name, quantity, calories, protein_g, carbs_g, fat_g, logged) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
+  const insert = db.prepare('INSERT INTO nutrition_entries (id, date, occurred_at, name, quantity, calories, protein_g, carbs_g, fat_g, logged) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
 
   db.transaction(() => {
     for (const item of items) {
-      const qty = item.quantity || 1.0;
+      const occurredAt = normalizeOccurredAt(item.occurred_at);
+      const day = dateFromOccurredAt(occurredAt);
+      const servings = item.servings || 1.0;
       let nutr = item.nutrition;
+      let quantity = 1.0;
+      let name = (item.name || '').trim();
 
-      // Try recipe lookup
       if (item.recipe) {
         const rn = getRecipeNutrition(db, item.recipe);
-        if (rn) nutr = scaleNutrition(rn, qty);
-      } else if (!nutr) {
-        const rn = getRecipeNutrition(db, item.name);
-        if (rn) nutr = scaleNutrition(rn, qty);
-      }
-
-      // Scale if quantity != 1 and nutrition provided directly (not from recipe)
-      if (nutr && qty !== 1.0 && !item.recipe) {
-        nutr = scaleNutrition(nutr, qty);
+        name = item.recipe.trim();
+        quantity = servings;
+        if (rn) nutr = scaleNutrition(rn, servings);
       }
 
       const id = uuid();
       const entry: NutritionEntry = {
-        id, date: day, name: item.name.trim(), quantity: qty,
+        id,
+        date: day,
+        occurred_at: occurredAt,
+        name,
+        quantity,
         calories: nutr?.calories ?? null,
         protein_g: nutr?.protein_g ?? null,
         carbs_g: nutr?.carbs_g ?? null,
         fat_g: nutr?.fat_g ?? null,
-        logged: n,
+        logged: loggedAt,
       };
-      insert.run(id, day, entry.name, qty, entry.calories, entry.protein_g, entry.carbs_g, entry.fat_g, n);
+      insert.run(id, day, occurredAt, entry.name, quantity, entry.calories, entry.protein_g, entry.carbs_g, entry.fat_g, loggedAt);
       added.push(entry);
     }
   })();
@@ -79,7 +105,7 @@ export function logNutrition(db: Database.Database, items: {
 }
 
 export function getNutrition(db: Database.Database, date?: string): NutritionEntry[] {
-  const day = date ? ensureEasternDate(date) : today();
+  const day = date ? dateFromOccurredAt(normalizeOccurredAt(date)) : nowLocal().slice(0, 10);
   return db.prepare('SELECT * FROM nutrition_entries WHERE date = ? ORDER BY logged').all(day) as NutritionEntry[];
 }
 
@@ -104,7 +130,7 @@ export function formatNutritionDay(date: string, entries: NutritionEntry[]): str
     '|---|---|---|---|---|---|',
   ];
   for (const e of entries) {
-    const qtyStr = e.quantity !== 1.0 ? `${e.quantity}x` : '1x';
+    const qtyStr = e.quantity !== 1.0 ? `${e.quantity}x` : '';
     lines.push(`| ${e.name} | ${qtyStr} | ${e.calories ?? '?'} | ${e.protein_g ?? '?'}g | ${e.carbs_g ?? '?'}g | ${e.fat_g ?? '?'}g |`);
     totals.calories += e.calories || 0;
     totals.protein_g += e.protein_g || 0;

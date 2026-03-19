@@ -443,28 +443,41 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     // Nutrition
     {
       name: 'log_nutrition',
-      description: "Log food eaten for a given date. Each entry has a name and optional quantity multiplier (default 1.0 = one full serving). If the food matches a saved recipe, pull nutrition from it and scale by quantity. For standalone foods (no recipe), include the nutrition values directly. Always confirm what was logged by passing the result to the user as-is.",
+      description: "Log food eaten. For manual entries, provide a name and final nutrition totals only. Do not use a quantity multiplier for manual entries. For recipe entries, provide a recipe name and optional servings. `occurred_at` is optional. Only include it if the user explicitly specifies a date or time; otherwise omit it. Always confirm what was logged by passing the result to the user as-is.",
       inputSchema: {
         type: 'object' as const,
         properties: {
-          date: { type: 'string', description: 'Date in YYYY-MM-DD format. Defaults to today if omitted.' },
           items: {
             type: 'array', description: 'List of food items eaten.',
             items: {
-              type: 'object',
-              properties: {
-                name: { type: 'string', description: 'Food or recipe name.' },
-                quantity: { type: 'number', description: 'Serving multiplier (default 1.0).' },
-                recipe: { type: 'string', description: 'Exact recipe name if this references a saved recipe.' },
-                nutrition: {
-                  type: 'object', description: 'Required if not a saved recipe.',
+              oneOf: [
+                {
+                  type: 'object',
                   properties: {
-                    calories: { type: 'number' }, protein_g: { type: 'number' },
-                    carbs_g: { type: 'number' }, fat_g: { type: 'number' },
+                    name: { type: 'string', description: 'Food name exactly as eaten.' },
+                    nutrition: {
+                      type: 'object',
+                      description: 'Final nutrition totals for this entry.',
+                      properties: {
+                        calories: { type: 'number' }, protein_g: { type: 'number' },
+                        carbs_g: { type: 'number' }, fat_g: { type: 'number' },
+                      },
+                      required: ['calories', 'protein_g', 'carbs_g', 'fat_g'],
+                    },
+                    occurred_at: { type: 'string', description: 'Optional. Only include if the user explicitly specifies a date or time; otherwise omit.' },
                   },
+                  required: ['name', 'nutrition'],
                 },
-              },
-              required: ['name'],
+                {
+                  type: 'object',
+                  properties: {
+                    recipe: { type: 'string', description: 'Exact recipe name if this references a saved recipe.' },
+                    servings: { type: 'number', description: 'Optional recipe serving multiplier. Defaults to 1.' },
+                    occurred_at: { type: 'string', description: 'Optional. Only include if the user explicitly specifies a date or time; otherwise omit.' },
+                  },
+                  required: ['recipe'],
+                },
+              ],
             },
           },
         },
@@ -716,8 +729,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   // Nutrition
   if (name === 'log_nutrition') {
-    const entries = nutrition.logNutrition(db, a.items as any[], (a.date as string || '').trim() || undefined);
-    const day = entries[0]?.date || (a.date as string) || '';
+    const entries = nutrition.logNutrition(db, a.items as any[]);
+    const day = entries[0]?.date || '';
     const allEntries = nutrition.getNutrition(db, day);
     return text(nutrition.formatNutritionDay(day, allEntries));
   }

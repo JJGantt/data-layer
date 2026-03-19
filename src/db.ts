@@ -143,6 +143,7 @@ function initSchema(db: Database.Database) {
     CREATE TABLE IF NOT EXISTS nutrition_entries (
       id TEXT PRIMARY KEY,
       date TEXT NOT NULL,
+      occurred_at TEXT NOT NULL,
       name TEXT NOT NULL,
       quantity REAL NOT NULL DEFAULT 1.0,
       calories REAL,
@@ -153,4 +154,10 @@ function initSchema(db: Database.Database) {
     );
     CREATE INDEX IF NOT EXISTS idx_nutrition_date ON nutrition_entries(date);
   `);
+
+  const nutritionColumns = db.prepare('PRAGMA table_info(nutrition_entries)').all() as { name: string }[];
+  if (!nutritionColumns.some((column) => column.name === 'occurred_at')) {
+    db.exec("ALTER TABLE nutrition_entries ADD COLUMN occurred_at TEXT NOT NULL DEFAULT ''");
+    db.exec("UPDATE nutrition_entries SET occurred_at = CASE WHEN occurred_at = '' THEN COALESCE(logged, date || 'T00:00:00') ELSE occurred_at END");
+  }
 }

@@ -245,7 +245,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (path === '/data/nutrition' && method === 'POST') {
       const body = await parseBody(req);
-      const entries = nutrition.logNutrition(db, body.items, body.date);
+      const entries = nutrition.logNutrition(db, body.items);
       return json(res, { entries });
     }
     const nutritionDeleteMatch = path.match(/^\/data\/nutrition\/([^/]+)$/);
