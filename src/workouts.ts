@@ -81,9 +81,9 @@ export function getExerciseHistory(db: Database.Database, name: string, limit = 
 
 // ── Writes ─────────────────────────────────────────────────────────────────
 
-export function startWorkout(db: Database.Database, type: string, notes?: string, date?: string): WorkoutSession {
+export function startWorkout(db: Database.Database, type: string, notes?: string): WorkoutSession {
   const id = uuid();
-  const d = date || now();
+  const d = now();
   db.prepare('INSERT INTO workout_sessions (id, date, type, notes) VALUES (?, ?, ?, ?)').run(id, d, type, notes || '');
   return { id, date: d, type, notes: notes || '', exercises: [] };
 }

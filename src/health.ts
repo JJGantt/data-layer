@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3';
-import { now, today } from './helpers.js';
+import { now, today, ensureEasternDate } from './helpers.js';
 
 export interface WeightEntry {
   id: number;
@@ -32,7 +32,7 @@ export function setHeight(db: Database.Database, heightIn: number): void {
 }
 
 export function logWeight(db: Database.Database, weightLbs: number, date?: string): WeightEntry {
-  const d = date || today();
+  const d = date ? ensureEasternDate(date) : today();
   const n = now();
   const result = db.prepare('INSERT INTO weight_log (date, weight_lbs, logged_at) VALUES (?, ?, ?)').run(d, weightLbs, n);
   return { id: result.lastInsertRowid as number, date: d, weight_lbs: weightLbs, logged_at: n };
@@ -43,7 +43,7 @@ export function recentWeights(db: Database.Database, limit = 5): WeightEntry[] {
 }
 
 export function setNutritionTargets(db: Database.Database, targets: { calories: number; protein_g: number; carbs_g: number; fat_g: number }, date?: string): NutritionTargetEntry {
-  const d = date || today();
+  const d = date ? ensureEasternDate(date) : today();
   const n = now();
   const result = db.prepare('INSERT INTO nutrition_targets (date, calories, protein_g, carbs_g, fat_g, logged_at) VALUES (?, ?, ?, ?, ?, ?)').run(d, targets.calories, targets.protein_g, targets.carbs_g, targets.fat_g, n);
   return { id: result.lastInsertRowid as number, date: d, ...targets, logged_at: n };

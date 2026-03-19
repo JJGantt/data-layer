@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3';
-import { now, uuid, today } from './helpers.js';
+import { now, uuid, today, ensureEasternDate } from './helpers.js';
 import { getRecipeNutrition } from './recipes.js';
 
 export interface NutritionEntry {
@@ -36,7 +36,7 @@ export function logNutrition(db: Database.Database, items: {
   recipe?: string;
   nutrition?: NutritionValues;
 }[], date?: string): NutritionEntry[] {
-  const day = date || today();
+  const day = date ? ensureEasternDate(date) : today();
   const n = now();
   const added: NutritionEntry[] = [];
 
@@ -79,7 +79,7 @@ export function logNutrition(db: Database.Database, items: {
 }
 
 export function getNutrition(db: Database.Database, date?: string): NutritionEntry[] {
-  const day = date || today();
+  const day = date ? ensureEasternDate(date) : today();
   return db.prepare('SELECT * FROM nutrition_entries WHERE date = ? ORDER BY logged').all(day) as NutritionEntry[];
 }
 

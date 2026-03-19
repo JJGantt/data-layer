@@ -235,13 +235,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     // Workouts
     {
       name: 'start_workout',
-      description: "Start a new workout session. Returns a session ID. Call get_workout_catalog first to reuse an existing session type. Pass date for retroactive logging (e.g. logging a workout that happened yesterday).",
+      description: "Start a new workout session. Returns a session ID. Call get_workout_catalog first to reuse an existing session type.",
       inputSchema: {
         type: 'object' as const,
         properties: {
           type: { type: 'string', description: "Workout type (e.g. 'push', 'pull', 'legs'). Check catalog for existing types." },
           notes: { type: 'string', description: 'Optional notes for this session.' },
-          date: { type: 'string', description: "ISO datetime of when the workout happened (e.g. '2026-03-01T19:30:00'). Defaults to now if omitted." },
         },
         required: ['type'],
       },
@@ -630,7 +629,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   // Workouts
   if (name === 'start_workout') {
-    const session = workouts.startWorkout(db, (a.type as string).trim(), (a.notes as string || '').trim(), a.date as string | undefined);
+    const session = workouts.startWorkout(db, (a.type as string).trim(), (a.notes as string || '').trim());
     return text(
       `Started ${session.type} workout (${session.date}).\n` +
       `Session ID: ${session.id.slice(0, 8)}\n\n` +
