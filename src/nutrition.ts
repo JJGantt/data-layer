@@ -126,18 +126,18 @@ export function formatNutritionDay(date: string, entries: NutritionEntry[]): str
   const totals = { calories: 0, protein_g: 0, carbs_g: 0, fat_g: 0 };
   const lines = [
     `**Nutrition log — ${date}**`, '',
-    '| Food | Qty | Cal | Protein | Carbs | Fat |',
-    '|---|---|---|---|---|---|',
+    '| ID | Food | Qty | Cal | Protein | Carbs | Fat |',
+    '|---|---|---|---|---|---|---|',
   ];
   for (const e of entries) {
     const qtyStr = e.quantity !== 1.0 ? `${e.quantity}x` : '';
-    lines.push(`| ${e.name} | ${qtyStr} | ${e.calories ?? '?'} | ${e.protein_g ?? '?'}g | ${e.carbs_g ?? '?'}g | ${e.fat_g ?? '?'}g |`);
+    lines.push(`| \`${e.id.slice(0, 8)}\` | ${e.name} | ${qtyStr} | ${e.calories ?? '?'} | ${e.protein_g ?? '?'}g | ${e.carbs_g ?? '?'}g | ${e.fat_g ?? '?'}g |`);
     totals.calories += e.calories || 0;
     totals.protein_g += e.protein_g || 0;
     totals.carbs_g += e.carbs_g || 0;
     totals.fat_g += e.fat_g || 0;
   }
-  lines.push('|---|---|---|---|---|---|');
-  lines.push(`| **Total** | | **${Math.round(totals.calories)}** | **${Math.round(totals.protein_g)}g** | **${Math.round(totals.carbs_g)}g** | **${Math.round(totals.fat_g)}g** |`);
+  lines.push('|---|---|---|---|---|---|---|');
+  lines.push(`| | **Total** | | **${Math.round(totals.calories)}** | **${Math.round(totals.protein_g)}g** | **${Math.round(totals.carbs_g)}g** | **${Math.round(totals.fat_g)}g** |`);
   return lines.join('\n');
 }
