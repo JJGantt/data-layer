@@ -400,7 +400,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'save_recipe',
-      description: "Create or update a recipe. If a recipe with the same name exists, it is overwritten. ingredients is a list of objects with fields: item (required), quantity (number, optional), unit (optional), notes (optional). steps is a list of instruction strings. tags is an optional list of strings (e.g. ['breakfast', 'high-protein']). nutrition is REQUIRED: {calories, protein_g, carbs_g, fat_g}. Each recipe represents one serving. Use your knowledge to fill in accurate nutrition values; look them up if unsure. Never omit or approximate as zero unless the food genuinely has none.",
+      description: "Create or update a recipe. If a recipe with the same name exists, it is overwritten. ingredients is a list of objects with fields: item (required), quantity (number, optional), unit (optional), notes (optional). steps is a list of instruction strings. tags is an optional list of strings (e.g. ['breakfast', 'high-protein']). nutrition must include protein_g, carbs_g, and fat_g; calories are optional and will be derived if omitted. Each recipe represents one serving. Use accurate nutrition values; do not omit macros unless the food genuinely has none.",
       inputSchema: {
         type: 'object' as const,
         properties: {
@@ -420,12 +420,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           notes: { type: 'string', description: 'Optional recipe-level notes.' },
           tags: { type: 'array', items: { type: 'string' }, description: "Optional tags for filtering (e.g. ['breakfast', 'high-protein'])." },
           nutrition: {
-            type: 'object', description: 'Required nutrition info per serving.',
+            type: 'object', description: 'Required nutrition info per serving. protein_g, carbs_g, and fat_g are required; calories are optional.',
             properties: {
               calories: { type: 'number' }, protein_g: { type: 'number' },
               carbs_g: { type: 'number' }, fat_g: { type: 'number' },
             },
-            required: ['calories', 'protein_g', 'carbs_g', 'fat_g'],
+            required: ['protein_g', 'carbs_g', 'fat_g'],
           },
         },
         required: ['name', 'ingredients', 'steps', 'nutrition'],
@@ -443,7 +443,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     // Nutrition
     {
       name: 'log_nutrition',
-      description: "Log food eaten. For manual entries, provide a name and final nutrition totals only. Do not use a quantity multiplier for manual entries. For recipe entries, provide a recipe name and optional servings. `occurred_at` is optional. Only include it if the user explicitly specifies a date or time; otherwise omit it. Always confirm what was logged by passing the result to the user as-is.",
+      description: "Log food eaten. For manual entries, provide a name and final protein_g, carbs_g, and fat_g totals; calories are optional and will be derived if omitted. Do not use a quantity multiplier for manual entries. For recipe entries, provide a recipe name and optional servings. `occurred_at` is optional. Only include it if the user explicitly specifies a date or time; otherwise omit it. Always confirm what was logged by passing the result to the user as-is.",
       inputSchema: {
         type: 'object' as const,
         properties: {
@@ -457,12 +457,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
                     name: { type: 'string', description: 'Food name exactly as eaten.' },
                     nutrition: {
                       type: 'object',
-                      description: 'Final nutrition totals for this entry.',
+                      description: 'Final nutrition totals for this entry. protein_g, carbs_g, and fat_g are required; calories are optional.',
                       properties: {
                         calories: { type: 'number' }, protein_g: { type: 'number' },
                         carbs_g: { type: 'number' }, fat_g: { type: 'number' },
                       },
-                      required: ['calories', 'protein_g', 'carbs_g', 'fat_g'],
+                      required: ['protein_g', 'carbs_g', 'fat_g'],
                     },
                     occurred_at: { type: 'string', description: 'Optional. Only include if the user explicitly specifies a date or time; otherwise omit.' },
                   },

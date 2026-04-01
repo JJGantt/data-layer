@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3';
-import { uuid } from './helpers.js';
+import { normalizeMacroNutrition, type MacroNutrition, type MacroNutritionInput, ValidationError, uuid } from './helpers.js';
 import { getRecipeNutrition } from './recipes.js';
 
 export interface NutritionEntry {
@@ -13,13 +13,6 @@ export interface NutritionEntry {
   carbs_g: number | null;
   fat_g: number | null;
   logged: string;
-}
-
-interface NutritionValues {
-  calories?: number | null;
-  protein_g?: number | null;
-  carbs_g?: number | null;
-  fat_g?: number | null;
 }
 
 function pad(v: number): string {
@@ -46,12 +39,12 @@ function dateFromOccurredAt(value: string): string {
   return match ? match[1] : nowLocal().slice(0, 10);
 }
 
-function scaleNutrition(n: NutritionValues, qty: number): NutritionValues {
+function scaleNutrition(n: MacroNutrition, qty: number): MacroNutrition {
   return {
-    calories: n.calories != null ? Math.round(n.calories * qty * 10) / 10 : null,
-    protein_g: n.protein_g != null ? Math.round(n.protein_g * qty * 10) / 10 : null,
-    carbs_g: n.carbs_g != null ? Math.round(n.carbs_g * qty * 10) / 10 : null,
-    fat_g: n.fat_g != null ? Math.round(n.fat_g * qty * 10) / 10 : null,
+    calories: Math.round(n.calories * qty * 10) / 10,
+    protein_g: Math.round(n.protein_g * qty * 10) / 10,
+    carbs_g: Math.round(n.carbs_g * qty * 10) / 10,
+    fat_g: Math.round(n.fat_g * qty * 10) / 10,
   };
 }
 
@@ -59,7 +52,7 @@ export function logNutrition(db: Database.Database, items: {
   name?: string;
   recipe?: string;
   servings?: number;
-  nutrition?: NutritionValues;
+  nutrition?: MacroNutritionInput;
   occurred_at?: string;
 }[]): NutritionEntry[] {
   const loggedAt = nowLocal();
@@ -71,16 +64,23 @@ export function logNutrition(db: Database.Database, items: {
     for (const item of items) {
       const occurredAt = normalizeOccurredAt(item.occurred_at);
       const day = dateFromOccurredAt(occurredAt);
-      const servings = item.servings || 1.0;
-      let nutr = item.nutrition;
+      const servings = item.servings ?? 1.0;
+      if (!Number.isFinite(servings) || servings <= 0) {
+        throw new ValidationError('Nutrition entries require servings to be greater than 0.');
+      }
+      let nutr: MacroNutrition;
       let quantity = 1.0;
       let name = (item.name || '').trim();
 
       if (item.recipe) {
         const rn = getRecipeNutrition(db, item.recipe);
+        if (!rn) throw new ValidationError(`Recipe not found: ${item.recipe.trim()}`);
         name = item.recipe.trim();
         quantity = servings;
-        if (rn) nutr = scaleNutrition(rn, servings);
+        nutr = scaleNutrition(rn, servings);
+      } else {
+        if (!name) throw new ValidationError('Manual nutrition entries require a name.');
+        nutr = normalizeMacroNutrition(item.nutrition, `Manual nutrition entry '${name}'`);
       }
 
       const id = uuid();
@@ -90,10 +90,10 @@ export function logNutrition(db: Database.Database, items: {
         occurred_at: occurredAt,
         name,
         quantity,
-        calories: nutr?.calories ?? null,
-        protein_g: nutr?.protein_g ?? null,
-        carbs_g: nutr?.carbs_g ?? null,
-        fat_g: nutr?.fat_g ?? null,
+        calories: nutr.calories,
+        protein_g: nutr.protein_g,
+        carbs_g: nutr.carbs_g,
+        fat_g: nutr.fat_g,
         logged: loggedAt,
       };
       insert.run(id, day, occurredAt, entry.name, quantity, entry.calories, entry.protein_g, entry.carbs_g, entry.fat_g, loggedAt);

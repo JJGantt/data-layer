@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3';
-import { now, uuid } from './helpers.js';
+import { normalizeMacroNutrition, now, type MacroNutrition, type MacroNutritionInput, uuid } from './helpers.js';
 
 export interface Ingredient {
   item: string;
@@ -54,19 +54,21 @@ export function saveRecipe(db: Database.Database, args: {
   steps: string[];
   notes?: string;
   tags?: string[];
-  nutrition: { calories: number; protein_g: number; carbs_g: number; fat_g: number };
+  nutrition: MacroNutritionInput;
 }): { recipe: Recipe; action: string } {
-  const existing = db.prepare('SELECT id, created FROM recipes WHERE name = ? COLLATE NOCASE').get(args.name.trim()) as { id: string; created: string } | undefined;
+  const recipeName = args.name.trim();
+  const nutrition = normalizeMacroNutrition(args.nutrition, `Recipe '${recipeName}'`);
+  const existing = db.prepare('SELECT id, created FROM recipes WHERE name = ? COLLATE NOCASE').get(recipeName) as { id: string; created: string } | undefined;
   const n = now();
   const id = existing?.id || uuid();
 
   db.transaction(() => {
     if (existing) {
       db.prepare('UPDATE recipes SET name = ?, notes = ?, calories = ?, protein_g = ?, carbs_g = ?, fat_g = ?, updated = ? WHERE id = ?')
-        .run(args.name.trim(), args.notes || '', args.nutrition.calories, args.nutrition.protein_g, args.nutrition.carbs_g, args.nutrition.fat_g, n, id);
+        .run(recipeName, args.notes || '', nutrition.calories, nutrition.protein_g, nutrition.carbs_g, nutrition.fat_g, n, id);
     } else {
       db.prepare('INSERT INTO recipes (id, name, notes, calories, protein_g, carbs_g, fat_g, created, updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
-        .run(id, args.name.trim(), args.notes || '', args.nutrition.calories, args.nutrition.protein_g, args.nutrition.carbs_g, args.nutrition.fat_g, n, n);
+        .run(id, recipeName, args.notes || '', nutrition.calories, nutrition.protein_g, nutrition.carbs_g, nutrition.fat_g, n, n);
     }
 
     // Replace tags
@@ -103,10 +105,10 @@ export function deleteRecipe(db: Database.Database, name: string): Recipe | null
 }
 
 // Nutrition lookup helper — used by nutrition module
-export function getRecipeNutrition(db: Database.Database, name: string): { calories?: number; protein_g?: number; carbs_g?: number; fat_g?: number } | null {
+export function getRecipeNutrition(db: Database.Database, name: string): MacroNutrition | null {
   const row = db.prepare('SELECT calories, protein_g, carbs_g, fat_g FROM recipes WHERE name = ? COLLATE NOCASE').get(name.trim()) as any;
-  if (!row || (row.calories == null && row.protein_g == null)) return null;
-  return { calories: row.calories, protein_g: row.protein_g, carbs_g: row.carbs_g, fat_g: row.fat_g };
+  if (!row) return null;
+  return normalizeMacroNutrition(row, `Recipe '${name.trim()}'`);
 }
 
 export function formatRecipe(r: Recipe): string {

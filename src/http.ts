@@ -15,6 +15,7 @@ import * as workouts from './workouts.js';
 import * as recipes from './recipes.js';
 import * as nutrition from './nutrition.js';
 import * as reviews from './reviews.js';
+import { ValidationError } from './helpers.js';
 
 const PORT = Number(process.env.DATA_HTTP_PORT || 27186);
 
@@ -275,7 +276,7 @@ const server = http.createServer(async (req, res) => {
     notFound(res);
   } catch (err: any) {
     console.error('HTTP error:', err.message);
-    json(res, { error: err.message }, 500);
+    json(res, { error: err.message }, err instanceof ValidationError ? 400 : 500);
   }
 });
 
