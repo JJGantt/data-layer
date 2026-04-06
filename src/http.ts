@@ -246,7 +246,11 @@ const server = http.createServer(async (req, res) => {
     }
     if (path === '/data/nutrition' && method === 'POST') {
       const body = await parseBody(req);
-      const entries = nutrition.logNutrition(db, body.items);
+      const items = (body.items || []).map((item: any) => ({
+        ...item,
+        occurred_at: item.occurred_at || body.date || undefined,
+      }));
+      const entries = nutrition.logNutrition(db, items);
       return json(res, { entries });
     }
     const nutritionDeleteMatch = path.match(/^\/data\/nutrition\/([^/]+)$/);
