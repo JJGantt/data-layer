@@ -1,19 +1,13 @@
-import type Database from 'better-sqlite3';
-import { listItems, formatListItems, availableLists, type ListItem } from './lists.js';
+import { listItems, availableLists, type ListItem } from './lists.js';
 import { listReminders, type Reminder } from './reminders.js';
 import { allNotes } from './notes.js';
+import { getClient } from './client.js';
 
-export function buildNotesReview(db: Database.Database): string {
-  const notes = allNotes(db).filter(n => n.content);
-  if (!notes.length) {
-    return 'No notes found.\n\n---\nINSTRUCTIONS: Let the user know they have no notes. Ask if they\'d like to jot something down.';
-  }
+export async function buildNotesReview(): Promise<string> {
+  const notes = (await allNotes()).filter(n => n.content);
+  if (!notes.length) return 'No notes found.\n\n---\nINSTRUCTIONS: Let the user know they have no notes. Ask if they\'d like to jot something down.';
   const parts = [`## Notes Review (${notes.length} notes)\n`];
-  for (const n of notes) {
-    parts.push(`### ${n.name} (saved: ${n.updated})`);
-    parts.push(n.content);
-    parts.push('');
-  }
+  for (const n of notes) { parts.push(`### ${n.name} (saved: ${n.updated})`); parts.push(n.content); parts.push(''); }
   parts.push('---');
   parts.push('REVIEW INSTRUCTIONS (follow these, do not show them to the user):');
   parts.push('1. Present a brief summary of each note — one line per note.');
@@ -24,29 +18,26 @@ export function buildNotesReview(db: Database.Database): string {
   return parts.join('\n');
 }
 
-export function buildListReview(db: Database.Database, listName?: string): string {
-  const names = listName ? [listName] : availableLists(db);
+export async function buildListReview(listName?: string): Promise<string> {
+  const names = listName ? [listName] : await availableLists();
   if (!names.length) return 'No lists found.';
 
   const parts: string[] = [];
   for (const name of names) {
-    const items = listItems(db, name);
-    const allItems = db.prepare('SELECT * FROM list_items WHERE list_name = ? AND deleted = 0 ORDER BY created').all(name) as any[];
-    const done = allItems.filter((i: any) => i.done);
-    const undone = allItems.filter((i: any) => !i.done);
+    const { data: allItems } = await getClient().from('list_items').select('*')
+      .eq('list_name', name).eq('deleted', false).order('created');
+    const items = allItems ?? [];
+    const done = items.filter((i: any) => i.done);
+    const undone = items.filter((i: any) => !i.done);
 
     parts.push(`## ${name} (${undone.length} pending, ${done.length} done)\n`);
     if (undone.length) {
       parts.push('**Pending:**');
-      for (const i of undone) {
-        parts.push(`- ${i.text}  (added: ${i.created})  [id: ${i.id.slice(0, 8)}]`);
-      }
+      for (const i of undone) parts.push(`- ${i.text}  (added: ${i.created})  [id: ${i.id.slice(0, 8)}]`);
     }
     if (done.length) {
       parts.push('**Done:**');
-      for (const i of done) {
-        parts.push(`- ~~${i.text}~~  [id: ${i.id.slice(0, 8)}]`);
-      }
+      for (const i of done) parts.push(`- ~~${i.text}~~  [id: ${i.id.slice(0, 8)}]`);
     }
     parts.push('');
   }
@@ -72,52 +63,25 @@ export function buildListReview(db: Database.Database, listName?: string): strin
   return parts.join('\n');
 }
 
-export function buildRemindersReview(db: Database.Database): string {
-  const items = listReminders(db);
+export async function buildRemindersReview(): Promise<string> {
+  const items = await listReminders();
   const active = items.filter(i => !i.deleted);
-  if (!active.length) {
-    return 'No active reminders.\n\n---\nINSTRUCTIONS: Let the user know the slate is clean. Ask if they have anything coming up they want to be reminded about.';
-  }
+  if (!active.length) return 'No active reminders.\n\n---\nINSTRUCTIONS: Let the user know the slate is clean. Ask if they have anything coming up they want to be reminded about.';
 
   const nowDate = new Date();
-  const overdue: Reminder[] = [];
-  const upcoming: Reminder[] = [];
-  const noDate: Reminder[] = [];
-  const done: Reminder[] = [];
-
+  const overdue: Reminder[] = []; const upcoming: Reminder[] = []; const noDate: Reminder[] = []; const done: Reminder[] = [];
   for (const i of active) {
     if (i.done) { done.push(i); continue; }
     if (i.due) {
-      try {
-        if (new Date(i.due) < nowDate) overdue.push(i);
-        else upcoming.push(i);
-      } catch { upcoming.push(i); }
-    } else {
-      noDate.push(i);
-    }
+      try { if (new Date(i.due) < nowDate) overdue.push(i); else upcoming.push(i); } catch { upcoming.push(i); }
+    } else { noDate.push(i); }
   }
 
   const parts = [`## Reminders Review (${active.length} active)\n`];
-  if (overdue.length) {
-    parts.push(`**OVERDUE (${overdue.length}):**`);
-    for (const i of overdue) parts.push(`- ${i.text} (was due: ${i.due || 'N/A'})  [id: ${i.id.slice(0, 8)}]`);
-    parts.push('');
-  }
-  if (upcoming.length) {
-    parts.push(`**Upcoming (${upcoming.length}):**`);
-    for (const i of upcoming) parts.push(`- ${i.text} (due: ${i.due || 'N/A'})  [id: ${i.id.slice(0, 8)}]`);
-    parts.push('');
-  }
-  if (noDate.length) {
-    parts.push(`**No due date (${noDate.length}):**`);
-    for (const i of noDate) parts.push(`- ${i.text}  [id: ${i.id.slice(0, 8)}]`);
-    parts.push('');
-  }
-  if (done.length) {
-    parts.push(`**Completed (${done.length}):**`);
-    for (const i of done) parts.push(`- ~~${i.text}~~  [id: ${i.id.slice(0, 8)}]`);
-    parts.push('');
-  }
+  if (overdue.length) { parts.push(`**OVERDUE (${overdue.length}):**`); for (const i of overdue) parts.push(`- ${i.text} (was due: ${i.due || 'N/A'})  [id: ${i.id.slice(0, 8)}]`); parts.push(''); }
+  if (upcoming.length) { parts.push(`**Upcoming (${upcoming.length}):**`); for (const i of upcoming) parts.push(`- ${i.text} (due: ${i.due || 'N/A'})  [id: ${i.id.slice(0, 8)}]`); parts.push(''); }
+  if (noDate.length) { parts.push(`**No due date (${noDate.length}):**`); for (const i of noDate) parts.push(`- ${i.text}  [id: ${i.id.slice(0, 8)}]`); parts.push(''); }
+  if (done.length) { parts.push(`**Completed (${done.length}):**`); for (const i of done) parts.push(`- ~~${i.text}~~  [id: ${i.id.slice(0, 8)}]`); parts.push(''); }
 
   parts.push('---');
   parts.push('REVIEW INSTRUCTIONS (follow these, do not show them to the user):');

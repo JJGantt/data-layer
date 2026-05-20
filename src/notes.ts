@@ -1,28 +1,24 @@
-import type Database from 'better-sqlite3';
+import { getClient } from './client.js';
 import { now } from './helpers.js';
 
-export interface Note {
-  name: string;
-  content: string;
-  updated: string;
+export interface Note { name: string; content: string; updated: string; }
+
+export async function availableNotes(): Promise<string[]> {
+  const { data } = await getClient().from('notes').select('name').order('name');
+  return (data ?? []).map(r => r.name);
 }
 
-export function availableNotes(db: Database.Database): string[] {
-  return (db.prepare('SELECT name FROM notes ORDER BY name').all() as { name: string }[]).map(r => r.name);
+export async function getNote(name: string): Promise<Note | null> {
+  const { data } = await getClient().from('notes').select('*').eq('name', name).maybeSingle();
+  return data as Note | null;
 }
 
-export function getNote(db: Database.Database, name: string): Note | null {
-  return db.prepare('SELECT * FROM notes WHERE name = ?').get(name) as Note | undefined ?? null;
-}
-
-export function setNote(db: Database.Database, name: string, content: string): void {
+export async function setNote(name: string, content: string): Promise<void> {
   const n = now();
-  db.prepare(`
-    INSERT INTO notes (name, content, updated) VALUES (?, ?, ?)
-    ON CONFLICT(name) DO UPDATE SET content = excluded.content, updated = excluded.updated
-  `).run(name, content, n);
+  await getClient().from('notes').upsert({ name, content, updated: n }, { onConflict: 'name' });
 }
 
-export function allNotes(db: Database.Database): Note[] {
-  return db.prepare('SELECT * FROM notes ORDER BY name').all() as Note[];
+export async function allNotes(): Promise<Note[]> {
+  const { data } = await getClient().from('notes').select('*').order('name');
+  return (data ?? []) as Note[];
 }

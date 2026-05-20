@@ -1,52 +1,49 @@
-import type Database from 'better-sqlite3';
+import { getClient } from './client.js';
 import { now, uuid } from './helpers.js';
 
 export interface Reminder {
-  id: string;
-  text: string;
-  due: string | null;
-  done: boolean;
-  deleted: boolean;
-  created: string;
-  updated: string;
+  id: string; text: string; due: string | null;
+  done: boolean; deleted: boolean; created: string; updated: string;
 }
 
-function rowToReminder(row: any): Reminder {
-  return { ...row, done: !!row.done, deleted: !!row.deleted };
+export async function listReminders(): Promise<Reminder[]> {
+  const { data } = await getClient().from('reminders').select('*').eq('deleted', false).order('created');
+  return (data ?? []) as Reminder[];
 }
 
-export function listReminders(db: Database.Database): Reminder[] {
-  return (db.prepare('SELECT * FROM reminders WHERE deleted = 0 ORDER BY created').all() as any[]).map(rowToReminder);
+export async function addReminder(text: string, due?: string): Promise<Reminder> {
+  const n = now(); const id = uuid();
+  const { data } = await getClient().from('reminders')
+    .insert({ id, text, due: due || null, done: false, deleted: false, created: n, updated: n })
+    .select().single();
+  return data as Reminder;
 }
 
-export function addReminder(db: Database.Database, text: string, due?: string): Reminder {
-  const n = now();
-  const id = uuid();
-  db.prepare('INSERT INTO reminders (id, text, due, done, deleted, created, updated) VALUES (?, ?, ?, 0, 0, ?, ?)').run(id, text, due || null, n, n);
-  return { id, text, due: due || null, done: false, deleted: false, created: n, updated: n };
-}
-
-export function completeReminder(db: Database.Database, idPrefix: string): Reminder | null {
-  const id = resolveReminderId(db, idPrefix);
+export async function completeReminder(idPrefix: string): Promise<Reminder | null> {
+  const id = await resolveReminderId(idPrefix);
   if (!id) return null;
   const n = now();
-  db.prepare('UPDATE reminders SET done = 1, updated = ? WHERE id = ?').run(n, id);
-  return rowToReminder(db.prepare('SELECT * FROM reminders WHERE id = ?').get(id));
+  await getClient().from('reminders').update({ done: true, updated: n }).eq('id', id);
+  const { data } = await getClient().from('reminders').select('*').eq('id', id).single();
+  return data as Reminder;
 }
 
-export function removeReminder(db: Database.Database, idPrefix: string): Reminder | null {
-  const id = resolveReminderId(db, idPrefix);
+export async function removeReminder(idPrefix: string): Promise<Reminder | null> {
+  const id = await resolveReminderId(idPrefix);
   if (!id) return null;
   const n = now();
-  db.prepare('UPDATE reminders SET deleted = 1, updated = ? WHERE id = ?').run(n, id);
-  return rowToReminder(db.prepare('SELECT * FROM reminders WHERE id = ?').get(id));
+  await getClient().from('reminders').update({ deleted: true, updated: n }).eq('id', id);
+  const { data } = await getClient().from('reminders').select('*').eq('id', id).single();
+  return data as Reminder;
 }
 
-function resolveReminderId(db: Database.Database, prefix: string): string | null {
-  const exact = db.prepare('SELECT id FROM reminders WHERE id = ? AND deleted = 0').get(prefix) as { id: string } | undefined;
+async function resolveReminderId(prefix: string): Promise<string | null> {
+  const { data: exact } = await getClient().from('reminders').select('id')
+    .eq('id', prefix).eq('deleted', false).maybeSingle();
   if (exact) return exact.id;
-  const matches = db.prepare("SELECT id FROM reminders WHERE deleted = 0 AND id LIKE ? || '%'").all(prefix) as { id: string }[];
-  if (matches.length === 1) return matches[0].id;
+  const { data: matches } = await getClient().from('reminders').select('id')
+    .eq('deleted', false).like('id', `${prefix}%`);
+  if (matches?.length === 1) return matches[0].id;
   return null;
 }
 

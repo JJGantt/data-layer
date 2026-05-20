@@ -5,15 +5,13 @@
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
-    "test": "npm run build --silent && node --test dist/tests/*.test.js",
-    "migrate": "node dist/migrate.js"
+    "migrate": "node dist/migrate-from-sqlite.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",
-    "better-sqlite3": "^12.6.2"
+    "@supabase/supabase-js": "^2.49.8"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^25.4.0",
     "typescript": "^5.9.3"
   }

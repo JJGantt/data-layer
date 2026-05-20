@@ -6,7 +6,6 @@
  */
 
 import http from 'node:http';
-import { getDb } from './db.js';
 import * as lists from './lists.js';
 import * as reminders from './reminders.js';
 import * as notes from './notes.js';
@@ -43,102 +42,101 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url || '/', `http://localhost:${PORT}`);
   const method = req.method || 'GET';
   const path = url.pathname;
-  const db = getDb();
 
   try {
     // ── Lists ──
     if (path === '/data/lists' && method === 'GET') {
-      return json(res, { lists: lists.availableLists(db) });
+      return json(res, { lists: await lists.availableLists() });
     }
     if (path === '/data/lists' && method === 'POST') {
       const body = await parseBody(req);
-      const created = lists.createList(db, body.name?.trim().toLowerCase().replace(/ /g, '-'));
+      const created = await lists.createList(body.name?.trim().toLowerCase().replace(/ /g, '-'));
       return json(res, { ok: created });
     }
     const listItemsMatch = path.match(/^\/data\/lists\/([^/]+)\/items$/);
     if (listItemsMatch && method === 'GET') {
-      const items = lists.listItems(db, listItemsMatch[1]);
+      const items = await lists.listItems(listItemsMatch[1]);
       return json(res, { items });
     }
     if (listItemsMatch && method === 'POST') {
       const body = await parseBody(req);
-      const item = lists.addItem(db, listItemsMatch[1], body.text);
+      const item = await lists.addItem(listItemsMatch[1], body.text);
       return json(res, { item });
     }
     const listItemActionMatch = path.match(/^\/data\/lists\/([^/]+)\/items\/([^/]+)\/(check|uncheck)$/);
     if (listItemActionMatch && method === 'PATCH') {
       const [, listName, id, action] = listItemActionMatch;
       const item = action === 'check'
-        ? lists.checkItem(db, listName, id)
-        : lists.uncheckItem(db, listName, id);
+        ? await lists.checkItem(listName, id)
+        : await lists.uncheckItem(listName, id);
       if (!item) return json(res, { error: 'not found' }, 404);
       return json(res, { item });
     }
     const listItemDeleteMatch = path.match(/^\/data\/lists\/([^/]+)\/items\/([^/]+)$/);
     if (listItemDeleteMatch && method === 'DELETE') {
-      const item = lists.removeItem(db, listItemDeleteMatch[1], listItemDeleteMatch[2]);
+      const item = await lists.removeItem(listItemDeleteMatch[1], listItemDeleteMatch[2]);
       if (!item) return json(res, { error: 'not found' }, 404);
       return json(res, { item });
     }
 
     // ── Reminders ──
     if (path === '/data/reminders' && method === 'GET') {
-      return json(res, { reminders: reminders.listReminders(db) });
+      return json(res, { reminders: await reminders.listReminders() });
     }
     if (path === '/data/reminders' && method === 'POST') {
       const body = await parseBody(req);
-      const r = reminders.addReminder(db, body.text, body.due);
+      const r = await reminders.addReminder(body.text, body.due);
       return json(res, { reminder: r });
     }
     const reminderCompleteMatch = path.match(/^\/data\/reminders\/([^/]+)\/complete$/);
     if (reminderCompleteMatch && method === 'PATCH') {
-      const r = reminders.completeReminder(db, reminderCompleteMatch[1]);
+      const r = await reminders.completeReminder(reminderCompleteMatch[1]);
       if (!r) return json(res, { error: 'not found' }, 404);
       return json(res, { reminder: r });
     }
     const reminderDeleteMatch = path.match(/^\/data\/reminders\/([^/]+)$/);
     if (reminderDeleteMatch && method === 'DELETE') {
-      const r = reminders.removeReminder(db, reminderDeleteMatch[1]);
+      const r = await reminders.removeReminder(reminderDeleteMatch[1]);
       if (!r) return json(res, { error: 'not found' }, 404);
       return json(res, { reminder: r });
     }
 
     // ── Notes ──
     if (path === '/data/notes' && method === 'GET') {
-      return json(res, { notes: notes.availableNotes(db) });
+      return json(res, { notes: await notes.availableNotes() });
     }
     const noteMatch = path.match(/^\/data\/notes\/([^/]+)$/);
     if (noteMatch && method === 'GET') {
-      const note = notes.getNote(db, noteMatch[1]);
+      const note = await notes.getNote(noteMatch[1]);
       if (!note) return json(res, { error: 'not found' }, 404);
       return json(res, { note });
     }
     if (noteMatch && method === 'PUT') {
       const body = await parseBody(req);
-      notes.setNote(db, noteMatch[1], body.content);
+      await notes.setNote(noteMatch[1], body.content);
       return json(res, { ok: true });
     }
 
     // ── Health ──
     if (path === '/data/health/profile' && method === 'GET') {
-      const profile = health.getProfile(db);
-      const weights = health.recentWeights(db);
-      const targets = health.recentTargets(db);
+      const profile = await health.getProfile();
+      const weights = await health.recentWeights();
+      const targets = await health.recentTargets();
       return json(res, { profile, weights, targets });
     }
     if (path === '/data/health/height' && method === 'PUT') {
       const body = await parseBody(req);
-      health.setHeight(db, body.height_in);
+      await health.setHeight(body.height_in);
       return json(res, { ok: true });
     }
     if (path === '/data/health/weight' && method === 'POST') {
       const body = await parseBody(req);
-      const entry = health.logWeight(db, body.weight_lbs, body.date);
+      const entry = await health.logWeight(body.weight_lbs, body.date);
       return json(res, { entry });
     }
     if (path === '/data/health/targets' && method === 'POST') {
       const body = await parseBody(req);
-      const entry = health.setNutritionTargets(db, {
+      const entry = await health.setNutritionTargets({
         calories: body.calories,
         protein_g: body.protein_g,
         carbs_g: body.carbs_g,
@@ -147,93 +145,93 @@ const server = http.createServer(async (req, res) => {
       return json(res, { entry });
     }
     if (path === '/data/health/targets' && method === 'GET') {
-      const targets = health.recentTargets(db);
+      const targets = await health.recentTargets();
       return json(res, { targets });
     }
 
     // ── Workouts ──
     if (path === '/data/workouts/catalog' && method === 'GET') {
-      return json(res, workouts.getCatalog(db));
+      return json(res, await workouts.getCatalog());
     }
     if (path === '/data/workouts' && method === 'GET') {
       const limit = Number(url.searchParams.get('limit')) || 10;
-      return json(res, { workouts: workouts.listWorkouts(db, limit) });
+      return json(res, { workouts: await workouts.listWorkouts(limit) });
     }
     if (path === '/data/workouts' && method === 'POST') {
       const body = await parseBody(req);
-      const session = workouts.startWorkout(db, body.type, body.notes);
+      const session = await workouts.startWorkout(body.type, body.notes);
       return json(res, { session });
     }
     const workoutMatch = path.match(/^\/data\/workouts\/([^/]+)$/);
     if (workoutMatch && method === 'GET') {
-      const session = workouts.getWorkout(db, workoutMatch[1]);
+      const session = await workouts.getWorkout(workoutMatch[1]);
       if (!session) return json(res, { error: 'not found' }, 404);
       return json(res, { session });
     }
     if (workoutMatch && method === 'DELETE') {
-      const session = workouts.deleteWorkout(db, workoutMatch[1]);
+      const session = await workouts.deleteWorkout(workoutMatch[1]);
       if (!session) return json(res, { error: 'not found' }, 404);
       return json(res, { deleted: session });
     }
     const workoutNotesMatch = path.match(/^\/data\/workouts\/([^/]+)\/notes$/);
     if (workoutNotesMatch && method === 'PATCH') {
       const body = await parseBody(req);
-      const session = workouts.updateSessionNotes(db, workoutNotesMatch[1], body.notes);
+      const session = await workouts.updateSessionNotes(workoutNotesMatch[1], body.notes);
       if (!session) return json(res, { error: 'not found' }, 404);
       return json(res, { session });
     }
     const workoutExercisesMatch = path.match(/^\/data\/workouts\/([^/]+)\/exercises$/);
     if (workoutExercisesMatch && method === 'POST') {
       const body = await parseBody(req);
-      const session = workouts.logExercise(db, workoutExercisesMatch[1], body.exercises);
+      const session = await workouts.logExercise(workoutExercisesMatch[1], body.exercises);
       if (!session) return json(res, { error: 'not found' }, 404);
       return json(res, { session });
     }
     const exerciseSetsMatch = path.match(/^\/data\/workouts\/([^/]+)\/exercises\/([^/]+)\/sets$/);
     if (exerciseSetsMatch && method === 'PUT') {
       const body = await parseBody(req);
-      const session = workouts.updateExercise(db, exerciseSetsMatch[1], decodeURIComponent(exerciseSetsMatch[2]), body.sets);
+      const session = await workouts.updateExercise(exerciseSetsMatch[1], decodeURIComponent(exerciseSetsMatch[2]), body.sets);
       if (!session) return json(res, { error: 'not found' }, 404);
       return json(res, { session });
     }
     if (exerciseSetsMatch && method === 'POST') {
       const body = await parseBody(req);
-      const session = workouts.addSet(db, exerciseSetsMatch[1], decodeURIComponent(exerciseSetsMatch[2]), body.weight_lbs, body.reps);
+      const session = await workouts.addSet(exerciseSetsMatch[1], decodeURIComponent(exerciseSetsMatch[2]), body.weight_lbs, body.reps);
       if (!session) return json(res, { error: 'not found' }, 404);
       return json(res, { session });
     }
     const exerciseDeleteMatch = path.match(/^\/data\/workouts\/([^/]+)\/exercises\/([^/]+)$/);
     if (exerciseDeleteMatch && method === 'DELETE') {
-      const result = workouts.removeExercise(db, exerciseDeleteMatch[1], decodeURIComponent(exerciseDeleteMatch[2]));
+      const result = await workouts.removeExercise(exerciseDeleteMatch[1], decodeURIComponent(exerciseDeleteMatch[2]));
       if (!result) return json(res, { error: 'not found' }, 404);
       return json(res, { removed: result.removed, session: result.session });
     }
     const exerciseHistoryMatch = path.match(/^\/data\/exercises\/([^/]+)\/history$/);
     if (exerciseHistoryMatch && method === 'GET') {
       const limit = Number(url.searchParams.get('limit')) || 20;
-      const history = workouts.getExerciseHistory(db, decodeURIComponent(exerciseHistoryMatch[1]), limit);
+      const history = await workouts.getExerciseHistory(decodeURIComponent(exerciseHistoryMatch[1]), limit);
       return json(res, { history });
     }
 
     // ── Recipes ──
     if (path === '/data/recipes' && method === 'GET') {
       const tag = url.searchParams.get('tag') || undefined;
-      return json(res, { recipes: recipes.listRecipes(db, tag) });
+      return json(res, { recipes: await recipes.listRecipes(tag) });
     }
     const recipeMatch = path.match(/^\/data\/recipes\/([^/]+)$/);
     if (recipeMatch && method === 'GET') {
-      const r = recipes.getRecipe(db, decodeURIComponent(recipeMatch[1]));
+      const r = await recipes.getRecipe(decodeURIComponent(recipeMatch[1]));
       if (!r) return json(res, { error: 'not found' }, 404);
       return json(res, { recipe: r });
     }
     if (recipeMatch && method === 'PUT') {
       const body = await parseBody(req);
       body.name = decodeURIComponent(recipeMatch[1]);
-      const result = recipes.saveRecipe(db, body);
+      const result = await recipes.saveRecipe(body);
       return json(res, { recipe: result.recipe, action: result.action });
     }
     if (recipeMatch && method === 'DELETE') {
-      const r = recipes.deleteRecipe(db, decodeURIComponent(recipeMatch[1]));
+      const r = await recipes.deleteRecipe(decodeURIComponent(recipeMatch[1]));
       if (!r) return json(res, { error: 'not found' }, 404);
       return json(res, { deleted: r });
     }
@@ -241,7 +239,7 @@ const server = http.createServer(async (req, res) => {
     // ── Nutrition ──
     if (path === '/data/nutrition' && method === 'GET') {
       const date = url.searchParams.get('date') || undefined;
-      const entries = nutrition.getNutrition(db, date);
+      const entries = await nutrition.getNutrition(date);
       return json(res, { entries });
     }
     if (path === '/data/nutrition' && method === 'POST') {
@@ -250,26 +248,26 @@ const server = http.createServer(async (req, res) => {
         ...item,
         occurred_at: item.occurred_at || body.date || undefined,
       }));
-      const entries = nutrition.logNutrition(db, items);
+      const entries = await nutrition.logNutrition(items);
       return json(res, { entries });
     }
     const nutritionDeleteMatch = path.match(/^\/data\/nutrition\/([^/]+)$/);
     if (nutritionDeleteMatch && method === 'DELETE') {
-      const entry = nutrition.deleteNutritionEntry(db, nutritionDeleteMatch[1]);
+      const entry = await nutrition.deleteNutritionEntry(nutritionDeleteMatch[1]);
       if (!entry) return json(res, { error: 'not found' }, 404);
       return json(res, { deleted: entry });
     }
 
     // ── Reviews ──
     if (path === '/data/reviews/notes' && method === 'GET') {
-      return json(res, { text: reviews.buildNotesReview(db) });
+      return json(res, { text: await reviews.buildNotesReview() });
     }
     const reviewListMatch = path.match(/^\/data\/reviews\/lists(?:\/([^/]+))?$/);
     if (reviewListMatch && method === 'GET') {
-      return json(res, { text: reviews.buildListReview(db, reviewListMatch[1]) });
+      return json(res, { text: await reviews.buildListReview(reviewListMatch[1]) });
     }
     if (path === '/data/reviews/reminders' && method === 'GET') {
-      return json(res, { text: reviews.buildRemindersReview(db) });
+      return json(res, { text: await reviews.buildRemindersReview() });
     }
 
     // Status

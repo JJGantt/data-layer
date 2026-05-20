@@ -1,4 +1,3 @@
-import type Database from 'better-sqlite3';
 import { randomUUID } from 'node:crypto';
 
 export function now(): string {
@@ -107,17 +106,6 @@ export function normalizeMacroNutrition(nutrition: MacroNutritionInput | null | 
   }
 
   return { calories, protein_g, carbs_g, fat_g };
-}
-
-/** Resolve an ID by full match or unique prefix. */
-export function resolveId(db: Database.Database, table: string, prefix: string): string | null {
-  // Try exact match first
-  const exact = db.prepare(`SELECT id FROM ${table} WHERE id = ?`).get(prefix) as { id: string } | undefined;
-  if (exact) return exact.id;
-  // Try prefix
-  const matches = db.prepare(`SELECT id FROM ${table} WHERE id LIKE ? || '%'`).all(prefix) as { id: string }[];
-  if (matches.length === 1) return matches[0].id;
-  return null;
 }
 
 export function fmtWeight(w: number): string {

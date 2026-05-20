@@ -1,112 +1,97 @@
-import type Database from 'better-sqlite3';
+import { getClient } from './client.js';
 import { normalizeMacroNutrition, now, type MacroNutrition, type MacroNutritionInput, uuid } from './helpers.js';
 
-export interface Ingredient {
-  item: string;
-  quantity?: number;
-  unit?: string;
-  notes?: string;
-}
-
+export interface Ingredient { item: string; quantity?: number; unit?: string; notes?: string; }
 export interface Recipe {
-  id: string;
-  name: string;
-  notes: string;
-  tags: string[];
-  ingredients: Ingredient[];
-  steps: string[];
-  nutrition: { calories?: number; protein_g?: number; carbs_g?: number; fat_g?: number } | null;
-  created: string;
-  updated: string;
+  id: string; name: string; notes: string; tags: string[]; ingredients: Ingredient[];
+  steps: string[]; nutrition: { calories?: number; protein_g?: number; carbs_g?: number; fat_g?: number } | null;
+  created: string; updated: string;
 }
 
-function loadRecipe(db: Database.Database, id: string): Recipe | null {
-  const row = db.prepare('SELECT * FROM recipes WHERE id = ?').get(id) as any;
+async function loadRecipe(id: string): Promise<Recipe | null> {
+  const sb = getClient();
+  const { data: row } = await sb.from('recipes').select('*').eq('id', id).maybeSingle();
   if (!row) return null;
-  const tags = (db.prepare('SELECT tag FROM recipe_tags WHERE recipe_id = ? ORDER BY tag').all(id) as { tag: string }[]).map(r => r.tag);
-  const ingredients = db.prepare('SELECT item, quantity, unit, notes FROM recipe_ingredients WHERE recipe_id = ? ORDER BY sort_order').all(id) as Ingredient[];
-  const steps = (db.prepare('SELECT instruction FROM recipe_steps WHERE recipe_id = ? ORDER BY step_num').all(id) as { instruction: string }[]).map(r => r.instruction);
+  const { data: tagRows } = await sb.from('recipe_tags').select('tag').eq('recipe_id', id).order('tag');
+  const { data: ingRows } = await sb.from('recipe_ingredients').select('item, quantity, unit, notes')
+    .eq('recipe_id', id).order('sort_order');
+  const { data: stepRows } = await sb.from('recipe_steps').select('instruction')
+    .eq('recipe_id', id).order('step_num');
+  const tags = (tagRows ?? []).map(r => r.tag);
+  const ingredients = (ingRows ?? []) as Ingredient[];
+  const steps = (stepRows ?? []).map(r => r.instruction);
   const nutrition = (row.calories != null || row.protein_g != null || row.carbs_g != null || row.fat_g != null)
-    ? { calories: row.calories, protein_g: row.protein_g, carbs_g: row.carbs_g, fat_g: row.fat_g }
-    : null;
+    ? { calories: row.calories, protein_g: row.protein_g, carbs_g: row.carbs_g, fat_g: row.fat_g } : null;
   return { id: row.id, name: row.name, notes: row.notes, tags, ingredients, steps, nutrition, created: row.created, updated: row.updated };
 }
 
-export function listRecipes(db: Database.Database, tag?: string): Recipe[] {
+export async function listRecipes(tag?: string): Promise<Recipe[]> {
+  const sb = getClient();
   let ids: string[];
   if (tag) {
-    ids = (db.prepare('SELECT recipe_id FROM recipe_tags WHERE tag = ? COLLATE NOCASE').all(tag) as { recipe_id: string }[]).map(r => r.recipe_id);
+    const { data } = await sb.from('recipe_tags').select('recipe_id').ilike('tag', tag);
+    ids = (data ?? []).map(r => r.recipe_id);
   } else {
-    ids = (db.prepare('SELECT id FROM recipes ORDER BY name').all() as { id: string }[]).map(r => r.id);
+    const { data } = await sb.from('recipes').select('id').order('name');
+    ids = (data ?? []).map(r => r.id);
   }
-  return ids.map(id => loadRecipe(db, id)!).filter(Boolean);
+  const recipes: Recipe[] = [];
+  for (const id of ids) {
+    const r = await loadRecipe(id);
+    if (r) recipes.push(r);
+  }
+  return recipes;
 }
 
-export function getRecipe(db: Database.Database, name: string): Recipe | null {
-  const row = db.prepare('SELECT id FROM recipes WHERE name = ? COLLATE NOCASE').get(name.trim()) as { id: string } | undefined;
+export async function getRecipe(name: string): Promise<Recipe | null> {
+  const { data: row } = await getClient().from('recipes').select('id').ilike('name', name.trim()).maybeSingle();
   if (!row) return null;
-  return loadRecipe(db, row.id);
+  return loadRecipe(row.id);
 }
 
-export function saveRecipe(db: Database.Database, args: {
-  name: string;
-  ingredients: Ingredient[];
-  steps: string[];
-  notes?: string;
-  tags?: string[];
-  nutrition: MacroNutritionInput;
-}): { recipe: Recipe; action: string } {
+export async function saveRecipe(args: {
+  name: string; ingredients: Ingredient[]; steps: string[];
+  notes?: string; tags?: string[]; nutrition: MacroNutritionInput;
+}): Promise<{ recipe: Recipe; action: string }> {
+  const sb = getClient();
   const recipeName = args.name.trim();
   const nutrition = normalizeMacroNutrition(args.nutrition, `Recipe '${recipeName}'`);
-  const existing = db.prepare('SELECT id, created FROM recipes WHERE name = ? COLLATE NOCASE').get(recipeName) as { id: string; created: string } | undefined;
+  const { data: existing } = await sb.from('recipes').select('id, created').ilike('name', recipeName).maybeSingle();
   const n = now();
   const id = existing?.id || uuid();
 
-  db.transaction(() => {
-    if (existing) {
-      db.prepare('UPDATE recipes SET name = ?, notes = ?, calories = ?, protein_g = ?, carbs_g = ?, fat_g = ?, updated = ? WHERE id = ?')
-        .run(recipeName, args.notes || '', nutrition.calories, nutrition.protein_g, nutrition.carbs_g, nutrition.fat_g, n, id);
-    } else {
-      db.prepare('INSERT INTO recipes (id, name, notes, calories, protein_g, carbs_g, fat_g, created, updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
-        .run(id, recipeName, args.notes || '', nutrition.calories, nutrition.protein_g, nutrition.carbs_g, nutrition.fat_g, n, n);
-    }
+  if (existing) {
+    await sb.from('recipes').update({ name: recipeName, notes: args.notes || '', calories: nutrition.calories, protein_g: nutrition.protein_g, carbs_g: nutrition.carbs_g, fat_g: nutrition.fat_g, updated: n }).eq('id', id);
+  } else {
+    await sb.from('recipes').insert({ id, name: recipeName, notes: args.notes || '', calories: nutrition.calories, protein_g: nutrition.protein_g, carbs_g: nutrition.carbs_g, fat_g: nutrition.fat_g, created: n, updated: n });
+  }
 
-    // Replace tags
-    db.prepare('DELETE FROM recipe_tags WHERE recipe_id = ?').run(id);
-    const insertTag = db.prepare('INSERT INTO recipe_tags (recipe_id, tag) VALUES (?, ?)');
-    for (const tag of args.tags || []) {
-      insertTag.run(id, tag);
-    }
+  await sb.from('recipe_tags').delete().eq('recipe_id', id);
+  for (const tag of args.tags || []) {
+    await sb.from('recipe_tags').insert({ recipe_id: id, tag });
+  }
+  await sb.from('recipe_ingredients').delete().eq('recipe_id', id);
+  for (let i = 0; i < args.ingredients.length; i++) {
+    const ing = args.ingredients[i];
+    await sb.from('recipe_ingredients').insert({ recipe_id: id, item: ing.item, quantity: ing.quantity ?? null, unit: ing.unit ?? null, notes: ing.notes ?? null, sort_order: i });
+  }
+  await sb.from('recipe_steps').delete().eq('recipe_id', id);
+  for (let i = 0; i < args.steps.length; i++) {
+    await sb.from('recipe_steps').insert({ recipe_id: id, step_num: i + 1, instruction: args.steps[i] });
+  }
 
-    // Replace ingredients
-    db.prepare('DELETE FROM recipe_ingredients WHERE recipe_id = ?').run(id);
-    const insertIng = db.prepare('INSERT INTO recipe_ingredients (recipe_id, item, quantity, unit, notes, sort_order) VALUES (?, ?, ?, ?, ?, ?)');
-    for (let i = 0; i < args.ingredients.length; i++) {
-      const ing = args.ingredients[i];
-      insertIng.run(id, ing.item, ing.quantity ?? null, ing.unit ?? null, ing.notes ?? null, i);
-    }
-
-    // Replace steps
-    db.prepare('DELETE FROM recipe_steps WHERE recipe_id = ?').run(id);
-    const insertStep = db.prepare('INSERT INTO recipe_steps (recipe_id, step_num, instruction) VALUES (?, ?, ?)');
-    for (let i = 0; i < args.steps.length; i++) {
-      insertStep.run(id, i + 1, args.steps[i]);
-    }
-  })();
-
-  return { recipe: loadRecipe(db, id)!, action: existing ? 'Updated' : 'Saved' };
+  return { recipe: (await loadRecipe(id))!, action: existing ? 'Updated' : 'Saved' };
 }
 
-export function deleteRecipe(db: Database.Database, name: string): Recipe | null {
-  const recipe = getRecipe(db, name);
+export async function deleteRecipe(name: string): Promise<Recipe | null> {
+  const recipe = await getRecipe(name);
   if (!recipe) return null;
-  db.prepare('DELETE FROM recipes WHERE id = ?').run(recipe.id);
+  await getClient().from('recipes').delete().eq('id', recipe.id);
   return recipe;
 }
 
-// Nutrition lookup helper — used by nutrition module
-export function getRecipeNutrition(db: Database.Database, name: string): MacroNutrition | null {
-  const row = db.prepare('SELECT calories, protein_g, carbs_g, fat_g FROM recipes WHERE name = ? COLLATE NOCASE').get(name.trim()) as any;
+export async function getRecipeNutrition(name: string): Promise<MacroNutrition | null> {
+  const { data: row } = await getClient().from('recipes').select('calories, protein_g, carbs_g, fat_g').ilike('name', name.trim()).maybeSingle();
   if (!row) return null;
   return normalizeMacroNutrition(row, `Recipe '${name.trim()}'`);
 }
@@ -126,15 +111,10 @@ export function formatRecipe(r: Recipe): string {
   }
   if (r.steps.length) {
     lines.push('**Instructions:**');
-    for (let i = 0; i < r.steps.length; i++) {
-      lines.push(`${i + 1}. ${r.steps[i]}`);
-    }
+    for (let i = 0; i < r.steps.length; i++) lines.push(`${i + 1}. ${r.steps[i]}`);
     lines.push('');
   }
-  if (r.notes) {
-    lines.push(`**Notes:** ${r.notes}`);
-    lines.push('');
-  }
+  if (r.notes) { lines.push(`**Notes:** ${r.notes}`); lines.push(''); }
   if (r.nutrition) {
     const parts: string[] = [];
     if (r.nutrition.calories != null) parts.push(`${r.nutrition.calories} cal`);

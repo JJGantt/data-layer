@@ -1,5 +1,5 @@
-export { getDb, openDb } from './db.js';
-export { now, uuid, today, resolveId, fmtWeight } from './helpers.js';
+export { getClient } from './client.js';
+export { now, uuid, today, fmtWeight } from './helpers.js';
 
 export * from './lists.js';
 export * from './reminders.js';
