@@ -21,7 +21,8 @@ const args = process.argv.slice(2);
 const dbIdx = args.indexOf('--db');
 const DB_PATH = dbIdx >= 0 && args[dbIdx + 1] ? args[dbIdx + 1] : path.join(os.homedir(), 'data', 'data.sqlite3');
 
-const sb = createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: false } });
+import ws from 'ws';
+const sb = createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: false }, realtime: { transport: ws } });
 const db = new Database(DB_PATH, { readonly: true });
 
 async function upsert(table, rows, onConflict) {
