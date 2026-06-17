@@ -159,7 +159,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (path === '/data/workouts' && method === 'POST') {
       const body = await parseBody(req);
-      const session = await workouts.startWorkout(body.type, body.notes);
+      const session = await workouts.startWorkout(body.notes);
       return json(res, { session });
     }
     const workoutMatch = path.match(/^\/data\/workouts\/([^/]+)$/);
