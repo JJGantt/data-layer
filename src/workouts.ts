@@ -1,9 +1,49 @@
 import { getClient } from './client.js';
-import { now, uuid, fmtWeight } from './helpers.js';
+import { now, uuid, fmtWeight, toEastern } from './helpers.js';
 
 export const VALID_CATEGORIES = ['push', 'pull', 'legs', 'core', 'cardio'] as const;
 const CAT_ORDER: Record<string, number> = { push: 0, pull: 1, legs: 2, core: 3, cardio: 4 };
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
+// High-fidelity muscle taxonomy (20 regions), grouped + ordered for display. Each
+// exercise maps to these via fractional set counting (1.0 primary / 0.5 secondary).
+const MUSCLE_GROUPS: { group: string; muscles: { slug: string; label: string }[] }[] = [
+  { group: 'Legs', muscles: [
+    { slug: 'quads', label: 'Quads' }, { slug: 'rectus_femoris', label: 'Rectus femoris' },
+    { slug: 'hamstrings', label: 'Hamstrings' }, { slug: 'glutes', label: 'Glutes' },
+    { slug: 'gastrocnemius', label: 'Gastrocnemius' }, { slug: 'soleus', label: 'Soleus' } ] },
+  { group: 'Push', muscles: [
+    { slug: 'upper_chest', label: 'Upper chest' }, { slug: 'lower_chest', label: 'Lower chest' },
+    { slug: 'front_delts', label: 'Front delts' }, { slug: 'side_delts', label: 'Side delts' },
+    { slug: 'triceps_long', label: 'Triceps (long head)' }, { slug: 'triceps_lateral', label: 'Triceps (lateral)' } ] },
+  { group: 'Pull', muscles: [
+    { slug: 'lats', label: 'Lats' }, { slug: 'upper_traps', label: 'Upper traps' },
+    { slug: 'mid_back', label: 'Mid-back' }, { slug: 'rear_delts', label: 'Rear delts' },
+    { slug: 'biceps', label: 'Biceps' }, { slug: 'forearms', label: 'Forearms' } ] },
+  { group: 'Core', muscles: [
+    { slug: 'abs', label: 'Abs' }, { slug: 'obliques', label: 'Obliques' } ] },
+];
+const MUSCLE_LABEL: Record<string, string> = Object.fromEntries(
+  MUSCLE_GROUPS.flatMap(g => g.muscles.map(m => [m.slug, m.label])));
+const MUSCLE_ORDER: Record<string, number> = Object.fromEntries(
+  MUSCLE_GROUPS.flatMap(g => g.muscles).map((m, i) => [m.slug, i]));
+export const VALID_MUSCLES = Object.keys(MUSCLE_LABEL);
+
+/** Validate a fractional muscle map: { slug: contribution } with known slugs and 0 < c <= 1. */
+export function validateMuscles(muscles: unknown): Record<string, number> {
+  if (typeof muscles !== 'object' || muscles === null || Array.isArray(muscles))
+    throw new Error(`muscles required for a new exercise: an object like {"quads":1.0,"glutes":0.5}. Valid muscles: ${VALID_MUSCLES.join(', ')}`);
+  const out: Record<string, number> = {};
+  for (const [k, v] of Object.entries(muscles as Record<string, unknown>)) {
+    const slug = String(k).trim().toLowerCase();
+    if (!MUSCLE_LABEL[slug]) throw new Error(`invalid muscle '${k}'. Valid muscles: ${VALID_MUSCLES.join(', ')}`);
+    const c = Number(v);
+    if (!(c > 0 && c <= 1)) throw new Error(`muscle '${k}' contribution must be > 0 and <= 1 (use 1.0 primary, 0.5 secondary)`);
+    out[slug] = c;
+  }
+  if (!Object.keys(out).length) throw new Error('muscles map cannot be empty for a new exercise');
+  return out;
+}
 
 /** Validate + normalize a category set: a non-empty subset of VALID_CATEGORIES. Throws on bad input. */
 export function validateCategories(cats: unknown): string[] {
@@ -75,14 +115,36 @@ export async function listWorkouts(limit = 10): Promise<WorkoutSummary[]> {
   return summaries;
 }
 
-export async function getCatalog(): Promise<{ categories: string[]; exercises: { name: string; categories: string[] }[] }> {
+export interface CatalogExercise { name: string; categories: string[]; muscles: Record<string, number>; }
+
+/** The canonical exercise library: names, categories, and fractional muscle maps. */
+export async function getCatalog(): Promise<{ categories: string[]; muscles: string[]; exercises: CatalogExercise[] }> {
   const sb = getClient();
-  const { data: exRows } = await sb.from('exercises').select('name, categories');
-  const byName = new Map<string, string[]>();
-  for (const r of (exRows ?? [])) if (!byName.has(r.name)) byName.set(r.name, (r.categories ?? []) as string[]);
-  const exercises = [...byName.entries()].map(([name, categories]) => ({ name, categories }))
-    .sort((a, b) => a.name.localeCompare(b.name));
-  return { categories: [...VALID_CATEGORIES], exercises };
+  const { data: catRows } = await sb.from('exercise_catalog').select('name, categories');
+  const { data: muscleRows } = await sb.from('exercise_muscles').select('name, muscle, contribution');
+  const byName = new Map<string, Record<string, number>>();
+  for (const m of (muscleRows ?? [])) {
+    if (!byName.has(m.name)) byName.set(m.name, {});
+    byName.get(m.name)![m.muscle] = m.contribution;
+  }
+  const exercises = (catRows ?? []).map(c => ({
+    name: c.name, categories: (c.categories ?? []) as string[], muscles: byName.get(c.name) ?? {},
+  })).sort((a, b) => a.name.localeCompare(b.name));
+  return { categories: [...VALID_CATEGORIES], muscles: [...VALID_MUSCLES], exercises };
+}
+
+/** Look up a canonical catalog entry by name (case-insensitive). Returns null if unknown. */
+async function lookupCatalog(name: string): Promise<{ name: string; categories: string[] } | null> {
+  const { data } = await getClient().from('exercise_catalog').select('name, categories').ilike('name', name.trim()).maybeSingle();
+  return data ? { name: data.name, categories: (data.categories ?? []) as string[] } : null;
+}
+
+/** Register a genuinely new exercise in the canonical catalog with its fractional muscle map. */
+async function registerCatalogEntry(name: string, categories: string[], muscles: Record<string, number>): Promise<void> {
+  const sb = getClient();
+  await sb.from('exercise_catalog').insert({ name, categories });
+  const rows = Object.entries(muscles).map(([muscle, contribution]) => ({ name, muscle, contribution }));
+  if (rows.length) await sb.from('exercise_muscles').insert(rows);
 }
 
 export async function getExerciseHistory(name: string, limit = 20): Promise<{ date: string; session_id: string; categories: string[]; sets: WorkoutSet[] }[]> {
@@ -107,6 +169,60 @@ export async function getExerciseHistory(name: string, limit = 20): Promise<{ da
   return results.slice(0, limit);
 }
 
+export interface MuscleVolume { muscle: string; label: string; group: string; sets: number; }
+
+/** Trailing-window fractional set volume per muscle, summed across all logged sets. */
+export async function getWeeklyVolume(days = 7): Promise<{ days: number; volumes: MuscleVolume[] }> {
+  const sb = getClient();
+  const since = toEastern(new Date(Date.now() - days * 86400000)).slice(0, 10);
+  const { data: sessions } = await sb.from('workout_sessions').select('id').gte('date', since);
+  const sessionIds = (sessions ?? []).map(s => s.id);
+  const empty = MUSCLE_GROUPS.flatMap(g => g.muscles.map(m => ({ muscle: m.slug, label: m.label, group: g.group, sets: 0 })));
+  if (!sessionIds.length) return { days, volumes: empty };
+
+  const { data: exRows } = await sb.from('exercises').select('id, name').in('session_id', sessionIds);
+  if (!exRows?.length) return { days, volumes: empty };
+  const exIds = exRows.map(e => e.id);
+
+  const { data: setRows } = await sb.from('exercise_sets').select('exercise_id').in('exercise_id', exIds);
+  const setCount = new Map<string, number>();
+  for (const s of (setRows ?? [])) setCount.set(s.exercise_id, (setCount.get(s.exercise_id) ?? 0) + 1);
+
+  const { data: muscleRows } = await sb.from('exercise_muscles').select('name, muscle, contribution');
+  const mapByName = new Map<string, { muscle: string; contribution: number }[]>();
+  for (const m of (muscleRows ?? [])) {
+    if (!mapByName.has(m.name)) mapByName.set(m.name, []);
+    mapByName.get(m.name)!.push({ muscle: m.muscle, contribution: m.contribution });
+  }
+
+  const totals = new Map<string, number>();
+  for (const ex of exRows) {
+    const sets = setCount.get(ex.id) ?? 0;
+    if (!sets) continue;
+    for (const mm of (mapByName.get(ex.name) ?? []))
+      totals.set(mm.muscle, (totals.get(mm.muscle) ?? 0) + mm.contribution * sets);
+  }
+
+  const volumes = MUSCLE_GROUPS.flatMap(g => g.muscles.map(m => ({
+    muscle: m.slug, label: m.label, group: g.group,
+    sets: Math.round((totals.get(m.slug) ?? 0) * 10) / 10,
+  })));
+  return { days, volumes };
+}
+
+/** Format the weekly volume as a grouped markdown report. Target band: ~10–20 hard sets/muscle/week. */
+export function formatWeeklyVolume(result: { days: number; volumes: MuscleVolume[] }): string {
+  const status = (s: number) => s === 0 ? '▫️ none' : s < 10 ? '⚠️ below' : s <= 20 ? '✅' : '🔺 high';
+  const lines = [`**Weekly volume** — trailing ${result.days} days, fractional sets (target ~10–20 / muscle)`];
+  let lastGroup = '';
+  for (const v of result.volumes) {
+    if (v.group !== lastGroup) { lines.push('', `_${v.group}_`); lastGroup = v.group; }
+    lines.push(`  ${v.label.padEnd(20)} ${String(v.sets).padStart(4)}  ${status(v.sets)}`);
+  }
+  lines.push('', '_Smaller muscles (calves, arms, delts) tolerate the upper end; legs/back the middle._');
+  return lines.join('\n');
+}
+
 export async function startWorkout(notes?: string): Promise<WorkoutSession> {
   const id = uuid();
   const d = now();
@@ -114,12 +230,28 @@ export async function startWorkout(notes?: string): Promise<WorkoutSession> {
   return { id, date: d, notes: notes || '', categories: [], exercises: [] };
 }
 
-export async function logExercise(sessionId: string, exercises: { name: string; categories: string[]; sets: { weight_lbs: number; reps: number }[] }[]): Promise<WorkoutSession | null> {
+export async function logExercise(sessionId: string, exercises: { name: string; categories?: string[]; sets: { weight_lbs: number; reps: number }[]; muscles?: Record<string, number> }[]): Promise<WorkoutSession | null> {
   const id = await resolveSessionId(sessionId);
   if (!id) return null;
   const sb = getClient();
-  // Validate every category up front — reject the whole call if any is bad.
-  const prepared = exercises.map(ex => ({ ...ex, categories: validateCategories(ex.categories) }));
+
+  // Resolve every exercise against the canonical catalog up front — reject the
+  // whole call if any is unknown and lacks a muscle map. Known exercises inherit
+  // their canonical name + categories; genuinely new ones are registered.
+  const prepared: { name: string; categories: string[]; sets: { weight_lbs: number; reps: number }[] }[] = [];
+  for (const ex of exercises) {
+    const entry = await lookupCatalog(ex.name);
+    if (entry) {
+      prepared.push({ name: entry.name, categories: entry.categories, sets: ex.sets });
+    } else if (ex.muscles && Object.keys(ex.muscles).length) {
+      const categories = validateCategories(ex.categories);
+      const muscles = validateMuscles(ex.muscles);
+      await registerCatalogEntry(ex.name.trim(), categories, muscles);
+      prepared.push({ name: ex.name.trim(), categories, sets: ex.sets });
+    } else {
+      throw new Error(`Unknown exercise '${ex.name}'. Call get_workout_catalog and reuse the exact existing name if this movement already exists. If it is genuinely new, resend it with categories and a muscles map (e.g. {"quads":1.0,"glutes":0.5}).`);
+    }
+  }
 
   const { data: maxOrderRow } = await sb.from('exercises').select('sort_order')
     .eq('session_id', id).order('sort_order', { ascending: false }).limit(1).maybeSingle();
@@ -149,7 +281,7 @@ export async function logExercise(sessionId: string, exercises: { name: string; 
   return getWorkout(id);
 }
 
-export async function addSet(sessionId: string, name: string, weightLbs: number, reps: number, categories?: string[]): Promise<WorkoutSession | null> {
+export async function addSet(sessionId: string, name: string, weightLbs: number, reps: number): Promise<WorkoutSession | null> {
   const sid = await resolveSessionId(sessionId);
   if (!sid) return null;
   const sb = getClient();
@@ -158,12 +290,15 @@ export async function addSet(sessionId: string, name: string, weightLbs: number,
     .eq('session_id', sid).ilike('name', name).maybeSingle();
 
   if (!exercise) {
-    // A brand-new exercise needs categories (NOT NULL). Throws a clear error if missing/invalid.
-    const cats = validateCategories(categories);
+    // Creating a new exercise here: resolve it against the canonical catalog so it
+    // inherits the canonical name + categories (and thus its muscle map). A movement
+    // not in the catalog must go through log_exercise, which can register its muscles.
+    const entry = await lookupCatalog(name);
+    if (!entry) throw new Error(`Unknown exercise '${name}'. Call get_workout_catalog and reuse the exact existing name. If it is genuinely new, add it via log_exercise with a muscles map first.`);
     const { data: maxOrderRow } = await sb.from('exercises').select('sort_order')
       .eq('session_id', sid).order('sort_order', { ascending: false }).limit(1).maybeSingle();
     const exId = uuid();
-    await sb.from('exercises').insert({ id: exId, session_id: sid, name: name.trim(), categories: cats, sort_order: (maxOrderRow?.sort_order ?? -1) + 1 });
+    await sb.from('exercises').insert({ id: exId, session_id: sid, name: entry.name, categories: entry.categories, sort_order: (maxOrderRow?.sort_order ?? -1) + 1 });
     exercise = { id: exId };
   }
 
