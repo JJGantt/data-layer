@@ -21,7 +21,8 @@ const MUSCLE_GROUPS: { group: string; muscles: { slug: string; label: string }[]
     { slug: 'mid_back', label: 'Mid-back' }, { slug: 'rear_delts', label: 'Rear delts' },
     { slug: 'biceps', label: 'Biceps' }, { slug: 'forearms', label: 'Forearms' } ] },
   { group: 'Core', muscles: [
-    { slug: 'abs', label: 'Abs' }, { slug: 'obliques', label: 'Obliques' } ] },
+    { slug: 'abs', label: 'Abs' }, { slug: 'obliques', label: 'Obliques' },
+    { slug: 'erectors', label: 'Lower back' } ] },
 ];
 const MUSCLE_LABEL: Record<string, string> = Object.fromEntries(
   MUSCLE_GROUPS.flatMap(g => g.muscles.map(m => [m.slug, m.label])));
