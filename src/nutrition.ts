@@ -12,34 +12,15 @@ function localTimestamp(d: Date): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 function nowLocal(): string { return localTimestamp(new Date()); }
-
-// A "day" runs DAY_START_HOUR→DAY_START_HOUR local time, so late-night eating
-// (e.g. a 1am snack) counts toward the day that just ended, not the new calendar day.
-const DAY_START_HOUR = 4;
-
-// Bucket a real local timestamp into its day, applying the 4am boundary.
-function dayBucket(localTs: string): string {
-  const m = localTs.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2}))?/);
-  if (!m) { const match = localTs.match(/^(\d{4}-\d{2}-\d{2})/); return match ? match[1] : nowLocal().slice(0, 10); }
-  const dt = new Date(+m[1], +m[2] - 1, +m[3], +m[4] - DAY_START_HOUR, +m[5], +(m[6] || 0));
-  return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
-}
-
-// Resolve a user-supplied occurred_at into the stored timestamp and its day bucket.
-// A bare date (YYYY-MM-DD) is taken literally; a real timestamp (or "now") gets the 4am rule.
-function resolveOccurred(value?: string): { occurredAt: string; day: string } {
+function normalizeOccurredAt(value?: string): string {
   const raw = (value || '').trim();
-  if (!raw) { const ts = nowLocal(); return { occurredAt: ts, day: dayBucket(ts) }; }
-  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return { occurredAt: `${raw}T00:00:00`, day: raw };
-  return { occurredAt: raw, day: dayBucket(raw) };
+  if (!raw) return nowLocal();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return `${raw}T00:00:00`;
+  return raw;
 }
-
-// Resolve a query date: bare date is literal; otherwise current day bucket.
-function queryDay(value?: string): string {
-  const raw = (value || '').trim();
-  if (!raw) return dayBucket(nowLocal());
-  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
-  return dayBucket(raw);
+function dateFromOccurredAt(value: string): string {
+  const match = value.match(/^(\d{4}-\d{2}-\d{2})/);
+  return match ? match[1] : nowLocal().slice(0, 10);
 }
 function scaleNutrition(n: MacroNutrition, qty: number): MacroNutrition {
   return {
@@ -59,7 +40,8 @@ export async function logNutrition(items: {
   const sb = getClient();
 
   for (const item of items) {
-    const { occurredAt, day } = resolveOccurred(item.occurred_at);
+    const occurredAt = normalizeOccurredAt(item.occurred_at);
+    const day = dateFromOccurredAt(occurredAt);
     const servings = item.servings ?? 1.0;
     if (!Number.isFinite(servings) || servings <= 0) throw new ValidationError('Nutrition entries require servings to be greater than 0.');
     let nutr: MacroNutrition;
@@ -86,7 +68,7 @@ export async function logNutrition(items: {
 }
 
 export async function getNutrition(date?: string): Promise<NutritionEntry[]> {
-  const day = queryDay(date);
+  const day = date ? dateFromOccurredAt(normalizeOccurredAt(date)) : nowLocal().slice(0, 10);
   const { data } = await getClient().from('nutrition_entries').select('*').eq('date', day).order('logged');
   return (data ?? []) as NutritionEntry[];
 }
