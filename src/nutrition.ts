@@ -15,12 +15,20 @@ function nowLocal(): string { return localTimestamp(new Date()); }
 function normalizeOccurredAt(value?: string): string {
   const raw = (value || '').trim();
   if (!raw) return nowLocal();
-  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return `${raw}T00:00:00`;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return `${raw}T12:00:00`;
   return raw;
 }
+// The "eating day" boundary: anything before 4 a.m. local counts toward the
+// previous day, so late-night snacks roll into the day you were actually awake
+// for rather than starting a fresh day at midnight.
+const EATING_DAY_BOUNDARY_HOUR = 4;
 function dateFromOccurredAt(value: string): string {
-  const match = value.match(/^(\d{4}-\d{2}-\d{2})/);
-  return match ? match[1] : nowLocal().slice(0, 10);
+  const m = value.match(/^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}):(\d{2}))?/);
+  if (!m) return nowLocal().slice(0, 10);
+  const [y, mo, d, h, mi, s] = m.slice(1).map((v) => (v === undefined ? 0 : Number(v)));
+  const dt = new Date(y, mo - 1, d, h, mi, s);
+  dt.setHours(dt.getHours() - EATING_DAY_BOUNDARY_HOUR);
+  return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
 }
 function scaleNutrition(n: MacroNutrition, qty: number): MacroNutrition {
   return {
@@ -68,7 +76,7 @@ export async function logNutrition(items: {
 }
 
 export async function getNutrition(date?: string): Promise<NutritionEntry[]> {
-  const day = date ? dateFromOccurredAt(normalizeOccurredAt(date)) : nowLocal().slice(0, 10);
+  const day = date ? dateFromOccurredAt(normalizeOccurredAt(date)) : dateFromOccurredAt(nowLocal());
   const { data } = await getClient().from('nutrition_entries').select('*').eq('date', day).order('logged');
   return (data ?? []) as NutritionEntry[];
 }
