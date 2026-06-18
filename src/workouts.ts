@@ -11,6 +11,7 @@ const MUSCLE_GROUPS: { group: string; muscles: { slug: string; label: string }[]
   { group: 'Legs', muscles: [
     { slug: 'quads', label: 'Quads' }, { slug: 'rectus_femoris', label: 'Rectus femoris' },
     { slug: 'hamstrings', label: 'Hamstrings' }, { slug: 'glutes', label: 'Glutes' },
+    { slug: 'adductors', label: 'Adductors' }, { slug: 'hip_flexors', label: 'Hip flexors' },
     { slug: 'gastrocnemius', label: 'Gastrocnemius' }, { slug: 'soleus', label: 'Soleus' } ] },
   { group: 'Push', muscles: [
     { slug: 'upper_chest', label: 'Upper chest' }, { slug: 'lower_chest', label: 'Lower chest' },
