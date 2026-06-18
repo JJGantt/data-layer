@@ -36,18 +36,15 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     { name: 'log_weight', description: 'Log a body weight entry. Appends to the weight log.', inputSchema: { type: 'object' as const, properties: { weight_lbs: { type: 'number', description: 'Body weight in pounds.' }, date: { type: 'string', description: 'Date in YYYY-MM-DD format. Defaults to today.' } }, required: ['weight_lbs'] } },
     { name: 'get_nutrition_targets', description: 'Get the current daily nutrition targets (calories, protein, carbs, fat) and recent target history.', inputSchema: { type: 'object' as const, properties: {} } },
     { name: 'set_nutrition_targets', description: 'Set daily nutrition targets (calories, protein, carbs, fat). Appends a new entry to the target log so history is preserved. The most recent entry becomes the current target, shown in get_health_profile.', inputSchema: { type: 'object' as const, properties: { calories: { type: 'number', description: 'Daily calorie target.' }, protein_g: { type: 'number', description: 'Daily protein target in grams.' }, carbs_g: { type: 'number', description: 'Daily carbs target in grams.' }, fat_g: { type: 'number', description: 'Daily fat target in grams.' }, date: { type: 'string', description: 'Date these targets take effect (YYYY-MM-DD). Defaults to today.' } }, required: ['calories', 'protein_g', 'carbs_g', 'fat_g'] } },
-    { name: 'get_workout_catalog', description: 'Returns the valid categories (push/pull/legs/core/cardio), the valid muscle slugs, and the canonical exercise library — each exercise with its categories and fractional muscle map. You MUST call this before log_exercise / add_set and reuse the EXACT existing name (and casing) when the movement already exists, so its muscle map applies. Only treat an exercise as new if nothing here matches.', inputSchema: { type: 'object' as const, properties: {} } },
-    { name: 'start_workout', description: "Start a new workout session. Returns a session ID. The session has no type of its own — its category is derived from the exercises you log (each exercise carries its own categories).", inputSchema: { type: 'object' as const, properties: { notes: { type: 'string', description: 'Optional notes for this session.' } } } },
-    { name: 'log_exercise', description: "Log one or more exercises to a workout session in a single call. Pass an 'exercises' array (preferred). YOU MUST call get_workout_catalog first and reuse the EXACT existing name for any movement already in the catalog — then categories/muscles are inherited automatically and you should omit them. Only for a GENUINELY NEW movement (nothing in the catalog matches) must you supply both `categories` and a `muscles` map; it is then registered canonically. weight_lbs is TOTAL weight (a '30 lb dumbbell' pair = 60); bodyweight = 0. Returns a pre-formatted workout table — pass it to the user exactly as-is.", inputSchema: { type: 'object' as const, properties: { session_id: { type: 'string', description: 'Session ID or 8-char prefix from start_workout.' }, exercises: { type: 'array', description: 'Exercises to log: [{name, sets, and for new movements only: categories + muscles}].', items: { type: 'object', properties: { name: { type: 'string', description: 'Exact catalog name when known.' }, categories: { type: 'array', items: { type: 'string', enum: ['push', 'pull', 'legs', 'core', 'cardio'] }, description: "Only for a new movement. Omit for known exercises (inherited from catalog)." }, muscles: { type: 'object', description: 'Only for a new movement: fractional muscle map, e.g. {"quads":1.0,"glutes":0.5}. Use 1.0 for a primary mover, 0.5 for a meaningful secondary. Valid slugs from get_workout_catalog. Omit for known exercises.', additionalProperties: { type: 'number' } }, sets: { type: 'array', items: { type: 'object', properties: { weight_lbs: { type: 'number' }, reps: { type: 'integer' } }, required: ['weight_lbs', 'reps'] } } }, required: ['name', 'sets'] } } }, required: ['session_id', 'exercises'] } },
-    { name: 'list_workouts', description: 'List recent workout sessions (summarized, no set detail).', inputSchema: { type: 'object' as const, properties: { limit: { type: 'integer', description: 'Max sessions to return. Defaults to 10.' } } } },
-    { name: 'get_workout', description: 'Get full detail of a workout session including all exercises and sets.', inputSchema: { type: 'object' as const, properties: { session_id: { type: 'string', description: 'Session ID or 8-char prefix.' } }, required: ['session_id'] } },
-    { name: 'get_exercise_history', description: 'Get progression history for a single exercise across all sessions.', inputSchema: { type: 'object' as const, properties: { name: { type: 'string', description: 'Exercise name (exact match, case-insensitive).' }, limit: { type: 'integer', description: 'Max sessions to return. Defaults to 20.' } }, required: ['name'] } },
-    { name: 'update_exercise', description: "Update an exercise's sets in a workout session. Finds the exercise by name (case-insensitive) and replaces its sets. Returns a pre-formatted workout table. Pass it to the user exactly as-is — do not reformat or summarize.", inputSchema: { type: 'object' as const, properties: { session_id: { type: 'string', description: 'Session ID or 8-char prefix.' }, name: { type: 'string', description: 'Exercise name (case-insensitive match).' }, sets: { type: 'array', description: 'New sets to replace existing: [{weight_lbs, reps}].', items: { type: 'object', properties: { weight_lbs: { type: 'number' }, reps: { type: 'integer' } }, required: ['weight_lbs', 'reps'] } } }, required: ['session_id', 'name', 'sets'] } },
-    { name: 'add_set', description: "Append a single set to an exercise in a workout session. The exercise must already exist in the session or in the canonical catalog (reuse its exact name — to add a genuinely new movement, use log_exercise so its muscle map is registered). weight_lbs is the TOTAL weight (a '30 lb dumbbell' pair = 60); bodyweight = 0. Returns a pre-formatted workout table. Pass it to the user exactly as-is — do not reformat or summarize.", inputSchema: { type: 'object' as const, properties: { session_id: { type: 'string', description: 'Session ID or 8-char prefix.' }, name: { type: 'string', description: 'Exact exercise name (case-insensitive match).' }, weight_lbs: { type: 'number', description: 'Weight in lbs (use 0 for bodyweight).' }, reps: { type: 'integer', description: 'Number of reps.' } }, required: ['session_id', 'name', 'weight_lbs', 'reps'] } },
-    { name: 'get_weekly_volume', description: 'Weekly hypertrophy volume per muscle (trailing N days, default 7), as fractional hard sets (primary mover = 1.0, secondary = 0.5) summed across all logged sets. Shows all 20 muscle regions grouped by legs/push/pull/core against the ~10–20 sets/week target, so gaps (e.g. untrained hamstrings) are visible. Returns a pre-formatted report — pass it to the user exactly as-is.', inputSchema: { type: 'object' as const, properties: { days: { type: 'integer', description: 'Trailing window in days. Defaults to 7.' } } } },
-    { name: 'remove_exercise', description: 'Remove an exercise from a workout session by name (case-insensitive). Returns a pre-formatted workout table. Pass it to the user exactly as-is — do not reformat or summarize.', inputSchema: { type: 'object' as const, properties: { session_id: { type: 'string', description: 'Session ID or 8-char prefix.' }, name: { type: 'string', description: 'Exercise name (case-insensitive match).' } }, required: ['session_id', 'name'] } },
-    { name: 'delete_workout', description: 'Permanently delete a workout session.', inputSchema: { type: 'object' as const, properties: { session_id: { type: 'string', description: 'Session ID or 8-char prefix.' } }, required: ['session_id'] } },
-    { name: 'update_session_notes', description: 'Set or overwrite the notes field on a workout session. Pass an empty string to clear notes. Returns a pre-formatted workout table. Pass it to the user exactly as-is — do not reformat or summarize.', inputSchema: { type: 'object' as const, properties: { session_id: { type: 'string', description: 'Session ID or 8-char prefix.' }, notes: { type: 'string', description: 'Notes text to set. Overwrites any existing notes.' } }, required: ['session_id', 'notes'] } },
+    { name: 'get_workout_catalog', description: 'Returns the valid categories (push/pull/legs/core/cardio), the valid muscle slugs, and the canonical exercise library — each exercise with its categories and fractional muscle map. You MUST call this before log_set and reuse the EXACT existing name (and casing) when the movement already exists, so its muscle map applies. Only treat an exercise as new if nothing here matches.', inputSchema: { type: 'object' as const, properties: {} } },
+    { name: 'log_set', description: "Log one or more sets to today's workout. There is no session — each set is its own timestamped row. Pass a 'sets' array. Call get_workout_catalog first and reuse the EXACT existing name for any movement already in the catalog — categories/muscles are then inherited and you should omit them. Only for a GENUINELY NEW movement supply both `categories` and a `muscles` map; it is added to the catalog. weight_lbs is TOTAL weight (a '30 lb dumbbell' pair = 60); bodyweight = 0. Log set-by-set as you train (accurate rest timing) or several at once. Returns today's workout table — pass it to the user exactly as-is.", inputSchema: { type: 'object' as const, properties: { sets: { type: 'array', description: 'Sets to log: [{exercise, weight_lbs, reps, and for new movements only: categories + muscles}].', items: { type: 'object', properties: { exercise: { type: 'string', description: 'Exact catalog name when known.' }, weight_lbs: { type: 'number', description: 'Total weight in lbs; bodyweight = 0.' }, reps: { type: 'integer' }, categories: { type: 'array', items: { type: 'string', enum: ['push', 'pull', 'legs', 'core', 'cardio'] }, description: 'New movement only; omit for known exercises.' }, muscles: { type: 'object', additionalProperties: { type: 'number' }, description: 'New movement only: fractional map, e.g. {"quads":1.0,"glutes":0.5} (1.0 primary, 0.5 secondary). Omit for known exercises.' } }, required: ['exercise', 'weight_lbs', 'reps'] } } }, required: ['sets'] } },
+    { name: 'upsert_catalog_exercise', description: 'Create a new exercise in the catalog, or edit an existing one (fix its categories or muscle map). Provide name, categories, and a fractional muscles map ({slug: contribution}, 0 < c <= 1). Editing REPLACES the muscle map. Because volume joins to the catalog at read time, edits retroactively correct all history.', inputSchema: { type: 'object' as const, properties: { name: { type: 'string' }, categories: { type: 'array', items: { type: 'string', enum: ['push', 'pull', 'legs', 'core', 'cardio'] } }, muscles: { type: 'object', additionalProperties: { type: 'number' }, description: 'Fractional map, e.g. {"quads":1.0,"glutes":0.5}.' } }, required: ['name', 'categories', 'muscles'] } },
+    { name: 'list_workouts', description: 'List recent workout days (grouped from sets), newest first — date, derived category label, set count, and exercises.', inputSchema: { type: 'object' as const, properties: { limit: { type: 'integer', description: 'Max days to return. Defaults to 10.' } } } },
+    { name: 'get_workout', description: "Get a day's full workout — all sets grouped by exercise. Defaults to today. Returns a pre-formatted table — pass it to the user exactly as-is.", inputSchema: { type: 'object' as const, properties: { date: { type: 'string', description: 'Date YYYY-MM-DD. Defaults to today.' } } } },
+    { name: 'get_exercise_history', description: 'Get progression history for a single exercise across all days (most recent first).', inputSchema: { type: 'object' as const, properties: { name: { type: 'string', description: 'Exercise name (case-insensitive).' }, limit: { type: 'integer', description: 'Max days to return. Defaults to 60.' } }, required: ['name'] } },
+    { name: 'get_weekly_volume', description: 'Weekly hypertrophy volume per muscle (trailing N days, default 7), as fractional sets (primary mover = 1.0, secondary = 0.5) summed across all logged sets. Shows all muscle regions grouped by legs/push/pull/core against the ~10–20 sets/week target, so gaps (e.g. untrained hamstrings) are visible. Returns a pre-formatted report — pass it to the user exactly as-is.', inputSchema: { type: 'object' as const, properties: { days: { type: 'integer', description: 'Trailing window in days. Defaults to 7.' } } } },
+    { name: 'update_set', description: "Edit a logged set's weight or reps by its set id (shown in get_workout). Returns the day's table.", inputSchema: { type: 'object' as const, properties: { id: { type: 'integer', description: 'Set id from get_workout.' }, weight_lbs: { type: 'number' }, reps: { type: 'integer' } }, required: ['id', 'weight_lbs', 'reps'] } },
+    { name: 'remove_set', description: 'Delete a logged set by its set id (shown in get_workout).', inputSchema: { type: 'object' as const, properties: { id: { type: 'integer', description: 'Set id from get_workout.' } }, required: ['id'] } },
     { name: 'list_recipes', description: 'List all saved recipes. Optionally filter by tag. Returns recipe names and tags.', inputSchema: { type: 'object' as const, properties: { tag: { type: 'string', description: "Optional tag to filter by (e.g. 'breakfast', 'high-protein')." } } } },
     { name: 'get_recipe', description: 'Get the full details of a recipe by name (case-insensitive match).', inputSchema: { type: 'object' as const, properties: { name: { type: 'string', description: 'Recipe name.' } }, required: ['name'] } },
     { name: 'save_recipe', description: "Create or update a recipe. If a recipe with the same name exists, it is overwritten. ingredients is a list of objects with fields: item (required), quantity (number, optional), unit (optional), notes (optional). steps is a list of instruction strings. tags is an optional list of strings (e.g. ['breakfast', 'high-protein']). nutrition must include protein_g, carbs_g, and fat_g; calories are optional and will be derived if omitted. Each recipe represents one serving. Use accurate nutrition values; do not omit macros unless the food genuinely has none.", inputSchema: { type: 'object' as const, properties: { name: { type: 'string', description: 'Recipe name.' }, ingredients: { type: 'array', description: 'List of ingredients.', items: { type: 'object', properties: { item: { type: 'string' }, quantity: { type: 'number' }, unit: { type: 'string' }, notes: { type: 'string' } }, required: ['item'] } }, steps: { type: 'array', items: { type: 'string' }, description: 'Step-by-step instructions.' }, notes: { type: 'string', description: 'Optional recipe-level notes.' }, tags: { type: 'array', items: { type: 'string' }, description: "Optional tags for filtering (e.g. ['breakfast', 'high-protein'])." }, nutrition: { type: 'object', description: 'Required nutrition info per serving. protein_g, carbs_g, and fat_g are required; calories are optional.', properties: { calories: { type: 'number' }, protein_g: { type: 'number' }, carbs_g: { type: 'number' }, fat_g: { type: 'number' } }, required: ['protein_g', 'carbs_g', 'fat_g'] } }, required: ['name', 'ingredients', 'steps', 'nutrition'] } },
@@ -173,59 +170,39 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const result = await workouts.getWeeklyVolume((a.days as number) || 7);
       return text(workouts.formatWeeklyVolume(result));
     }
-    if (name === 'start_workout') {
-      const session = await workouts.startWorkout((a.notes as string || '').trim());
-      return text(`Started workout (${session.date}). Type derives from the exercises you log.\nSession ID: ${session.id.slice(0, 8)}\n\n` + workouts.formatSessionTable(session));
+    if (name === 'log_set') {
+      await workouts.logSets(a.sets as any[]);
+      return text(await workouts.formatDay());
     }
-    if (name === 'log_exercise') {
-      const session = await workouts.logExercise((a.session_id as string).trim(), a.exercises as any[]);
-      if (!session) return text(`Session not found: ${a.session_id}`);
-      return text(workouts.formatSessionTable(session));
+    if (name === 'upsert_catalog_exercise') {
+      const e = await workouts.upsertCatalogExercise(a.name as string, a.categories, a.muscles);
+      const mus = Object.entries(e.muscles).map(([k, v]) => `${k} ${v}`).join(', ');
+      return text(`Catalog saved: ${e.name} [${e.categories.join(', ')}] → ${mus}`);
     }
     if (name === 'list_workouts') {
-      const sessions = await workouts.listWorkouts((a.limit as number) || 10);
-      if (!sessions.length) return text('No workout sessions found.');
-      return text(sessions.map(s => `[${s.id.slice(0, 8)}] ${s.date.slice(0, 10)}  ${workouts.categoryLabel(s.categories)}  ${s.exerciseCount} exercises`).join('\n'));
+      const days = await workouts.listWorkoutDays((a.limit as number) || 10);
+      if (!days.length) return text('No workouts logged.');
+      return text(days.map(d => `${d.date}  ${workouts.categoryLabel(d.categories)}  ${d.setCount} sets  (${d.exercises.join(', ')})`).join('\n'));
     }
     if (name === 'get_workout') {
-      const session = await workouts.getWorkout((a.session_id as string).trim());
-      if (!session) return text(`Session not found: ${a.session_id}`);
-      return text(workouts.formatWorkoutDetail(session));
+      return text(await workouts.formatDay((a.date as string || '').trim() || undefined));
     }
     if (name === 'get_exercise_history') {
-      const results = await workouts.getExerciseHistory((a.name as string).trim(), (a.limit as number) || 20);
-      if (!results.length) return text(`No history found for '${a.name}'.`);
-      const lines = [`History for ${a.name} (${results.length} sessions):`];
-      for (const r of results) {
-        const setSummary = r.sets.map(s => `${s.weight_lbs}x${s.reps}`).join(', ');
-        lines.push(`  ${r.date} [${r.session_id}] ${r.categories.join('+')}: ${setSummary}`);
-      }
+      const hist = await workouts.getExerciseHistory((a.name as string).trim(), (a.limit as number) || 60);
+      if (!hist.length) return text(`No history found for '${a.name}'.`);
+      const lines = [`History for ${a.name} (${hist.length} days):`];
+      for (const h of hist) lines.push(`  ${h.date}: ${h.sets.map(s => `${s.weight_lbs}x${s.reps}`).join(', ')}`);
       return text(lines.join('\n'));
     }
-    if (name === 'update_exercise') {
-      const session = await workouts.updateExercise((a.session_id as string).trim(), (a.name as string).trim(), a.sets as any[]);
-      if (!session) return text(`Exercise '${a.name}' not found in session ${(a.session_id as string).slice(0, 8)}.`);
-      return text(workouts.formatSessionTable(session));
+    if (name === 'update_set') {
+      const r = await workouts.updateSet(a.id as number, a.weight_lbs as number, a.reps as number);
+      if (!r) return text(`Set not found: ${a.id}`);
+      return text(await workouts.formatDay(r.occurred_at.slice(0, 10)));
     }
-    if (name === 'add_set') {
-      const session = await workouts.addSet((a.session_id as string).trim(), (a.name as string).trim(), a.weight_lbs as number, a.reps as number);
-      if (!session) return text(`Session not found: ${a.session_id}`);
-      return text(workouts.formatSessionTable(session));
-    }
-    if (name === 'remove_exercise') {
-      const result = await workouts.removeExercise((a.session_id as string).trim(), (a.name as string).trim());
-      if (!result) return text(`Exercise '${a.name}' not found in session ${(a.session_id as string).slice(0, 8)}.`);
-      return text(`Removed ${result.removed}.\n\n` + workouts.formatSessionTable(result.session));
-    }
-    if (name === 'delete_workout') {
-      const session = await workouts.deleteWorkout((a.session_id as string).trim());
-      if (!session) return text(`Session not found: ${a.session_id}`);
-      return text(`Deleted session ${session.id.slice(0, 8)} (${workouts.categoryLabel(session.categories)} on ${session.date.slice(0, 10)}).`);
-    }
-    if (name === 'update_session_notes') {
-      const session = await workouts.updateSessionNotes((a.session_id as string).trim(), (a.notes as string).trim());
-      if (!session) return text(`Session not found: ${a.session_id}`);
-      return text(workouts.formatSessionTable(session));
+    if (name === 'remove_set') {
+      const r = await workouts.removeSet(a.id as number);
+      if (!r) return text(`Set not found: ${a.id}`);
+      return text(`Removed set ${a.id} (${r.exercise} ${r.weight_lbs}x${r.reps}).\n\n` + await workouts.formatDay(r.occurred_at.slice(0, 10)));
     }
     if (name === 'list_recipes') {
       const recipeList = await recipes.listRecipes((a.tag as string || '').trim() || undefined);

@@ -149,62 +149,41 @@ const server = http.createServer(async (req, res) => {
       return json(res, { targets });
     }
 
-    // ── Workouts ──
+    // ── Workouts (flat timestamped sets) ──
     if (path === '/data/workouts/catalog' && method === 'GET') {
       return json(res, await workouts.getCatalog());
     }
+    if (path === '/data/workouts/catalog' && method === 'POST') {
+      const body = await parseBody(req);
+      return json(res, { exercise: await workouts.upsertCatalogExercise(body.name, body.categories, body.muscles) });
+    }
     if (path === '/data/workouts' && method === 'GET') {
       const limit = Number(url.searchParams.get('limit')) || 10;
-      return json(res, { workouts: await workouts.listWorkouts(limit) });
+      return json(res, { days: await workouts.listWorkoutDays(limit) });
     }
-    if (path === '/data/workouts' && method === 'POST') {
+    if (path === '/data/workouts/day' && method === 'GET') {
+      const date = url.searchParams.get('date') || undefined;
+      return json(res, await workouts.getDaySets(date));
+    }
+    if (path === '/data/workouts/volume' && method === 'GET') {
+      const days = Number(url.searchParams.get('days')) || 7;
+      return json(res, await workouts.getWeeklyVolume(days));
+    }
+    if (path === '/data/sets' && method === 'POST') {
       const body = await parseBody(req);
-      const session = await workouts.startWorkout(body.notes);
-      return json(res, { session });
+      return json(res, { sets: await workouts.logSets(body.sets) });
     }
-    const workoutMatch = path.match(/^\/data\/workouts\/([^/]+)$/);
-    if (workoutMatch && method === 'GET') {
-      const session = await workouts.getWorkout(workoutMatch[1]);
-      if (!session) return json(res, { error: 'not found' }, 404);
-      return json(res, { session });
-    }
-    if (workoutMatch && method === 'DELETE') {
-      const session = await workouts.deleteWorkout(workoutMatch[1]);
-      if (!session) return json(res, { error: 'not found' }, 404);
-      return json(res, { deleted: session });
-    }
-    const workoutNotesMatch = path.match(/^\/data\/workouts\/([^/]+)\/notes$/);
-    if (workoutNotesMatch && method === 'PATCH') {
+    const setMatch = path.match(/^\/data\/sets\/(\d+)$/);
+    if (setMatch && method === 'PATCH') {
       const body = await parseBody(req);
-      const session = await workouts.updateSessionNotes(workoutNotesMatch[1], body.notes);
-      if (!session) return json(res, { error: 'not found' }, 404);
-      return json(res, { session });
+      const row = await workouts.updateSet(Number(setMatch[1]), body.weight_lbs, body.reps);
+      if (!row) return json(res, { error: 'not found' }, 404);
+      return json(res, { set: row });
     }
-    const workoutExercisesMatch = path.match(/^\/data\/workouts\/([^/]+)\/exercises$/);
-    if (workoutExercisesMatch && method === 'POST') {
-      const body = await parseBody(req);
-      const session = await workouts.logExercise(workoutExercisesMatch[1], body.exercises);
-      if (!session) return json(res, { error: 'not found' }, 404);
-      return json(res, { session });
-    }
-    const exerciseSetsMatch = path.match(/^\/data\/workouts\/([^/]+)\/exercises\/([^/]+)\/sets$/);
-    if (exerciseSetsMatch && method === 'PUT') {
-      const body = await parseBody(req);
-      const session = await workouts.updateExercise(exerciseSetsMatch[1], decodeURIComponent(exerciseSetsMatch[2]), body.sets);
-      if (!session) return json(res, { error: 'not found' }, 404);
-      return json(res, { session });
-    }
-    if (exerciseSetsMatch && method === 'POST') {
-      const body = await parseBody(req);
-      const session = await workouts.addSet(exerciseSetsMatch[1], decodeURIComponent(exerciseSetsMatch[2]), body.weight_lbs, body.reps);
-      if (!session) return json(res, { error: 'not found' }, 404);
-      return json(res, { session });
-    }
-    const exerciseDeleteMatch = path.match(/^\/data\/workouts\/([^/]+)\/exercises\/([^/]+)$/);
-    if (exerciseDeleteMatch && method === 'DELETE') {
-      const result = await workouts.removeExercise(exerciseDeleteMatch[1], decodeURIComponent(exerciseDeleteMatch[2]));
-      if (!result) return json(res, { error: 'not found' }, 404);
-      return json(res, { removed: result.removed, session: result.session });
+    if (setMatch && method === 'DELETE') {
+      const row = await workouts.removeSet(Number(setMatch[1]));
+      if (!row) return json(res, { error: 'not found' }, 404);
+      return json(res, { deleted: row });
     }
     const exerciseHistoryMatch = path.match(/^\/data\/exercises\/([^/]+)\/history$/);
     if (exerciseHistoryMatch && method === 'GET') {

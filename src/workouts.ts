@@ -1,12 +1,12 @@
 import { getClient } from './client.js';
-import { now, uuid, fmtWeight, toEastern } from './helpers.js';
+import { now, toEastern, fmtWeight } from './helpers.js';
 
 export const VALID_CATEGORIES = ['push', 'pull', 'legs', 'core', 'cardio'] as const;
 const CAT_ORDER: Record<string, number> = { push: 0, pull: 1, legs: 2, core: 3, cardio: 4 };
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
-// High-fidelity muscle taxonomy (20 regions), grouped + ordered for display. Each
-// exercise maps to these via fractional set counting (1.0 primary / 0.5 secondary).
+// High-fidelity muscle taxonomy, grouped + ordered for display. Exercises map to these via
+// fractional set counting (1.0 primary / 0.5 secondary), stored in exercise_muscles.
 const MUSCLE_GROUPS: { group: string; muscles: { slug: string; label: string }[] }[] = [
   { group: 'Legs', muscles: [
     { slug: 'quads', label: 'Quads' }, { slug: 'rectus_femoris', label: 'Rectus femoris' },
@@ -25,8 +25,6 @@ const MUSCLE_GROUPS: { group: string; muscles: { slug: string; label: string }[]
 ];
 const MUSCLE_LABEL: Record<string, string> = Object.fromEntries(
   MUSCLE_GROUPS.flatMap(g => g.muscles.map(m => [m.slug, m.label])));
-const MUSCLE_ORDER: Record<string, number> = Object.fromEntries(
-  MUSCLE_GROUPS.flatMap(g => g.muscles).map((m, i) => [m.slug, i]));
 export const VALID_MUSCLES = Object.keys(MUSCLE_LABEL);
 
 /** Validate a fractional muscle map: { slug: contribution } with known slugs and 0 < c <= 1. */
@@ -56,14 +54,7 @@ export function validateCategories(cats: unknown): string[] {
   return norm.sort((a, b) => CAT_ORDER[a] - CAT_ORDER[b]);
 }
 
-/** A session's category set is the union of its exercises' categories. */
-function deriveCategories(exercises: { categories: string[] }[]): string[] {
-  const s = new Set<string>();
-  for (const ex of exercises) for (const c of (ex.categories ?? [])) s.add(c);
-  return [...s].sort((a, b) => CAT_ORDER[a] - CAT_ORDER[b]);
-}
-
-/** Human label for a derived session set: "Full body", "Push / Legs", "Pull / Legs + Core". */
+/** Human label for a derived category set: "Full body", "Push / Legs", "Pull / Legs + Core". */
 export function categoryLabel(cats: string[]): string {
   if (!cats.length) return 'Untyped';
   const ppl = ['push', 'pull', 'legs'].filter(c => cats.includes(c));
@@ -73,51 +64,25 @@ export function categoryLabel(cats: string[]): string {
   return parts.join(' / ') || 'Untyped';
 }
 
-export interface WorkoutSet { set_num: number; weight_lbs: number; reps: number; }
-export interface Exercise { id: string; name: string; categories: string[]; sets: WorkoutSet[]; }
-export interface WorkoutSession { id: string; date: string; categories: string[]; notes: string; exercises: Exercise[]; }
-export interface WorkoutSummary { id: string; date: string; categories: string[]; exerciseCount: number; notes: string; }
-
-async function loadExercises(sessionId: string): Promise<Exercise[]> {
-  const sb = getClient();
-  const { data: exRows } = await sb.from('exercises').select('id, name, categories')
-    .eq('session_id', sessionId).order('sort_order');
-  if (!exRows?.length) return [];
-  const exercises: Exercise[] = [];
-  for (const ex of exRows) {
-    const { data: sets } = await sb.from('exercise_sets').select('set_num, weight_lbs, reps')
-      .eq('exercise_id', ex.id).order('set_num');
-    exercises.push({ id: ex.id, name: ex.name, categories: (ex.categories ?? []) as string[], sets: (sets ?? []) as WorkoutSet[] });
-  }
-  return exercises;
-}
-
-export async function getWorkout(idPrefix: string): Promise<WorkoutSession | null> {
-  const id = await resolveSessionId(idPrefix);
-  if (!id) return null;
-  const { data: row } = await getClient().from('workout_sessions').select('*').eq('id', id).maybeSingle();
-  if (!row) return null;
-  const exercises = await loadExercises(row.id);
-  return { id: row.id, date: row.date, notes: row.notes, categories: deriveCategories(exercises), exercises };
-}
-
-export async function listWorkouts(limit = 10): Promise<WorkoutSummary[]> {
-  const sb = getClient();
-  const { data: rows } = await sb.from('workout_sessions').select('id, date, notes')
-    .order('date', { ascending: false }).limit(limit);
-  if (!rows?.length) return [];
-  const summaries: WorkoutSummary[] = [];
-  for (const r of rows) {
-    const { data: exRows } = await sb.from('exercises').select('categories').eq('session_id', r.id);
-    const cats = deriveCategories((exRows ?? []).map(e => ({ categories: (e.categories ?? []) as string[] })));
-    summaries.push({ id: r.id, date: r.date, notes: r.notes, categories: cats, exerciseCount: (exRows ?? []).length });
-  }
-  return summaries;
-}
-
+// ---- catalog (normalized: exercise_catalog + exercise_muscles) ----
 export interface CatalogExercise { name: string; categories: string[]; muscles: Record<string, number>; }
 
-/** The canonical exercise library: names, categories, and fractional muscle maps. */
+/** Categories + muscle map keyed by exercise name, loaded once per operation. */
+async function catalogMaps(): Promise<{ cats: Map<string, string[]>; muscles: Map<string, { muscle: string; contribution: number }[]> }> {
+  const sb = getClient();
+  const { data: catRows } = await sb.from('exercise_catalog').select('name, categories');
+  const { data: muscleRows } = await sb.from('exercise_muscles').select('name, muscle, contribution');
+  const cats = new Map<string, string[]>();
+  for (const c of (catRows ?? [])) cats.set(c.name.toLowerCase(), (c.categories ?? []) as string[]);
+  const muscles = new Map<string, { muscle: string; contribution: number }[]>();
+  for (const m of (muscleRows ?? [])) {
+    const k = m.name.toLowerCase();
+    if (!muscles.has(k)) muscles.set(k, []);
+    muscles.get(k)!.push({ muscle: m.muscle, contribution: m.contribution });
+  }
+  return { cats, muscles };
+}
+
 export async function getCatalog(): Promise<{ categories: string[]; muscles: string[]; exercises: CatalogExercise[] }> {
   const sb = getClient();
   const { data: catRows } = await sb.from('exercise_catalog').select('name, categories');
@@ -133,76 +98,132 @@ export async function getCatalog(): Promise<{ categories: string[]; muscles: str
   return { categories: [...VALID_CATEGORIES], muscles: [...VALID_MUSCLES], exercises };
 }
 
-/** Look up a canonical catalog entry by name (case-insensitive). Returns null if unknown. */
 async function lookupCatalog(name: string): Promise<{ name: string; categories: string[] } | null> {
   const { data } = await getClient().from('exercise_catalog').select('name, categories').ilike('name', name.trim()).maybeSingle();
   return data ? { name: data.name, categories: (data.categories ?? []) as string[] } : null;
 }
 
-/** Register a genuinely new exercise in the canonical catalog with its fractional muscle map. */
-async function registerCatalogEntry(name: string, categories: string[], muscles: Record<string, number>): Promise<void> {
+/** Create or replace a catalog entry (categories + fractional muscle map). Fixes mistakes too. */
+export async function upsertCatalogExercise(name: string, categories: unknown, muscles: unknown): Promise<CatalogExercise> {
   const sb = getClient();
-  await sb.from('exercise_catalog').insert({ name, categories });
-  const rows = Object.entries(muscles).map(([muscle, contribution]) => ({ name, muscle, contribution }));
+  const nm = String(name).trim();
+  if (!nm) throw new Error('exercise name required');
+  const cats = validateCategories(categories);
+  const mus = validateMuscles(muscles);
+  const existing = await lookupCatalog(nm);
+  const canonical = existing?.name ?? nm;
+  if (existing) {
+    await sb.from('exercise_catalog').update({ categories: cats }).eq('name', canonical);
+    await sb.from('exercise_muscles').delete().eq('name', canonical);
+  } else {
+    await sb.from('exercise_catalog').insert({ name: canonical, categories: cats });
+  }
+  const rows = Object.entries(mus).map(([muscle, contribution]) => ({ name: canonical, muscle, contribution }));
   if (rows.length) await sb.from('exercise_muscles').insert(rows);
+  return { name: canonical, categories: cats, muscles: mus };
 }
 
-export async function getExerciseHistory(name: string, limit = 20): Promise<{ date: string; session_id: string; categories: string[]; sets: WorkoutSet[] }[]> {
+// ---- sets (the flat log) ----
+export interface SetRow { id: number; occurred_at: string; exercise: string; weight_lbs: number; reps: number; }
+
+/**
+ * Log one or more sets. Each set is its own timestamped row. Unknown exercises are rejected
+ * unless they carry categories + a muscles map, in which case they're registered in the catalog.
+ * Sets in a single call share the call's timestamp (logged together); log set-by-set for real rest gaps.
+ */
+export async function logSets(items: { exercise: string; weight_lbs: number; reps: number; categories?: string[]; muscles?: Record<string, number> }[]): Promise<SetRow[]> {
   const sb = getClient();
-  const { data: exRows } = await sb.from('exercises').select('id, name, categories, session_id, workout_sessions(id, date)')
-    .ilike('name', name).order('session_id', { ascending: false }).limit(limit);
-  if (!exRows?.length) return [];
-  const results: { date: string; session_id: string; categories: string[]; sets: WorkoutSet[] }[] = [];
-  for (const ex of exRows) {
-    const session = (ex as any).workout_sessions;
-    if (!session) continue;
-    const { data: sets } = await sb.from('exercise_sets').select('set_num, weight_lbs, reps')
-      .eq('exercise_id', ex.id).order('set_num');
-    results.push({
-      date: session.date.slice(0, 10),
-      session_id: session.id.slice(0, 8),
-      categories: (ex.categories ?? []) as string[],
-      sets: (sets ?? []) as WorkoutSet[],
-    });
+  const ts = now();
+  const rows: { occurred_at: string; exercise: string; weight_lbs: number; reps: number }[] = [];
+  for (const it of items) {
+    const nm = String(it.exercise || '').trim();
+    if (!nm) throw new Error('each set needs an exercise name');
+    const entry = await lookupCatalog(nm);
+    let canonical: string;
+    if (entry) {
+      canonical = entry.name;
+    } else if (it.muscles && Object.keys(it.muscles).length) {
+      const created = await upsertCatalogExercise(nm, it.categories, it.muscles);
+      canonical = created.name;
+    } else {
+      throw new Error(`Unknown exercise '${nm}'. Call get_workout_catalog and reuse the EXACT existing name. If it is genuinely new, include categories and a muscles map (e.g. {"quads":1.0,"glutes":0.5}) so it is added to the catalog.`);
+    }
+    if (!Number.isFinite(it.weight_lbs) || it.weight_lbs < 0) throw new Error(`'${nm}': weight_lbs must be >= 0 (bodyweight = 0)`);
+    if (!Number.isInteger(it.reps) || it.reps <= 0) throw new Error(`'${nm}': reps must be a positive integer`);
+    rows.push({ occurred_at: ts, exercise: canonical, weight_lbs: it.weight_lbs, reps: it.reps });
   }
-  results.sort((a, b) => b.date.localeCompare(a.date));
-  return results.slice(0, limit);
+  const { data } = await sb.from('sets').insert(rows).select();
+  return (data ?? []) as SetRow[];
+}
+
+export async function removeSet(id: number): Promise<SetRow | null> {
+  const sb = getClient();
+  const { data: row } = await sb.from('sets').select('*').eq('id', id).maybeSingle();
+  if (!row) return null;
+  await sb.from('sets').delete().eq('id', id);
+  return row as SetRow;
+}
+
+export async function updateSet(id: number, weight_lbs: number, reps: number): Promise<SetRow | null> {
+  const sb = getClient();
+  const { data } = await sb.from('sets').update({ weight_lbs, reps }).eq('id', id).select().maybeSingle();
+  return (data ?? null) as SetRow | null;
+}
+
+/** All sets for a given local day (defaults today), ordered by time. */
+export async function getDaySets(date?: string): Promise<{ date: string; sets: SetRow[] }> {
+  const day = (date && /^\d{4}-\d{2}-\d{2}$/.test(date.trim())) ? date.trim() : toEastern(new Date()).slice(0, 10);
+  const { data } = await getClient().from('sets').select('*')
+    .gte('occurred_at', `${day}T00:00:00`).lte('occurred_at', `${day}T23:59:59`).order('occurred_at');
+  return { date: day, sets: (data ?? []) as SetRow[] };
+}
+
+/** Recent workout days (grouped from sets), newest first. */
+export async function listWorkoutDays(limit = 10): Promise<{ date: string; setCount: number; categories: string[]; exercises: string[] }[]> {
+  const { data } = await getClient().from('sets').select('occurred_at, exercise').order('occurred_at', { ascending: false }).limit(2000);
+  const { cats } = await catalogMaps();
+  const byDay = new Map<string, { setCount: number; cats: Set<string>; ex: Set<string> }>();
+  for (const s of (data ?? [])) {
+    const d = String(s.occurred_at).slice(0, 10);
+    if (!byDay.has(d)) byDay.set(d, { setCount: 0, cats: new Set(), ex: new Set() });
+    const e = byDay.get(d)!;
+    e.setCount++; e.ex.add(s.exercise);
+    for (const c of (cats.get(String(s.exercise).toLowerCase()) ?? [])) e.cats.add(c);
+  }
+  return [...byDay.entries()]
+    .sort((a, b) => b[0].localeCompare(a[0]))
+    .slice(0, limit)
+    .map(([date, e]) => ({ date, setCount: e.setCount, categories: [...e.cats].sort((a, b) => CAT_ORDER[a] - CAT_ORDER[b]), exercises: [...e.ex] }));
+}
+
+export async function getExerciseHistory(name: string, limit = 60): Promise<{ date: string; sets: { weight_lbs: number; reps: number }[] }[]> {
+  const { data } = await getClient().from('sets').select('occurred_at, weight_lbs, reps')
+    .ilike('exercise', name.trim()).order('occurred_at', { ascending: false }).limit(limit);
+  const byDay = new Map<string, { weight_lbs: number; reps: number }[]>();
+  for (const s of (data ?? [])) {
+    const d = String(s.occurred_at).slice(0, 10);
+    if (!byDay.has(d)) byDay.set(d, []);
+    byDay.get(d)!.push({ weight_lbs: s.weight_lbs, reps: s.reps });
+  }
+  return [...byDay.entries()].sort((a, b) => b[0].localeCompare(a[0])).map(([date, sets]) => ({ date, sets }));
 }
 
 export interface MuscleVolume { muscle: string; label: string; group: string; sets: number; }
 
 /** Trailing-window fractional set volume per muscle, summed across all logged sets. */
 export async function getWeeklyVolume(days = 7): Promise<{ days: number; volumes: MuscleVolume[] }> {
-  const sb = getClient();
   const since = toEastern(new Date(Date.now() - days * 86400000)).slice(0, 10);
-  const { data: sessions } = await sb.from('workout_sessions').select('id').gte('date', since);
-  const sessionIds = (sessions ?? []).map(s => s.id);
-  const empty = MUSCLE_GROUPS.flatMap(g => g.muscles.map(m => ({ muscle: m.slug, label: m.label, group: g.group, sets: 0 })));
-  if (!sessionIds.length) return { days, volumes: empty };
-
-  const { data: exRows } = await sb.from('exercises').select('id, name').in('session_id', sessionIds);
-  if (!exRows?.length) return { days, volumes: empty };
-  const exIds = exRows.map(e => e.id);
-
-  const { data: setRows } = await sb.from('exercise_sets').select('exercise_id').in('exercise_id', exIds);
-  const setCount = new Map<string, number>();
-  for (const s of (setRows ?? [])) setCount.set(s.exercise_id, (setCount.get(s.exercise_id) ?? 0) + 1);
-
-  const { data: muscleRows } = await sb.from('exercise_muscles').select('name, muscle, contribution');
-  const mapByName = new Map<string, { muscle: string; contribution: number }[]>();
-  for (const m of (muscleRows ?? [])) {
-    if (!mapByName.has(m.name)) mapByName.set(m.name, []);
-    mapByName.get(m.name)!.push({ muscle: m.muscle, contribution: m.contribution });
-  }
+  const { data: setRows } = await getClient().from('sets').select('exercise, muscles_override').gte('occurred_at', since);
+  const { muscles } = await catalogMaps();
 
   const totals = new Map<string, number>();
-  for (const ex of exRows) {
-    const sets = setCount.get(ex.id) ?? 0;
-    if (!sets) continue;
-    for (const mm of (mapByName.get(ex.name) ?? []))
-      totals.set(mm.muscle, (totals.get(mm.muscle) ?? 0) + mm.contribution * sets);
+  for (const s of (setRows ?? [])) {
+    const override = (s as any).muscles_override as Record<string, number> | null;
+    const map = override
+      ? Object.entries(override).map(([muscle, contribution]) => ({ muscle, contribution }))
+      : (muscles.get(String(s.exercise).toLowerCase()) ?? []);
+    for (const mm of map) totals.set(mm.muscle, (totals.get(mm.muscle) ?? 0) + mm.contribution);
   }
-
   const volumes = MUSCLE_GROUPS.flatMap(g => g.muscles.map(m => ({
     muscle: m.slug, label: m.label, group: g.group,
     sets: Math.round((totals.get(m.slug) ?? 0) * 10) / 10,
@@ -210,7 +231,6 @@ export async function getWeeklyVolume(days = 7): Promise<{ days: number; volumes
   return { days, volumes };
 }
 
-/** Format the weekly volume as a grouped markdown report. Target band: ~10–20 hard sets/muscle/week. */
 export function formatWeeklyVolume(result: { days: number; volumes: MuscleVolume[] }): string {
   const status = (s: number) => s === 0 ? '▫️ none' : s < 10 ? '⚠️ below' : s <= 20 ? '✅' : '🔺 high';
   const lines = [`**Weekly volume** — trailing ${result.days} days, fractional sets (target ~10–20 / muscle)`];
@@ -223,166 +243,29 @@ export function formatWeeklyVolume(result: { days: number; volumes: MuscleVolume
   return lines.join('\n');
 }
 
-export async function startWorkout(notes?: string): Promise<WorkoutSession> {
-  const id = uuid();
-  const d = now();
-  await getClient().from('workout_sessions').insert({ id, date: d, notes: notes || '' });
-  return { id, date: d, notes: notes || '', categories: [], exercises: [] };
-}
-
-export async function logExercise(sessionId: string, exercises: { name: string; categories?: string[]; sets: { weight_lbs: number; reps: number }[]; muscles?: Record<string, number> }[]): Promise<WorkoutSession | null> {
-  const id = await resolveSessionId(sessionId);
-  if (!id) return null;
-  const sb = getClient();
-
-  // Resolve every exercise against the canonical catalog up front — reject the
-  // whole call if any is unknown and lacks a muscle map. Known exercises inherit
-  // their canonical name + categories; genuinely new ones are registered.
-  const prepared: { name: string; categories: string[]; sets: { weight_lbs: number; reps: number }[] }[] = [];
-  for (const ex of exercises) {
-    const entry = await lookupCatalog(ex.name);
-    if (entry) {
-      prepared.push({ name: entry.name, categories: entry.categories, sets: ex.sets });
-    } else if (ex.muscles && Object.keys(ex.muscles).length) {
-      const categories = validateCategories(ex.categories);
-      const muscles = validateMuscles(ex.muscles);
-      await registerCatalogEntry(ex.name.trim(), categories, muscles);
-      prepared.push({ name: ex.name.trim(), categories, sets: ex.sets });
-    } else {
-      throw new Error(`Unknown exercise '${ex.name}'. Call get_workout_catalog and reuse the exact existing name if this movement already exists. If it is genuinely new, resend it with categories and a muscles map (e.g. {"quads":1.0,"glutes":0.5}).`);
-    }
+/** A day's sets as a grouped table (by exercise, in order first logged). */
+export async function formatDay(date?: string): Promise<string> {
+  const { date: day, sets } = await getDaySets(date);
+  if (!sets.length) return `No sets logged for ${day}.`;
+  const { cats } = await catalogMaps();
+  const order: string[] = [];
+  const byEx = new Map<string, SetRow[]>();
+  for (const s of sets) {
+    if (!byEx.has(s.exercise)) { byEx.set(s.exercise, []); order.push(s.exercise); }
+    byEx.get(s.exercise)!.push(s);
   }
-
-  const { data: maxOrderRow } = await sb.from('exercises').select('sort_order')
-    .eq('session_id', id).order('sort_order', { ascending: false }).limit(1).maybeSingle();
-  let order = (maxOrderRow?.sort_order ?? -1) + 1;
-
-  for (const ex of prepared) {
-    const { data: existing } = await sb.from('exercises').select('id')
-      .eq('session_id', id).ilike('name', ex.name.trim()).maybeSingle();
-
-    let exId: string;
-    if (existing) {
-      exId = existing.id;
-      const { data: maxSet } = await sb.from('exercise_sets').select('set_num')
-        .eq('exercise_id', exId).order('set_num', { ascending: false }).limit(1).maybeSingle();
-      const base = maxSet?.set_num ?? 0;
-      for (let i = 0; i < ex.sets.length; i++) {
-        await sb.from('exercise_sets').insert({ exercise_id: exId, set_num: base + i + 1, weight_lbs: ex.sets[i].weight_lbs, reps: ex.sets[i].reps });
-      }
-    } else {
-      exId = uuid();
-      await sb.from('exercises').insert({ id: exId, session_id: id, name: ex.name.trim(), categories: ex.categories, sort_order: order++ });
-      for (let i = 0; i < ex.sets.length; i++) {
-        await sb.from('exercise_sets').insert({ exercise_id: exId, set_num: i + 1, weight_lbs: ex.sets[i].weight_lbs, reps: ex.sets[i].reps });
-      }
-    }
-  }
-  return getWorkout(id);
-}
-
-export async function addSet(sessionId: string, name: string, weightLbs: number, reps: number): Promise<WorkoutSession | null> {
-  const sid = await resolveSessionId(sessionId);
-  if (!sid) return null;
-  const sb = getClient();
-
-  let { data: exercise } = await sb.from('exercises').select('id')
-    .eq('session_id', sid).ilike('name', name).maybeSingle();
-
-  if (!exercise) {
-    // Creating a new exercise here: resolve it against the canonical catalog so it
-    // inherits the canonical name + categories (and thus its muscle map). A movement
-    // not in the catalog must go through log_exercise, which can register its muscles.
-    const entry = await lookupCatalog(name);
-    if (!entry) throw new Error(`Unknown exercise '${name}'. Call get_workout_catalog and reuse the exact existing name. If it is genuinely new, add it via log_exercise with a muscles map first.`);
-    const { data: maxOrderRow } = await sb.from('exercises').select('sort_order')
-      .eq('session_id', sid).order('sort_order', { ascending: false }).limit(1).maybeSingle();
-    const exId = uuid();
-    await sb.from('exercises').insert({ id: exId, session_id: sid, name: entry.name, categories: entry.categories, sort_order: (maxOrderRow?.sort_order ?? -1) + 1 });
-    exercise = { id: exId };
-  }
-
-  const { data: maxSet } = await sb.from('exercise_sets').select('set_num')
-    .eq('exercise_id', exercise.id).order('set_num', { ascending: false }).limit(1).maybeSingle();
-  const setNum = (maxSet?.set_num ?? 0) + 1;
-  await sb.from('exercise_sets').insert({ exercise_id: exercise.id, set_num: setNum, weight_lbs: weightLbs, reps });
-  return getWorkout(sid);
-}
-
-export async function updateExercise(sessionId: string, name: string, sets: { weight_lbs: number; reps: number }[]): Promise<WorkoutSession | null> {
-  const sid = await resolveSessionId(sessionId);
-  if (!sid) return null;
-  const sb = getClient();
-  const { data: exercise } = await sb.from('exercises').select('id')
-    .eq('session_id', sid).ilike('name', name).maybeSingle();
-  if (!exercise) return null;
-  await sb.from('exercise_sets').delete().eq('exercise_id', exercise.id);
-  for (let i = 0; i < sets.length; i++) {
-    await sb.from('exercise_sets').insert({ exercise_id: exercise.id, set_num: i + 1, weight_lbs: sets[i].weight_lbs, reps: sets[i].reps });
-  }
-  return getWorkout(sid);
-}
-
-export async function removeExercise(sessionId: string, name: string): Promise<{ removed: string; session: WorkoutSession } | null> {
-  const sid = await resolveSessionId(sessionId);
-  if (!sid) return null;
-  const sb = getClient();
-  const { data: exercise } = await sb.from('exercises').select('id, name')
-    .eq('session_id', sid).ilike('name', name).maybeSingle();
-  if (!exercise) return null;
-  await sb.from('exercises').delete().eq('id', exercise.id);
-  return { removed: exercise.name, session: (await getWorkout(sid))! };
-}
-
-export async function deleteWorkout(sessionId: string): Promise<WorkoutSession | null> {
-  const sid = await resolveSessionId(sessionId);
-  if (!sid) return null;
-  const session = await getWorkout(sid);
-  if (!session) return null;
-  await getClient().from('workout_sessions').delete().eq('id', sid);
-  return session;
-}
-
-export async function updateSessionNotes(sessionId: string, notes: string): Promise<WorkoutSession | null> {
-  const sid = await resolveSessionId(sessionId);
-  if (!sid) return null;
-  await getClient().from('workout_sessions').update({ notes }).eq('id', sid);
-  return getWorkout(sid);
-}
-
-async function resolveSessionId(prefix: string): Promise<string | null> {
-  const sb = getClient();
-  const { data: exact } = await sb.from('workout_sessions').select('id').eq('id', prefix).maybeSingle();
-  if (exact) return exact.id;
-  const { data: matches } = await sb.from('workout_sessions').select('id').like('id', `${prefix}%`);
-  if (matches?.length === 1) return matches[0].id;
-  return null;
-}
-
-export function formatSessionTable(session: WorkoutSession): string {
+  const allCats = new Set<string>();
+  for (const ex of order) for (const c of (cats.get(ex.toLowerCase()) ?? [])) allCats.add(c);
   const lines = [
-    `**${categoryLabel(session.categories)} session** (${session.date.slice(0, 10)})  \`${session.id.slice(0, 8)}\``,
+    `**${categoryLabel([...allCats].sort((a, b) => CAT_ORDER[a] - CAT_ORDER[b]))}** (${day})`,
     '', '| Exercise | Sets | Reps | Weight |', '|---|---|---|---|',
   ];
-  for (const ex of session.exercises) {
-    if (!ex.sets.length) { lines.push(`| ${ex.name} | 0 | — | — |`); continue; }
-    const n = ex.sets.length;
-    const repsList = ex.sets.map(s => s.reps);
-    const weights = ex.sets.map(s => s.weight_lbs);
-    const repsStr = new Set(repsList).size === 1 ? String(repsList[0]) : repsList.join(', ');
+  for (const ex of order) {
+    const list = byEx.get(ex)!;
+    const reps = list.map(s => s.reps), weights = list.map(s => s.weight_lbs);
+    const repsStr = new Set(reps).size === 1 ? String(reps[0]) : reps.join(', ');
     const weightStr = new Set(weights).size === 1 ? fmtWeight(weights[0]) : weights.map(fmtWeight).join(', ');
-    lines.push(`| ${ex.name} | ${n} | ${repsStr} | ${weightStr} |`);
-  }
-  return lines.join('\n');
-}
-
-export function formatWorkoutDetail(session: WorkoutSession): string {
-  const lines = [`Session: ${session.id.slice(0, 8)}`, `Categories: ${session.categories.join(', ') || 'untyped'}`, `Date: ${session.date}`];
-  if (session.notes) lines.push(`Notes: ${session.notes}`);
-  lines.push('');
-  for (const ex of session.exercises) {
-    lines.push(`  ${ex.name} [${ex.categories.join(', ')}]:`);
-    for (const s of ex.sets) lines.push(`    Set ${s.set_num}: ${s.weight_lbs} lbs x ${s.reps} reps`);
+    lines.push(`| ${ex} | ${list.length} | ${repsStr} | ${weightStr} |`);
   }
   return lines.join('\n');
 }
