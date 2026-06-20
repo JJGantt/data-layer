@@ -2,9 +2,47 @@ import { getClient } from './client.js';
 import { normalizeMacroNutrition, type MacroNutrition, type MacroNutritionInput, ValidationError, uuid } from './helpers.js';
 import { getRecipeNutrition } from './recipes.js';
 
+export interface NutritionIngredient {
+  name: string;
+  food?: string; amount?: number | null; unit?: string;
+  calories: number | null; protein_g: number | null; carbs_g: number | null; fat_g: number | null;
+}
+
 export interface NutritionEntry {
   id: string; date: string; occurred_at: string; name: string; quantity: number;
-  calories: number | null; protein_g: number | null; carbs_g: number | null; fat_g: number | null; logged: string;
+  calories: number | null; protein_g: number | null; carbs_g: number | null; fat_g: number | null;
+  ingredients: NutritionIngredient[] | null; logged: string;
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function fmtAmt(n: number): string { return String(Math.round(n * 1000) / 1000); }
+
+function normalizeIngredients(raw: unknown, context: string): NutritionIngredient[] | null {
+  if (raw == null) return null;
+  if (!Array.isArray(raw)) throw new ValidationError(`${context}: ingredients must be an array.`);
+  if (raw.length === 0) return null;
+  return raw.map((ing: any, i: number) => {
+    const food = (ing?.food || '').trim();
+    const hasFood = !!food;
+    const unit = (ing?.unit || '').trim();
+    let amount: number | null = null;
+    if (ing?.amount != null) {
+      if (!isFiniteNumber(ing.amount)) throw new ValidationError(`${context}: ingredient #${i + 1} has a non-numeric amount.`);
+      amount = Math.round(ing.amount * 1000) / 1000;
+    }
+    let name = (ing?.name || '').trim();
+    if (!name) {
+      if (hasFood) name = `${fmtAmt(amount ?? 1)}${unit ? ` ${unit}` : ''} ${food}`;
+      else throw new ValidationError(`${context}: ingredient #${i + 1} requires a name.`);
+    }
+    const num = (v: unknown) => (v == null ? null : isFiniteNumber(v) ? Math.round(v * 10) / 10 : (() => { throw new ValidationError(`${context}: ingredient '${name}' has a non-numeric macro value.`); })());
+    const macros = { calories: num(ing.calories), protein_g: num(ing.protein_g), carbs_g: num(ing.carbs_g), fat_g: num(ing.fat_g) };
+    if (hasFood) return { name, food, amount, unit, ...macros };
+    return { name, ...macros };
+  });
 }
 
 function pad(v: number): string { return String(v).padStart(2, '0'); }
@@ -42,6 +80,7 @@ function scaleNutrition(n: MacroNutrition, qty: number): MacroNutrition {
 export async function logNutrition(items: {
   name?: string; recipe?: string; servings?: number;
   nutrition?: MacroNutritionInput; occurred_at?: string;
+  ingredients?: NutritionIngredient[] | null;
 }[]): Promise<NutritionEntry[]> {
   const loggedAt = nowLocal();
   const added: NutritionEntry[] = [];
@@ -67,8 +106,10 @@ export async function logNutrition(items: {
       nutr = normalizeMacroNutrition(item.nutrition, `Manual nutrition entry '${name}'`);
     }
 
+    const ingredients = normalizeIngredients(item.ingredients, `Nutrition entry '${name}'`);
+
     const id = uuid();
-    const entry: NutritionEntry = { id, date: day, occurred_at: occurredAt, name, quantity, calories: nutr.calories, protein_g: nutr.protein_g, carbs_g: nutr.carbs_g, fat_g: nutr.fat_g, logged: loggedAt };
+    const entry: NutritionEntry = { id, date: day, occurred_at: occurredAt, name, quantity, calories: nutr.calories, protein_g: nutr.protein_g, carbs_g: nutr.carbs_g, fat_g: nutr.fat_g, ingredients, logged: loggedAt };
     const { data } = await sb.from('nutrition_entries').insert(entry).select().single();
     added.push(data as NutritionEntry);
   }
