@@ -11,7 +11,7 @@ export interface NutritionIngredient {
 export interface NutritionEntry {
   id: string; date: string; occurred_at: string; name: string; quantity: number;
   calories: number | null; protein_g: number | null; carbs_g: number | null; fat_g: number | null;
-  ingredients: NutritionIngredient[] | null; logged: string;
+  ingredients: NutritionIngredient[] | null; logged: string; staged?: boolean;
 }
 
 function isFiniteNumber(value: unknown): value is number {
@@ -81,7 +81,8 @@ export async function logNutrition(items: {
   name?: string; recipe?: string; servings?: number;
   nutrition?: MacroNutritionInput; occurred_at?: string;
   ingredients?: NutritionIngredient[] | null;
-}[]): Promise<NutritionEntry[]> {
+}[], opts?: { staged?: boolean }): Promise<NutritionEntry[]> {
+  const staged = opts?.staged ?? false;
   const loggedAt = nowLocal();
   const added: NutritionEntry[] = [];
   const sb = getClient();
@@ -109,17 +110,89 @@ export async function logNutrition(items: {
     const ingredients = normalizeIngredients(item.ingredients, `Nutrition entry '${name}'`);
 
     const id = uuid();
-    const entry: NutritionEntry = { id, date: day, occurred_at: occurredAt, name, quantity, calories: nutr.calories, protein_g: nutr.protein_g, carbs_g: nutr.carbs_g, fat_g: nutr.fat_g, ingredients, logged: loggedAt };
+    const entry: NutritionEntry = { id, date: day, occurred_at: occurredAt, name, quantity, calories: nutr.calories, protein_g: nutr.protein_g, carbs_g: nutr.carbs_g, fat_g: nutr.fat_g, ingredients, logged: loggedAt, staged };
     const { data } = await sb.from('nutrition_entries').insert(entry).select().single();
     added.push(data as NutritionEntry);
   }
   return added;
 }
 
+// getNutrition returns only COMMITTED (eaten) entries — staged meals are never counted as eaten.
 export async function getNutrition(date?: string): Promise<NutritionEntry[]> {
   const day = date ? dateFromOccurredAt(normalizeOccurredAt(date)) : dateFromOccurredAt(nowLocal());
-  const { data } = await getClient().from('nutrition_entries').select('*').eq('date', day).order('logged');
+  const { data } = await getClient().from('nutrition_entries').select('*').eq('date', day).eq('staged', false).order('logged');
   return (data ?? []) as NutritionEntry[];
+}
+
+// ---- staged meals ---------------------------------------------------------
+// A staged meal you might eat / will eat later. Lives in nutrition_entries with staged=true, never
+// counted in totals, and surfaced in the CURRENT day regardless of when it was staged. It only
+// leaves the table when COMMITTED (→ a real entry stamped at commit time) or manually removed.
+
+export async function stageNutrition(items: Parameters<typeof logNutrition>[0]): Promise<NutritionEntry[]> {
+  return logNutrition(items, { staged: true });
+}
+
+// All staged meals (any day) — they all float into the current day's view.
+export async function getStaged(): Promise<NutritionEntry[]> {
+  const { data } = await getClient().from('nutrition_entries').select('*').eq('staged', true).order('logged');
+  return (data ?? []) as NutritionEntry[];
+}
+
+async function findStaged(idPrefix: string): Promise<NutritionEntry | null> {
+  const sb = getClient();
+  let { data: row } = await sb.from('nutrition_entries').select('*').eq('id', idPrefix).eq('staged', true).maybeSingle();
+  if (!row) {
+    const { data: matches } = await sb.from('nutrition_entries').select('*').eq('staged', true).like('id', `${idPrefix}%`);
+    if (matches?.length === 1) row = matches[0];
+  }
+  return (row as NutritionEntry) ?? null;
+}
+
+// Commit a staged meal: flip staged→false and re-stamp the time to NOW (the moment you eat it), so
+// it lands as a normal entry on the current day and starts counting.
+export async function commitStaged(idPrefix: string): Promise<NutritionEntry | null> {
+  const row = await findStaged(idPrefix);
+  if (!row) return null;
+  const occurredAt = nowLocal();
+  const { data } = await getClient().from('nutrition_entries')
+    .update({ staged: false, occurred_at: occurredAt, date: dateFromOccurredAt(occurredAt), logged: occurredAt })
+    .eq('id', row.id).select().single();
+  return data as NutritionEntry;
+}
+
+// Edit a staged meal's name / macros / ingredients (replaces the supplied fields).
+export async function editStaged(idPrefix: string, fields: {
+  name?: string; nutrition?: MacroNutritionInput; ingredients?: NutritionIngredient[] | null;
+}): Promise<NutritionEntry | null> {
+  const row = await findStaged(idPrefix);
+  if (!row) return null;
+  const patch: Record<string, unknown> = {};
+  if (fields.name != null && fields.name.trim()) patch.name = fields.name.trim();
+  if (fields.nutrition != null) {
+    const n = normalizeMacroNutrition(fields.nutrition, `Staged meal '${fields.name || row.name}'`);
+    patch.calories = n.calories; patch.protein_g = n.protein_g; patch.carbs_g = n.carbs_g; patch.fat_g = n.fat_g;
+  }
+  if (fields.ingredients !== undefined) patch.ingredients = normalizeIngredients(fields.ingredients, `Staged meal '${fields.name || row.name}'`);
+  if (Object.keys(patch).length === 0) return row;
+  const { data } = await getClient().from('nutrition_entries').update(patch).eq('id', row.id).select().single();
+  return data as NutritionEntry;
+}
+
+export async function removeStaged(idPrefix: string): Promise<NutritionEntry | null> {
+  const row = await findStaged(idPrefix);
+  if (!row) return null;
+  await getClient().from('nutrition_entries').delete().eq('id', row.id);
+  return row;
+}
+
+export function formatStagedList(entries: NutritionEntry[]): string {
+  if (!entries.length) return 'No staged meals.';
+  const lines = ['**Staged meals** (not eaten yet — commit to log)', '',
+    '| ID | Meal | Cal | Protein | Carbs | Fat |', '|---|---|---|---|---|---|'];
+  for (const e of entries)
+    lines.push(`| \`${e.id.slice(0, 8)}\` | ${e.name} | ${e.calories ?? '?'} | ${e.protein_g ?? '?'}g | ${e.carbs_g ?? '?'}g | ${e.fat_g ?? '?'}g |`);
+  return lines.join('\n');
 }
 
 export async function deleteNutritionEntry(idPrefix: string): Promise<NutritionEntry | null> {
