@@ -269,5 +269,12 @@ export async function formatDay(date?: string): Promise<string> {
     const weightStr = new Set(weights).size === 1 ? fmtWeight(weights[0]) : weights.map(fmtWeight).join(', ');
     lines.push(`| ${ex} | ${list.length} | ${repsStr} | ${weightStr} |`);
   }
+  // Per-set ids so a specific set can be targeted with update_set / remove_set (e.g. "the 2nd set").
+  lines.push('', 'Individual sets (use the id to edit or remove one):');
+  for (const ex of order) {
+    byEx.get(ex)!.forEach((s, i) => {
+      lines.push(`- \`${s.id}\` ${ex} — set ${i + 1}: ${fmtWeight(s.weight_lbs)} × ${s.reps}`);
+    });
+  }
   return lines.join('\n');
 }
