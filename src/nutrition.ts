@@ -20,6 +20,16 @@ function isFiniteNumber(value: unknown): value is number {
 
 function fmtAmt(n: number): string { return String(Math.round(n * 1000) / 1000); }
 
+// Human-readable label for one ingredient: structured rows → "1 cup rolled oats" / "0.5 banana";
+// legacy rows (name only) → their stored name.
+function ingLabel(g: NutritionIngredient): string {
+  if (g.food && g.amount != null && isFiniteNumber(g.amount)) {
+    const un = (g.unit || '').trim();
+    return `${fmtAmt(g.amount)}${un ? ` ${un}` : ''} ${g.food}`;
+  }
+  return g.name || '—';
+}
+
 function normalizeIngredients(raw: unknown, context: string): NutritionIngredient[] | null {
   if (raw == null) return null;
   if (!Array.isArray(raw)) throw new ValidationError(`${context}: ingredients must be an array.`);
@@ -218,6 +228,14 @@ export function formatNutritionDay(date: string, entries: NutritionEntry[]): str
   for (const e of entries) {
     const qtyStr = e.quantity !== 1.0 ? `${e.quantity}x` : '';
     lines.push(`| \`${e.id.slice(0, 8)}\` | ${e.name} | ${qtyStr} | ${e.calories ?? '?'} | ${e.protein_g ?? '?'}g | ${e.carbs_g ?? '?'}g | ${e.fat_g ?? '?'}g |`);
+    // Composite meals: render each component as an indented sub-row so callers (e.g. "log the
+    // same overnight oats as yesterday") see the full structured breakdown, not just the totals.
+    // Sub-rows are NOT added to the day totals — the entry row already carries the summed macros.
+    if (Array.isArray(e.ingredients) && e.ingredients.length) {
+      for (const g of e.ingredients) {
+        lines.push(`| | ↳ ${ingLabel(g)} | | ${g.calories ?? '?'} | ${g.protein_g ?? '?'}g | ${g.carbs_g ?? '?'}g | ${g.fat_g ?? '?'}g |`);
+      }
+    }
     totals.calories += e.calories || 0; totals.protein_g += e.protein_g || 0;
     totals.carbs_g += e.carbs_g || 0; totals.fat_g += e.fat_g || 0;
   }
