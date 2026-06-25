@@ -3,21 +3,14 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import * as reminders from './reminders.js';
 import * as health from './health.js';
 import * as workouts from './workouts.js';
 import * as nutrition from './nutrition.js';
-import * as reviews from './reviews.js';
 
 const server = new Server({ name: 'data', version: '2.0.0' }, { capabilities: { tools: {} } });
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
-    { name: 'list_reminders', description: 'View all active reminders with their due dates and IDs.', inputSchema: { type: 'object' as const, properties: {} } },
-    { name: 'add_reminder', description: 'Add a new reminder with an optional due date/time.', inputSchema: { type: 'object' as const, properties: { text: { type: 'string', description: 'The reminder text.' }, due: { type: 'string', description: "Optional due date in ISO format (e.g. '2026-03-01T09:00:00')." } }, required: ['text'] } },
-    { name: 'complete_reminder', description: 'Mark a reminder as done/completed.', inputSchema: { type: 'object' as const, properties: { id: { type: 'string', description: 'ID (or prefix) of the reminder to complete.' } }, required: ['id'] } },
-    { name: 'remove_reminder', description: 'Remove (soft-delete) a reminder.', inputSchema: { type: 'object' as const, properties: { id: { type: 'string', description: 'ID (or prefix) of the reminder to remove.' } }, required: ['id'] } },
-    { name: 'review_reminders', description: "Pull all reminders for review with built-in handling instructions. Use when the user says 'review my reminders' or during scheduled reviews.", inputSchema: { type: 'object' as const, properties: {} } },
     { name: 'get_health_profile', description: 'Returns height, recent weight log entries, and current nutrition targets (calories, protein, carbs, fat).', inputSchema: { type: 'object' as const, properties: {} } },
     { name: 'set_height', description: 'Set or update height in inches.', inputSchema: { type: 'object' as const, properties: { height_in: { type: 'number', description: 'Height in inches (e.g. 72 for 6\'0").' } }, required: ['height_in'] } },
     { name: 'log_weight', description: 'Log a body weight entry. Appends to the weight log.', inputSchema: { type: 'object' as const, properties: { weight_lbs: { type: 'number', description: 'Body weight in pounds.' }, date: { type: 'string', description: 'Date in YYYY-MM-DD format. Defaults to today.' } }, required: ['weight_lbs'] } },
@@ -52,23 +45,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   try {
-    if (name === 'list_reminders') {
-      return text(reminders.formatReminders(await reminders.listReminders()));
-    }
-    if (name === 'add_reminder') {
-      const r = await reminders.addReminder((a.text as string).trim(), a.due as string | undefined);
-      const dueStr = r.due ? ` (due: ${r.due})` : '';
-      return text(`Added reminder: '${r.text}'${dueStr} [id: ${r.id.slice(0, 8)}]`);
-    }
-    if (name === 'complete_reminder') {
-      const r = await reminders.completeReminder((a.id as string).trim());
-      return text(r ? `Completed reminder: ${r.text}` : `Reminder not found: ${a.id}`);
-    }
-    if (name === 'remove_reminder') {
-      const r = await reminders.removeReminder((a.id as string).trim());
-      return text(r ? `Removed reminder: ${r.text}` : `Reminder not found: ${a.id}`);
-    }
-    if (name === 'review_reminders') return text(await reviews.buildRemindersReview());
     if (name === 'get_health_profile') {
       const profile = await health.getProfile();
       const weights = await health.recentWeights();
