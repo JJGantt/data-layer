@@ -4,10 +4,8 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import * as reminders from './reminders.js';
-import * as notes from './notes.js';
 import * as health from './health.js';
 import * as workouts from './workouts.js';
-import * as recipes from './recipes.js';
 import * as nutrition from './nutrition.js';
 import * as reviews from './reviews.js';
 
@@ -19,9 +17,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     { name: 'add_reminder', description: 'Add a new reminder with an optional due date/time.', inputSchema: { type: 'object' as const, properties: { text: { type: 'string', description: 'The reminder text.' }, due: { type: 'string', description: "Optional due date in ISO format (e.g. '2026-03-01T09:00:00')." } }, required: ['text'] } },
     { name: 'complete_reminder', description: 'Mark a reminder as done/completed.', inputSchema: { type: 'object' as const, properties: { id: { type: 'string', description: 'ID (or prefix) of the reminder to complete.' } }, required: ['id'] } },
     { name: 'remove_reminder', description: 'Remove (soft-delete) a reminder.', inputSchema: { type: 'object' as const, properties: { id: { type: 'string', description: 'ID (or prefix) of the reminder to remove.' } }, required: ['id'] } },
-    { name: 'get_note', description: 'Read a note by name. Omit name to list available notes.', inputSchema: { type: 'object' as const, properties: { name: { type: 'string', description: "Note name (e.g. 'general'). Omit to list available notes." } } } },
-    { name: 'set_note', description: "Write or update a note. Creates the note if it doesn't exist.", inputSchema: { type: 'object' as const, properties: { name: { type: 'string', description: "Note name (e.g. 'general')." }, content: { type: 'string', description: 'The content to write to the note.' } }, required: ['name', 'content'] } },
-    { name: 'review_notes', description: "Pull all notes for review. Returns every note with built-in instructions for how to present them to the user. Use when the user says 'review my notes' or during scheduled reviews.", inputSchema: { type: 'object' as const, properties: {} } },
     { name: 'review_reminders', description: "Pull all reminders for review with built-in handling instructions. Use when the user says 'review my reminders' or during scheduled reviews.", inputSchema: { type: 'object' as const, properties: {} } },
     { name: 'get_health_profile', description: 'Returns height, recent weight log entries, and current nutrition targets (calories, protein, carbs, fat).', inputSchema: { type: 'object' as const, properties: {} } },
     { name: 'set_height', description: 'Set or update height in inches.', inputSchema: { type: 'object' as const, properties: { height_in: { type: 'number', description: 'Height in inches (e.g. 72 for 6\'0").' } }, required: ['height_in'] } },
@@ -37,10 +32,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     { name: 'get_weekly_volume', description: 'Weekly hypertrophy volume per muscle (trailing N days, default 7), as fractional sets (primary mover = 1.0, secondary = 0.5) summed across all logged sets. Shows all muscle regions grouped by legs/push/pull/core against the ~10–20 sets/week target, so gaps (e.g. untrained hamstrings) are visible. Returns a pre-formatted report — pass it to the user exactly as-is.', inputSchema: { type: 'object' as const, properties: { days: { type: 'integer', description: 'Trailing window in days. Defaults to 7.' } } } },
     { name: 'update_set', description: "Edit a logged set's weight or reps by its set id (shown in get_workout). Returns the day's table.", inputSchema: { type: 'object' as const, properties: { id: { type: 'integer', description: 'Set id from get_workout.' }, weight_lbs: { type: 'number' }, reps: { type: 'integer' } }, required: ['id', 'weight_lbs', 'reps'] } },
     { name: 'remove_set', description: 'Delete a logged set by its set id (shown in get_workout).', inputSchema: { type: 'object' as const, properties: { id: { type: 'integer', description: 'Set id from get_workout.' } }, required: ['id'] } },
-    { name: 'list_recipes', description: 'List all saved recipes. Optionally filter by tag. Returns recipe names and tags.', inputSchema: { type: 'object' as const, properties: { tag: { type: 'string', description: "Optional tag to filter by (e.g. 'breakfast', 'high-protein')." } } } },
-    { name: 'get_recipe', description: 'Get the full details of a recipe by name (case-insensitive match).', inputSchema: { type: 'object' as const, properties: { name: { type: 'string', description: 'Recipe name.' } }, required: ['name'] } },
-    { name: 'save_recipe', description: "Create or update a recipe. If a recipe with the same name exists, it is overwritten. ingredients is a list of objects with fields: item (required), quantity (number, optional), unit (optional), notes (optional). steps is a list of instruction strings. tags is an optional list of strings (e.g. ['breakfast', 'high-protein']). nutrition must include protein_g, carbs_g, and fat_g; calories are optional and will be derived if omitted. Each recipe represents one serving. Use accurate nutrition values; do not omit macros unless the food genuinely has none.", inputSchema: { type: 'object' as const, properties: { name: { type: 'string', description: 'Recipe name.' }, ingredients: { type: 'array', description: 'List of ingredients.', items: { type: 'object', properties: { item: { type: 'string' }, quantity: { type: 'number' }, unit: { type: 'string' }, notes: { type: 'string' } }, required: ['item'] } }, steps: { type: 'array', items: { type: 'string' }, description: 'Step-by-step instructions.' }, notes: { type: 'string', description: 'Optional recipe-level notes.' }, tags: { type: 'array', items: { type: 'string' }, description: "Optional tags for filtering (e.g. ['breakfast', 'high-protein'])." }, nutrition: { type: 'object', description: 'Required nutrition info per serving. protein_g, carbs_g, and fat_g are required; calories are optional.', properties: { calories: { type: 'number' }, protein_g: { type: 'number' }, carbs_g: { type: 'number' }, fat_g: { type: 'number' } }, required: ['protein_g', 'carbs_g', 'fat_g'] } }, required: ['name', 'ingredients', 'steps', 'nutrition'] } },
-    { name: 'delete_recipe', description: 'Permanently delete a recipe by name (case-insensitive).', inputSchema: { type: 'object' as const, properties: { name: { type: 'string', description: 'Recipe name.' } }, required: ['name'] } },
     { name: 'log_nutrition', description: "Log food ALREADY EATEN — it counts toward today's totals. Use this ONLY when the user says they ate/had it or says 'log'. If they say 'stage', 'staging', 'stage it', 'might eat', or 'for later', you MUST call stage_meal instead and NOT log it — honor the user's verb exactly; 'stage' is never a log. If the user REFERENCES a food they ate before ('the tofu dish I had yesterday', 'the same as last week', 'my usual oatmeal'), you MUST first call get_nutrition for that day, find the matching entry, and reuse its exact name and macros — never ask them to re-describe something already logged. If instead they name a NEW food with no amount ('a scoop of protein'), ESTIMATE reasonable macros from standard nutrition knowledge (a scoop of protein powder ≈ 25 g protein, ~120 cal; a bare 'banana' = one medium) — an unspecified amount means a sensible default is fine. Only EVER ask for clarification when the FOOD ITSELF is genuinely unclear, never because a portion was unstated or because it could be looked up. For manual entries, provide a PLAIN name — the food's identity only, with NO quantity of any kind in it (no amounts, portions, counts, units, ingredient lists, or '(N×)' multiplier; e.g. 'Red wine', not 'Red wine (100 g)') — and final protein_g, carbs_g, and fat_g totals; calories are optional and will be derived if omitted. Do not use a quantity multiplier for manual entries. For composite meals (e.g. an omelet, a stir-fry, overnight oats), also include `ingredients`: an array with one entry per component. For each ingredient provide STRUCTURED fields — `food` (clean food name with NO amount or unit baked in, e.g. 'rolled oats', 'banana', 'protein powder'), `amount` (the numeric quantity these macros are for, e.g. 1, 0.5, 0.75), and `unit` (the measurement unit like 'cup', 'tbsp', 'g', 'scoop', 'slice', 'oz'; use an empty string or omit it for bare counts like 1 banana) — plus the macros (calories optional, protein_g/carbs_g/fat_g) for that amount. Keeping food/amount/unit separate lets the amounts be adjusted later. You may omit `name`; the server synthesizes a display name from food/amount/unit. The top-level calories/protein_g/carbs_g/fat_g must still equal the sum of the ingredients. Omit `ingredients` for single-component foods. For recipe entries, provide a recipe name and optional servings. `occurred_at` is optional. Only include it if the user explicitly specifies a date or time; otherwise omit it. Always confirm what was logged by passing the result to the user as-is.", inputSchema: { type: 'object' as const, properties: { items: { type: 'array', description: 'List of food items eaten.', items: { oneOf: [ { type: 'object', properties: { name: { type: 'string', description: 'Plain food/dish name ONLY — the identity of the food, never any quantity. No amounts, portions, counts, units, ingredient lists, or "(N×)" multiplier anywhere in the name. Good: "Red wine", "Overnight oats", "Omelet", "Caffè latte", "Banana", "Protein powder". Bad: "Red wine (100 g)", "Banana (1/3)", "Protein powder (1 scoop)", "Three-egg omelet". All quantity lives in the macros and structured ingredients (which the UI scales); the name must stay valid no matter how the portion is later changed.' }, nutrition: { type: 'object', description: 'Final nutrition totals for this entry. protein_g, carbs_g, and fat_g are required; calories are optional.', properties: { calories: { type: 'number' }, protein_g: { type: 'number' }, carbs_g: { type: 'number' }, fat_g: { type: 'number' } }, required: ['protein_g', 'carbs_g', 'fat_g'] }, ingredients: { type: 'array', description: 'Optional per-ingredient breakdown for composite meals (omelet, stir-fry, overnight oats). One entry per component, each with structured food/amount/unit so amounts can be adjusted later; the macros are for that amount and the top-level nutrition totals must equal the sum of these ingredients. Omit for single-component foods.', items: { type: 'object', properties: { food: { type: 'string', description: "Clean food name with no amount or unit, e.g. 'rolled oats', 'banana', 'protein powder'." }, amount: { type: 'number', description: 'Numeric quantity these macros are for, e.g. 1, 0.5, 0.75.' }, unit: { type: 'string', description: "Measurement unit (cup, tbsp, tsp, g, ml, scoop, slice, oz, ...). Empty string or omit for bare counts like 1 banana." }, name: { type: 'string', description: 'Optional display name; omit when food/amount/unit are given and the server will synthesize it.' }, calories: { type: 'number' }, protein_g: { type: 'number' }, carbs_g: { type: 'number' }, fat_g: { type: 'number' } } } }, occurred_at: { type: 'string', description: 'Optional. Only include if the user explicitly specifies a date or time; otherwise omit.' } }, required: ['name', 'nutrition'] }, { type: 'object', properties: { recipe: { type: 'string', description: 'Exact recipe name if this references a saved recipe.' }, servings: { type: 'number', description: 'Optional recipe serving multiplier. Defaults to 1.' }, occurred_at: { type: 'string', description: 'Optional. Only include if the user explicitly specifies a date or time; otherwise omit.' } }, required: ['recipe'] } ] } } }, required: ['items'] } },
     { name: 'get_nutrition', description: 'Get the nutrition log for a given date, including a daily totals summary.', inputSchema: { type: 'object' as const, properties: { date: { type: 'string', description: 'Date in YYYY-MM-DD format. Defaults to today.' } } } },
     { name: 'delete_nutrition_entry', description: 'Remove a specific entry from the nutrition log by its ID.', inputSchema: { type: 'object' as const, properties: { id: { type: 'string', description: 'Entry ID or 8-char prefix.' } }, required: ['id'] } },
@@ -77,23 +68,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const r = await reminders.removeReminder((a.id as string).trim());
       return text(r ? `Removed reminder: ${r.text}` : `Reminder not found: ${a.id}`);
     }
-    if (name === 'get_note') {
-      const noteName = (a.name as string || '').trim();
-      if (!noteName) {
-        const available = await notes.availableNotes();
-        return text(available.length ? 'Available notes: ' + available.join(', ') : 'No notes found.');
-      }
-      const note = await notes.getNote(noteName);
-      if (!note) return text(`Note '${noteName}' not found.`);
-      if (!note.content) return text(`Note '${noteName}' is empty. (last updated: ${note.updated})`);
-      return text(`**${noteName}** (updated: ${note.updated}):\n${note.content}`);
-    }
-    if (name === 'set_note') {
-      const noteName = (a.name as string).trim().toLowerCase().replace(/ /g, '-');
-      await notes.setNote(noteName, a.content as string);
-      return text(`Note '${noteName}' saved.`);
-    }
-    if (name === 'review_notes') return text(await reviews.buildNotesReview());
     if (name === 'review_reminders') return text(await reviews.buildRemindersReview());
     if (name === 'get_health_profile') {
       const profile = await health.getProfile();
@@ -171,26 +145,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const r = await workouts.removeSet(a.id as number);
       if (!r) return text(`Set not found: ${a.id}`);
       return text(`Removed set ${a.id} (${r.exercise} ${r.weight_lbs}x${r.reps}).\n\n` + await workouts.formatDay(r.occurred_at.slice(0, 10)));
-    }
-    if (name === 'list_recipes') {
-      const recipeList = await recipes.listRecipes((a.tag as string || '').trim() || undefined);
-      if (!recipeList.length) return text(a.tag ? `No recipes found with tag '${a.tag}'.` : 'No recipes saved yet.');
-      const lines = recipeList.map(r => `**${r.name}**` + (r.tags.length ? ` — ${r.tags.join(', ')}` : ''));
-      return text(`${recipeList.length} recipe(s):\n\n${lines.join('\n')}`);
-    }
-    if (name === 'get_recipe') {
-      const r = await recipes.getRecipe(a.name as string);
-      if (!r) return text(`Recipe not found: ${a.name}`);
-      return text(recipes.formatRecipe(r));
-    }
-    if (name === 'save_recipe') {
-      const result = await recipes.saveRecipe(a as any);
-      return text(`${result.action} recipe: ${result.recipe.name}\n\n` + recipes.formatRecipe(result.recipe));
-    }
-    if (name === 'delete_recipe') {
-      const r = await recipes.deleteRecipe(a.name as string);
-      if (!r) return text(`Recipe not found: ${a.name}`);
-      return text(`Deleted recipe: ${r.name}`);
     }
     if (name === 'log_nutrition') {
       const entries = await nutrition.logNutrition(a.items as any[]);
