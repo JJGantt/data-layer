@@ -3,7 +3,6 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import * as lists from './lists.js';
 import * as reminders from './reminders.js';
 import * as notes from './notes.js';
 import * as health from './health.js';
@@ -16,12 +15,6 @@ const server = new Server({ name: 'data', version: '2.0.0' }, { capabilities: { 
 
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
-    { name: 'list_items', description: "View all active (non-deleted) items on a list. Available lists: todo, grocery, or any custom list. Use this to check what's on a list before adding/removing.", inputSchema: { type: 'object' as const, properties: { list_name: { type: 'string', description: "Name of the list (e.g. 'todo', 'grocery'). Omit to see all lists." } } } },
-    { name: 'add_item', description: "Add an item to a list (todo, grocery, or any custom list). Creates the list if it doesn't exist. Use for adding to-do items, grocery items, or any list-based data.", inputSchema: { type: 'object' as const, properties: { list_name: { type: 'string', description: "Name of the list (e.g. 'todo', 'grocery')." }, text: { type: 'string', description: 'The item text to add.' } }, required: ['list_name', 'text'] } },
-    { name: 'check_item', description: 'Mark a list item as done/checked. Use the short ID prefix shown in list_items output.', inputSchema: { type: 'object' as const, properties: { list_name: { type: 'string', description: 'Name of the list.' }, id: { type: 'string', description: 'ID (or prefix) of the item to check.' } }, required: ['list_name', 'id'] } },
-    { name: 'uncheck_item', description: 'Mark a list item as not done/unchecked.', inputSchema: { type: 'object' as const, properties: { list_name: { type: 'string', description: 'Name of the list.' }, id: { type: 'string', description: 'ID (or prefix) of the item to uncheck.' } }, required: ['list_name', 'id'] } },
-    { name: 'remove_item', description: 'Remove (soft-delete) an item from a list.', inputSchema: { type: 'object' as const, properties: { list_name: { type: 'string', description: 'Name of the list.' }, id: { type: 'string', description: 'ID (or prefix) of the item to remove.' } }, required: ['list_name', 'id'] } },
-    { name: 'create_list', description: 'Create a new empty list.', inputSchema: { type: 'object' as const, properties: { list_name: { type: 'string', description: 'Name for the new list (lowercase, no spaces — use hyphens).' } }, required: ['list_name'] } },
     { name: 'list_reminders', description: 'View all active reminders with their due dates and IDs.', inputSchema: { type: 'object' as const, properties: {} } },
     { name: 'add_reminder', description: 'Add a new reminder with an optional due date/time.', inputSchema: { type: 'object' as const, properties: { text: { type: 'string', description: 'The reminder text.' }, due: { type: 'string', description: "Optional due date in ISO format (e.g. '2026-03-01T09:00:00')." } }, required: ['text'] } },
     { name: 'complete_reminder', description: 'Mark a reminder as done/completed.', inputSchema: { type: 'object' as const, properties: { id: { type: 'string', description: 'ID (or prefix) of the reminder to complete.' } }, required: ['id'] } },
@@ -29,7 +22,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     { name: 'get_note', description: 'Read a note by name. Omit name to list available notes.', inputSchema: { type: 'object' as const, properties: { name: { type: 'string', description: "Note name (e.g. 'general'). Omit to list available notes." } } } },
     { name: 'set_note', description: "Write or update a note. Creates the note if it doesn't exist.", inputSchema: { type: 'object' as const, properties: { name: { type: 'string', description: "Note name (e.g. 'general')." }, content: { type: 'string', description: 'The content to write to the note.' } }, required: ['name', 'content'] } },
     { name: 'review_notes', description: "Pull all notes for review. Returns every note with built-in instructions for how to present them to the user. Use when the user says 'review my notes' or during scheduled reviews.", inputSchema: { type: 'object' as const, properties: {} } },
-    { name: 'review_list', description: "Pull a list for review with built-in handling instructions. Use when the user says 'review my grocery list', 'review my todo list', etc. Omit list_name to review ALL lists.", inputSchema: { type: 'object' as const, properties: { list_name: { type: 'string', description: "Name of the list to review (e.g. 'todo', 'grocery'). Omit to review all lists." } } } },
     { name: 'review_reminders', description: "Pull all reminders for review with built-in handling instructions. Use when the user says 'review my reminders' or during scheduled reviews.", inputSchema: { type: 'object' as const, properties: {} } },
     { name: 'get_health_profile', description: 'Returns height, recent weight log entries, and current nutrition targets (calories, protein, carbs, fat).', inputSchema: { type: 'object' as const, properties: {} } },
     { name: 'set_height', description: 'Set or update height in inches.', inputSchema: { type: 'object' as const, properties: { height_in: { type: 'number', description: 'Height in inches (e.g. 72 for 6\'0").' } }, required: ['height_in'] } },
@@ -69,34 +61,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   try {
-    if (name === 'list_items') {
-      const listName = (a.list_name as string || '').trim();
-      if (!listName) {
-        const available = await lists.availableLists();
-        return text(available.length ? 'Available lists: ' + available.join(', ') : 'No lists found.');
-      }
-      return text(lists.formatListItems(await lists.listItems(listName), listName));
-    }
-    if (name === 'add_item') {
-      const item = await lists.addItem((a.list_name as string).trim(), (a.text as string).trim());
-      return text(`Added '${item.text}' to ${a.list_name}. [id: ${item.id.slice(0, 8)}]`);
-    }
-    if (name === 'check_item') {
-      const item = await lists.checkItem((a.list_name as string).trim(), (a.id as string).trim());
-      return text(item ? `Checked: ${item.text}` : `Item not found: ${a.id}`);
-    }
-    if (name === 'uncheck_item') {
-      const item = await lists.uncheckItem((a.list_name as string).trim(), (a.id as string).trim());
-      return text(item ? `Unchecked: ${item.text}` : `Item not found: ${a.id}`);
-    }
-    if (name === 'remove_item') {
-      const item = await lists.removeItem((a.list_name as string).trim(), (a.id as string).trim());
-      return text(item ? `Removed: ${item.text}` : `Item not found: ${a.id}`);
-    }
-    if (name === 'create_list') {
-      const n = (a.list_name as string).trim().toLowerCase().replace(/ /g, '-');
-      return text(await lists.createList(n) ? `Created empty list: ${n}` : `List '${n}' already exists.`);
-    }
     if (name === 'list_reminders') {
       return text(reminders.formatReminders(await reminders.listReminders()));
     }
@@ -130,7 +94,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return text(`Note '${noteName}' saved.`);
     }
     if (name === 'review_notes') return text(await reviews.buildNotesReview());
-    if (name === 'review_list') return text(await reviews.buildListReview((a.list_name as string || '').trim() || undefined));
     if (name === 'review_reminders') return text(await reviews.buildRemindersReview());
     if (name === 'get_health_profile') {
       const profile = await health.getProfile();
