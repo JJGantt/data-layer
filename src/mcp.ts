@@ -3,6 +3,8 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { execFileSync } from 'child_process';
+import { hostname } from 'os';
 import * as health from './health.js';
 import * as workouts from './workouts.js';
 import * as nutrition from './nutrition.js';
@@ -33,6 +35,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     { name: 'commit_staged', description: 'Commit a staged meal — log it as eaten right now so it counts toward today. Identify it by its ID or 8-char prefix.', inputSchema: { type: 'object' as const, properties: { id: { type: 'string', description: 'Staged meal ID or 8-char prefix.' } }, required: ['id'] } },
     { name: 'edit_staged', description: "Edit a staged meal's name, macros, and/or ingredients (replaces the supplied fields). Identify it by ID or 8-char prefix.", inputSchema: { type: 'object' as const, properties: { id: { type: 'string', description: 'Staged meal ID or 8-char prefix.' }, name: { type: 'string' }, nutrition: { type: 'object', properties: { calories: { type: 'number' }, protein_g: { type: 'number' }, carbs_g: { type: 'number' }, fat_g: { type: 'number' } } }, ingredients: { type: 'array', items: { type: 'object', properties: { food: { type: 'string' }, amount: { type: 'number' }, unit: { type: 'string' }, name: { type: 'string' }, calories: { type: 'number' }, protein_g: { type: 'number' }, carbs_g: { type: 'number' }, fat_g: { type: 'number' } } } } }, required: ['id'] } },
     { name: 'remove_staged', description: 'Remove/delete a staged meal by ID or 8-char prefix. Does not affect committed entries.', inputSchema: { type: 'object' as const, properties: { id: { type: 'string', description: 'Staged meal ID or 8-char prefix.' } }, required: ['id'] } },
+    { name: 'reload_wall', description: 'Reload the TV wall display (the Pi kiosk browser). Use when the wall is frozen, blank, stale, or showing a crashed/"Aw Snap" page. Kills the kiosk chromium; the Pi automatically relaunches it fresh within a few seconds.', inputSchema: { type: 'object' as const, properties: {} } },
   ],
 }));
 
@@ -161,6 +164,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const entry = await nutrition.removeStaged((a.id as string).trim());
       if (!entry) return text(`Staged meal not found: ${a.id}`);
       return text(`Removed staged meal: ${entry.name}\n\n` + nutrition.formatStagedList(await nutrition.getStaged()));
+    }
+
+    if (name === 'reload_wall') {
+      // The kiosk chromium runs on the Pi; the .xinitrc launch loop relaunches it after a kill. This MCP
+      // normally runs on the Mac (worker primary) → ssh to the Pi; if it's running ON the Pi, kill locally.
+      const onPi = hostname().toLowerCase().includes('raspberrypi');
+      try {
+        if (onPi) execFileSync('pkill', ['-x', 'chromium'], { timeout: 5000 });
+        else execFileSync('ssh', ['pi', 'pkill -x chromium'], { timeout: 8000 });
+      } catch (e: any) {
+        // pkill exits 1 when nothing matched (chromium already down — the loop still relaunches it): fine.
+        if (!e || e.status !== 1) return text(`Couldn't reach the wall to reload it: ${e?.message || e}`);
+      }
+      return text('Reloading the wall display — chromium will relaunch in a few seconds.');
     }
 
     return text(`Unknown tool: ${name}`);
