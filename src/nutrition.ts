@@ -42,7 +42,7 @@ const CAL_WARN_ABS = 40;       // … AND at least this many calories apart (don
 // Validate/clean one ingredient. P/C/F are REQUIRED and numeric (they're the source of truth now);
 // calories are optional and Atwater-derived per-ingredient when absent. Pushes a soft warning when a
 // STATED calorie value is grossly inconsistent with the ingredient's own macros.
-function normalizeIngredient(ing: any, context: string, i: number, warnings: string[]): NutritionIngredient {
+function normalizeIngredient(ing: any, context: string, i: number, warnings: string[], requireQuantity = false): NutritionIngredient {
   const food = (ing?.food || '').trim();
   const hasFood = !!food;
   const unit = (ing?.unit || '').trim();
@@ -50,6 +50,14 @@ function normalizeIngredient(ing: any, context: string, i: number, warnings: str
   if (ing?.amount != null) {
     if (!isFiniteNumber(ing.amount)) throw new ValidationError(`${context}: ingredient #${i + 1} has a non-numeric amount.`);
     amount = Math.round(ing.amount * 1000) / 1000;
+  }
+  // Every logged/staged FOOD must carry a portion: a `food` name + numeric `amount` (unit optional for
+  // bare counts like 1 banana). Recipes are exempt (they pass requireQuantity=false). This is the server
+  // backstop for "always record the quantity" — the errors are model-facing (estimate the portion; only
+  // ask the user when there was no quantity cue at all), never surfaced to the user directly.
+  if (requireQuantity) {
+    if (!hasFood) throw new ValidationError(`${context}: ingredient #${i + 1} must include a 'food' name and a numeric 'amount' (plus a 'unit' when measured). Estimate a reasonable portion from the user's quantity cue and send structured food/amount/unit — never log a food without a quantity. If there was no quantity indication at all for a food that needs one, ask the user instead of logging.`);
+    if (amount == null) throw new ValidationError(`${context}: ingredient '${food}' needs a numeric 'amount' (e.g. 1 cup, 6 oz, 1 serving). Estimate a reasonable portion — do not omit it.`);
   }
   let name = (ing?.name || '').trim();
   if (!name) {
@@ -83,10 +91,10 @@ function normalizeIngredient(ing: any, context: string, i: number, warnings: str
 }
 
 // Parse the ingredient list (≥1 required) and the warnings raised while validating it.
-function normalizeIngredients(raw: unknown, context: string): { ingredients: NutritionIngredient[]; warnings: string[] } {
+function normalizeIngredients(raw: unknown, context: string, requireQuantity = false): { ingredients: NutritionIngredient[]; warnings: string[] } {
   if (!Array.isArray(raw) || raw.length === 0) throw new ValidationError(`${context}: at least one ingredient is required.`);
   const warnings: string[] = [];
-  const ingredients = raw.map((ing: any, i: number) => normalizeIngredient(ing, context, i, warnings));
+  const ingredients = raw.map((ing: any, i: number) => normalizeIngredient(ing, context, i, warnings, requireQuantity));
   return { ingredients, warnings };
 }
 
@@ -140,22 +148,22 @@ function scaleNutrition(n: MacroNutrition, qty: number): MacroNutrition {
 // The caller then derives the entry totals by summing these ingredients (never the other way around).
 async function resolveItemIngredients(item: {
   name?: string; recipe?: string; servings?: number; nutrition?: MacroNutritionInput; ingredients?: NutritionIngredient[] | null;
-}, servings: number): Promise<{ name: string; quantity: number; raw: any[] }> {
+}, servings: number): Promise<{ name: string; quantity: number; raw: any[]; exempt: boolean }> {
   if (item.recipe) {
     const rn = await getRecipeNutrition(item.recipe);
     if (!rn) throw new ValidationError(`Recipe not found: ${item.recipe.trim()}`);
     const name = item.recipe.trim();
     const scaled = scaleNutrition(rn, servings);
-    return { name, quantity: servings, raw: [{ name, ...scaled }] };
+    return { name, quantity: servings, raw: [{ name, ...scaled }], exempt: true };  // recipe: single recipe-macro ingredient, no per-portion amount/unit
   }
   const name = (item.name || '').trim();
   if (!name) throw new ValidationError('Manual nutrition entries require a name.');
   if (Array.isArray(item.ingredients) && item.ingredients.length) {
-    return { name, quantity: 1.0, raw: item.ingredients as any[] };
+    return { name, quantity: 1.0, raw: item.ingredients as any[], exempt: false };
   }
   // Simple food: collapse the top-level nutrition into a single name-only ingredient.
   if (item.nutrition == null) throw new ValidationError(`Nutrition entry '${name}' requires either ingredients or nutrition.`);
-  return { name, quantity: 1.0, raw: [{ name, ...item.nutrition }] };
+  return { name, quantity: 1.0, raw: [{ name, ...item.nutrition }], exempt: false };
 }
 
 export async function logNutrition(items: {
@@ -174,8 +182,8 @@ export async function logNutrition(items: {
     const servings = item.servings ?? 1.0;
     if (!Number.isFinite(servings) || servings <= 0) throw new ValidationError('Nutrition entries require servings to be greater than 0.');
 
-    const { name, quantity, raw } = await resolveItemIngredients(item, servings);
-    const { ingredients, warnings } = normalizeIngredients(raw, `Nutrition entry '${name}'`);
+    const { name, quantity, raw, exempt } = await resolveItemIngredients(item, servings);
+    const { ingredients, warnings } = normalizeIngredients(raw, `Nutrition entry '${name}'`, !exempt);
     const nutr = rollup(ingredients);   // totals = sum of ingredients, always
 
     const id = uuid();
@@ -251,7 +259,7 @@ export async function editStaged(idPrefix: string, fields: {
 
   let warnings: string[] = [];
   if (raw) {
-    const out = normalizeIngredients(raw, `Staged meal '${newName}'`);
+    const out = normalizeIngredients(raw, `Staged meal '${newName}'`, true);
     const nutr = rollup(out.ingredients);
     patch.ingredients = out.ingredients;
     patch.calories = nutr.calories; patch.protein_g = nutr.protein_g; patch.carbs_g = nutr.carbs_g; patch.fat_g = nutr.fat_g;
