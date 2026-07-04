@@ -1,16 +1,20 @@
 import { randomUUID } from 'node:crypto';
 
+// Pure wall clock, no timezone concept at all — whatever this machine's own clock reads, right now.
+// (Named toEastern/now for historical reasons — it used to force America/New_York regardless of
+// where the host actually was; that was the bug. Matches nutrition.ts's nowLocal()/localTimestamp().)
 export function now(): string {
   return toEastern(new Date());
 }
 
-/** Convert a Date to Eastern time string (yyyy-MM-ddTHH:mm:ss). */
+/** Format a Date as this machine's own local wall-clock reading (yyyy-MM-ddTHH:mm:ss). */
 export function toEastern(d: Date): string {
-  return d.toLocaleString('sv-SE', { timeZone: 'America/New_York', hour12: false }).replace(' ', 'T');
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
 /**
- * Ensure a date string is in Eastern time.
+ * Reduce a date string the model gave us to this machine's own wall-clock format.
  * If it looks like an ISO string with Z or +00:00, parse as UTC and convert.
  * If it has no timezone indicator, parse as UTC and convert (since Claude tends to give UTC).
  * For date-only strings (yyyy-MM-dd), return as-is.
