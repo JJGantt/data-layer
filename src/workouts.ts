@@ -340,12 +340,12 @@ export async function getWatcher(): Promise<SetWatcher> {
 }
 
 export function formatWatcher(w: SetWatcher): string {
-  if (!w.exercise) return 'Set watcher is OFF — watch-counted sets will not be logged.';
+  if (!w.exercise) return 'Auto-logging is OFF — sets counted by the watch will not be logged.';
   const live = watcherArmed(w);
   const since = w.last_set_at
     ? `last set ${new Date(w.last_set_at).toLocaleTimeString()}`
     : `armed ${w.armed_at ? new Date(w.armed_at).toLocaleTimeString() : '?'}, no sets yet`;
   return live
-    ? `Set watcher ARMED: ${w.exercise} @ ${w.weight_lbs} lbs (${since}). Sets counted by the watch log automatically.`
-    : `Set watcher EXPIRED (${w.exercise} @ ${w.weight_lbs} lbs, ${since}). Ten minutes with no set disarms it — re-arm to resume.`;
+    ? `Auto-logging ON: ${w.exercise} @ ${w.weight_lbs} lbs (${since}). Sets counted by the watch log automatically.`
+    : `Auto-logging EXPIRED (${w.exercise} @ ${w.weight_lbs} lbs, ${since}). Ten minutes with no set turns it off — start it again to resume.`;
 }
