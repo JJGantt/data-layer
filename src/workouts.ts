@@ -278,3 +278,74 @@ export async function formatDay(date?: string): Promise<string> {
   }
   return lines.join('\n');
 }
+
+// ---------------------------------------------------------------- set watcher
+
+export type SetWatcher = {
+  exercise: string | null;
+  weight_lbs: number | null;
+  armed_at: string | null;
+  last_set_at: string | null;
+};
+
+/** Ten minutes with no set disarms it, so a forgotten watcher cannot capture the
+ *  next day's arm swing as an Incline Press. Mirrors set_watcher_is_armed() in SQL. */
+export function watcherArmed(w: SetWatcher): boolean {
+  if (!w.exercise) return false;
+  const t = w.last_set_at || w.armed_at;
+  if (!t) return false;
+  return Date.now() - new Date(t).getTime() < 10 * 60 * 1000;
+}
+
+/**
+ * Arm the set watcher: from now on, every set the watch counts is logged as this
+ * exercise at this weight, with its own timestamp.
+ *
+ * The watch reports rep counts and nothing else — it has no idea what movement is
+ * being performed. This is where that meaning is attached, and it must be armed
+ * BEFORE the sets arrive: a report landing unarmed is stored but never becomes
+ * training data, so a forgotten arming loses the log rather than corrupting it.
+ */
+export async function setWatcher(exercise: string, weight_lbs: number): Promise<SetWatcher> {
+  const sb = getClient();
+  const nm = String(exercise || '').trim();
+  if (!nm) throw new Error('need an exercise name');
+  if (!Number.isFinite(weight_lbs) || weight_lbs < 0) {
+    throw new Error('weight_lbs must be >= 0 (bodyweight = 0)');
+  }
+  // Canonicalise against the catalog, exactly as log_set does, so watch-logged sets
+  // are indistinguishable from hand-logged ones and inherit the same muscle map.
+  const entry = await lookupCatalog(nm);
+  if (!entry) {
+    throw new Error(`Unknown exercise '${nm}'. Call get_workout_catalog and reuse the EXACT existing name, or log one set by hand first with categories and muscles so it enters the catalog.`);
+  }
+  const { data } = await sb.from('set_watcher')
+    .update({ exercise: entry.name, weight_lbs, armed_at: new Date().toISOString(), last_set_at: null })
+    .eq('id', 1).select().maybeSingle();
+  return data as SetWatcher;
+}
+
+/** Stop logging watch-counted sets. */
+export async function clearWatcher(): Promise<void> {
+  const sb = getClient();
+  await sb.from('set_watcher')
+    .update({ exercise: null, weight_lbs: null, armed_at: null, last_set_at: null })
+    .eq('id', 1);
+}
+
+export async function getWatcher(): Promise<SetWatcher> {
+  const sb = getClient();
+  const { data } = await sb.from('set_watcher').select('*').eq('id', 1).maybeSingle();
+  return (data || { exercise: null, weight_lbs: null, armed_at: null, last_set_at: null }) as SetWatcher;
+}
+
+export function formatWatcher(w: SetWatcher): string {
+  if (!w.exercise) return 'Set watcher is OFF — watch-counted sets will not be logged.';
+  const live = watcherArmed(w);
+  const since = w.last_set_at
+    ? `last set ${new Date(w.last_set_at).toLocaleTimeString()}`
+    : `armed ${w.armed_at ? new Date(w.armed_at).toLocaleTimeString() : '?'}, no sets yet`;
+  return live
+    ? `Set watcher ARMED: ${w.exercise} @ ${w.weight_lbs} lbs (${since}). Sets counted by the watch log automatically.`
+    : `Set watcher EXPIRED (${w.exercise} @ ${w.weight_lbs} lbs, ${since}). Ten minutes with no set disarms it — re-arm to resume.`;
+}
