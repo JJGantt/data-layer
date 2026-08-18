@@ -8,6 +8,9 @@ import { hostname } from 'os';
 import * as health from './health.js';
 import * as workouts from './workouts.js';
 import * as nutrition from './nutrition.js';
+import * as reminders from './reminders.js';
+import * as lists from './lists.js';
+import * as notes from './notes.js';
 
 const server = new Server({ name: 'data', version: '2.0.0' }, { capabilities: { tools: {} } });
 
@@ -39,6 +42,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     { name: 'edit_staged', description: "Edit a staged meal's name and/or ingredients; the server re-derives the entry totals from the ingredients. For a simple food you may pass `nutrition` (macros) and it's folded into the single ingredient. Identify it by ID or 8-char prefix.", inputSchema: { type: 'object' as const, properties: { id: { type: 'string', description: 'Staged meal ID or 8-char prefix.' }, name: { type: 'string' }, nutrition: { type: 'object', properties: { calories: { type: 'number' }, protein_g: { type: 'number' }, carbs_g: { type: 'number' }, fat_g: { type: 'number' } } }, ingredients: { type: 'array', items: { type: 'object', properties: { food: { type: 'string' }, amount: { type: 'number' }, unit: { type: 'string' }, name: { type: 'string' }, calories: { type: 'number' }, protein_g: { type: 'number' }, carbs_g: { type: 'number' }, fat_g: { type: 'number' } } } } }, required: ['id'] } },
     { name: 'remove_staged', description: 'Remove/delete a staged meal by ID or 8-char prefix. Does not affect committed entries.', inputSchema: { type: 'object' as const, properties: { id: { type: 'string', description: 'Staged meal ID or 8-char prefix.' } }, required: ['id'] } },
     { name: 'reload_wall', description: 'Reload the TV wall display (the Pi kiosk browser). Use when the wall is frozen, blank, stale, or showing a crashed/"Aw Snap" page. Kills the kiosk chromium; the Pi automatically relaunches it fresh within a few seconds.', inputSchema: { type: 'object' as const, properties: {} } },
+    { name: 'get_reminders', description: 'List all active reminders (things to do or be reminded of), each with its id. Use when Jared asks what his reminders are or what he needs to do.', inputSchema: { type: 'object' as const, properties: {} } },
+    { name: 'create_reminder', description: "Add a reminder — a thing to do or be reminded of (e.g. 'remind me to call the dentist', 'remind me to renew the registration'). Put ONLY the thing itself in `text` (no date words baked in); if a specific time was stated, put it in `due`.", inputSchema: { type: 'object' as const, properties: { text: { type: 'string', description: 'What to be reminded of, e.g. "call the dentist".' }, due: { type: 'string', description: 'Optional due date/time as ISO 8601 (YYYY-MM-DD or YYYY-MM-DDTHH:MM). Omit if no specific time was given.' } }, required: ['text'] } },
+    { name: 'complete_reminder', description: 'Mark a reminder as done (Jared did it) — keeps it in history rather than erasing it. Identify it by its id, or the first few characters of the id, from get_reminders.', inputSchema: { type: 'object' as const, properties: { id: { type: 'string', description: 'Reminder id or its leading characters (from get_reminders).' } }, required: ['id'] } },
+    { name: 'get_lists', description: "Show Jared's lists (groceries, todos, packing, hardware, etc.). Omit `list` to see every list with its items; pass `list` to see just that one. Use when he asks what is on a list.", inputSchema: { type: 'object' as const, properties: { list: { type: 'string', description: "Optional list name to show only that list, e.g. 'groceries'. Omit to show all lists." } } } },
+    { name: 'add_to_list', description: "Add an item to a list (e.g. 'add milk to groceries', 'put drano on the hardware list'). The list is created automatically if it does not exist yet. Reuse an existing list name when the intent is clearly the same list.", inputSchema: { type: 'object' as const, properties: { list: { type: 'string', description: "List name, e.g. 'groceries'." }, text: { type: 'string', description: 'The item to add, e.g. "milk".' } }, required: ['list', 'text'] } },
+    { name: 'complete_list_item', description: "Check off / complete an item on a list (e.g. 'I got the milk', 'check off eggs'). Identify the item by its id from get_lists; call get_lists first if you do not already have it.", inputSchema: { type: 'object' as const, properties: { list: { type: 'string', description: 'The list the item is on.' }, id: { type: 'string', description: 'Item id or its leading characters (from get_lists).' } }, required: ['list', 'id'] } },
+    { name: 'get_notes', description: "Read Jared's freeform notes. Omit `name` to list the note names; pass `name` to read that note's full content.", inputSchema: { type: 'object' as const, properties: { name: { type: 'string', description: 'Optional note name to read its content. Omit to list all note names.' } } } },
+    { name: 'create_note', description: "Create a note, or REPLACE an existing note's content (e.g. 'make a note called packing: passport, charger'). Saving a name that already exists overwrites it, so to ADD to an existing note, read it first with get_notes and pass the combined content back.", inputSchema: { type: 'object' as const, properties: { name: { type: 'string', description: 'Note name/title.' }, content: { type: 'string', description: 'The note body.' } }, required: ['name', 'content'] } },
   ],
 }));
 
@@ -197,6 +208,49 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (!e || e.status !== 1) return text(`Couldn't reach the wall to reload it: ${e?.message || e}`);
       }
       return text('Reloading the wall display — chromium will relaunch in a few seconds.');
+    }
+
+    if (name === 'get_reminders') {
+      return text(reminders.formatReminders(await reminders.listReminders()));
+    }
+    if (name === 'create_reminder') {
+      const r = await reminders.addReminder(String(a.text), a.due ? String(a.due) : undefined);
+      return text(`Reminder added: ${r.text}${r.due ? ` (due: ${r.due})` : ''}\n\n` + reminders.formatReminders(await reminders.listReminders()));
+    }
+    if (name === 'complete_reminder') {
+      const r = await reminders.completeReminder(String(a.id));
+      if (!r) return text(`No reminder matched id '${a.id}'.`);
+      return text(`Completed: ${r.text}\n\n` + reminders.formatReminders(await reminders.listReminders()));
+    }
+    if (name === 'get_lists') {
+      if (a.list) return text(lists.formatListItems(await lists.listItems(String(a.list)), String(a.list)));
+      const names = await lists.availableLists();
+      if (!names.length) return text('No lists yet.');
+      const blocks: string[] = [];
+      for (const n of names) blocks.push(lists.formatListItems(await lists.listItems(n), n));
+      return text(blocks.join('\n\n'));
+    }
+    if (name === 'add_to_list') {
+      const item = await lists.addItem(String(a.list), String(a.text));
+      return text(`Added to **${a.list}**: ${item.text}\n\n` + lists.formatListItems(await lists.listItems(String(a.list)), String(a.list)));
+    }
+    if (name === 'complete_list_item') {
+      const it = await lists.checkItem(String(a.list), String(a.id));
+      if (!it) return text(`No matching item in '${a.list}' for id '${a.id}'.`);
+      return text(`Checked off: ${it.text}\n\n` + lists.formatListItems(await lists.listItems(String(a.list)), String(a.list)));
+    }
+    if (name === 'get_notes') {
+      if (a.name) {
+        const note = await notes.getNote(String(a.name));
+        if (!note) { const nn = await notes.availableNotes(); return text(`No note named '${a.name}'.` + (nn.length ? ` Available: ${nn.join(', ')}` : '')); }
+        return text(`**${note.name}**\n${note.content}`);
+      }
+      const nn = await notes.availableNotes();
+      return text(nn.length ? `Notes: ${nn.join(', ')}` : 'No notes yet.');
+    }
+    if (name === 'create_note') {
+      await notes.setNote(String(a.name), String(a.content));
+      return text(`Saved note '${a.name}'.`);
     }
 
     return text(`Unknown tool: ${name}`);
