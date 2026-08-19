@@ -3,7 +3,14 @@ import { randomUUID } from 'node:crypto';
 // Pure wall clock, no timezone concept at all — whatever this machine's own clock reads, right now.
 // (Named toEastern/now for historical reasons — it used to force America/New_York regardless of
 // where the host actually was; that was the bug. Matches nutrition.ts's nowLocal()/localTimestamp().)
+//
+// DATA_TS_OVERRIDE: when set (an ISO timestamp), `now()` returns THAT instant instead of the real
+// clock. The voice worker sets it to the command's audio-recording START time, so a set logged by
+// voice is timestamped when you actually spoke (your rest-clock reference) rather than 30s later when
+// the command finishes traversing the pipeline. Absent (typed/web commands) → real wall clock.
 export function now(): string {
+  const o = process.env.DATA_TS_OVERRIDE;
+  if (o && !isNaN(new Date(o).getTime())) return ensureEastern(o);
   return toEastern(new Date());
 }
 
