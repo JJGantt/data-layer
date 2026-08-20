@@ -2,15 +2,25 @@ import { getClient } from './client.js';
 import { deriveCaloriesFromMacros, type MacroNutrition, type MacroNutritionInput, ValidationError, uuid } from './helpers.js';
 import { getRecipeNutrition } from './recipes.js';
 
+// How an ingredient counts toward the produce goals. ONE judgment per ingredient — the leafy⊂veg
+// nesting is derived in rollup(), never asked of the model, so spinach can't be double-counted.
+export type ProduceType = 'leafy' | 'vegetable' | 'fruit';
+export const PRODUCE_TYPES: ProduceType[] = ['leafy', 'vegetable', 'fruit'];
+
 export interface NutritionIngredient {
   name: string;
   food?: string; amount?: number | null; unit?: string;
   calories: number | null; protein_g: number | null; carbs_g: number | null; fat_g: number | null;
+  produce_g?: number; produce_type?: ProduceType;   // absent on non-produce (grains, dairy, meat, oils)
 }
+
+// Daily produce totals, rolled up from the ingredients exactly like the macros are.
+export interface ProduceRollup { veg_g: number; leafy_g: number; fruit_g: number; }
 
 export interface NutritionEntry {
   id: string; date: string; occurred_at: string; name: string; quantity: number;
   calories: number | null; protein_g: number | null; carbs_g: number | null; fat_g: number | null;
+  veg_g?: number | null; leafy_g?: number | null; fruit_g?: number | null;
   ingredients: NutritionIngredient[] | null; logged: string; staged?: boolean;
   warnings?: string[];   // non-persisted: macro/calorie sanity warnings surfaced back to the caller
 }
@@ -87,7 +97,30 @@ function normalizeIngredient(ing: any, context: string, i: number, warnings: str
     }
   }
   const macros = { calories, protein_g, carbs_g, fat_g };
-  return hasFood ? { name, food, amount, unit, ...macros } : { name, ...macros };
+  const produce = normalizeProduce(ing, name, context);
+  return hasFood ? { name, food, amount, unit, ...macros, ...produce } : { name, ...macros, ...produce };
+}
+
+// Produce classification for one ingredient. Both fields travel together — a type with no weight (or
+// a weight with no type) is a malformed call, not a silent zero, so the model gets told to fix it.
+// Non-produce ingredients simply omit both and contribute nothing to the produce totals.
+function normalizeProduce(ing: any, name: string, context: string): { produce_g?: number; produce_type?: ProduceType } {
+  const rawType = ing?.produce_type;
+  const rawGrams = ing?.produce_g;
+  const hasType = rawType != null && String(rawType).trim() !== '';
+  const hasGrams = rawGrams != null;
+  if (!hasType && !hasGrams) return {};
+
+  if (hasType && !hasGrams) throw new ValidationError(`${context}: ingredient '${name}' has produce_type '${rawType}' but no produce_g — give its as-eaten weight in grams.`);
+  if (hasGrams && !hasType) throw new ValidationError(`${context}: ingredient '${name}' has produce_g but no produce_type — set it to 'leafy', 'vegetable', or 'fruit'.`);
+
+  const produce_type = String(rawType).trim().toLowerCase() as ProduceType;
+  if (!PRODUCE_TYPES.includes(produce_type)) {
+    throw new ValidationError(`${context}: ingredient '${name}' has an unknown produce_type '${rawType}'. Use 'leafy' (leafy greens), 'vegetable' (every other vegetable, including mushrooms, starchy vegetables, and legumes), or 'fruit' (including avocado and tomato).`);
+  }
+  if (!isFiniteNumber(rawGrams)) throw new ValidationError(`${context}: ingredient '${name}' has a non-numeric produce_g.`);
+  if (rawGrams < 0) throw new ValidationError(`${context}: ingredient '${name}' has a negative produce_g.`);
+  return { produce_g: round10(rawGrams), produce_type };
 }
 
 // Parse the ingredient list (≥1 required) and the warnings raised while validating it.
@@ -107,6 +140,21 @@ function rollup(ingredients: NutritionIngredient[]): MacroNutrition {
     t.carbs_g += g.carbs_g ?? 0; t.fat_g += g.fat_g ?? 0;
   }
   return { calories: round10(t.calories), protein_g: round10(t.protein_g), carbs_g: round10(t.carbs_g), fat_g: round10(t.fat_g) };
+}
+
+// Produce rollup, same rule: the entry's produce IS the sum of its ingredients'. Leafy greens count
+// toward BOTH leafy_g and veg_g — the subset relationship lives here rather than in the model's head,
+// so 50 g of spinach is logged once (type 'leafy') and lands in both totals.
+function produceRollup(ingredients: NutritionIngredient[]): ProduceRollup {
+  const t = { veg_g: 0, leafy_g: 0, fruit_g: 0 };
+  for (const g of ingredients) {
+    const grams = g.produce_g ?? 0;
+    if (!grams || !g.produce_type) continue;
+    if (g.produce_type === 'leafy') { t.leafy_g += grams; t.veg_g += grams; }
+    else if (g.produce_type === 'vegetable') t.veg_g += grams;
+    else if (g.produce_type === 'fruit') t.fruit_g += grams;
+  }
+  return { veg_g: round10(t.veg_g), leafy_g: round10(t.leafy_g), fruit_g: round10(t.fruit_g) };
 }
 
 function pad(v: number): string { return String(v).padStart(2, '0'); }
@@ -185,9 +233,10 @@ export async function logNutrition(items: {
     const { name, quantity, raw, exempt } = await resolveItemIngredients(item, servings);
     const { ingredients, warnings } = normalizeIngredients(raw, `Nutrition entry '${name}'`, !exempt);
     const nutr = rollup(ingredients);   // totals = sum of ingredients, always
+    const prod = produceRollup(ingredients);
 
     const id = uuid();
-    const entry: NutritionEntry = { id, date: day, occurred_at: occurredAt, name, quantity, calories: nutr.calories, protein_g: nutr.protein_g, carbs_g: nutr.carbs_g, fat_g: nutr.fat_g, ingredients, logged: loggedAt, staged };
+    const entry: NutritionEntry = { id, date: day, occurred_at: occurredAt, name, quantity, calories: nutr.calories, protein_g: nutr.protein_g, carbs_g: nutr.carbs_g, fat_g: nutr.fat_g, ...prod, ingredients, logged: loggedAt, staged };
     const { data } = await sb.from('nutrition_entries').insert(entry).select().single();
     const saved = data as NutritionEntry;
     if (warnings.length) saved.warnings = warnings;
@@ -261,8 +310,10 @@ export async function editStaged(idPrefix: string, fields: {
   if (raw) {
     const out = normalizeIngredients(raw, `Staged meal '${newName}'`, true);
     const nutr = rollup(out.ingredients);
+    const prod = produceRollup(out.ingredients);
     patch.ingredients = out.ingredients;
     patch.calories = nutr.calories; patch.protein_g = nutr.protein_g; patch.carbs_g = nutr.carbs_g; patch.fat_g = nutr.fat_g;
+    patch.veg_g = prod.veg_g; patch.leafy_g = prod.leafy_g; patch.fruit_g = prod.fruit_g;
     warnings = out.warnings;
   }
   if (Object.keys(patch).length === 0) return row;
@@ -303,6 +354,7 @@ export async function deleteNutritionEntry(idPrefix: string): Promise<NutritionE
 export function formatNutritionDay(date: string, entries: NutritionEntry[]): string {
   if (!entries.length) return `No nutrition logged for ${date}.`;
   const totals = { calories: 0, protein_g: 0, carbs_g: 0, fat_g: 0 };
+  const produce = { veg_g: 0, leafy_g: 0, fruit_g: 0 };
   const lines = [
     `**Nutrition log — ${date}**`, '',
     '| ID | Food | Qty | Cal | Protein | Carbs | Fat |',
@@ -321,8 +373,16 @@ export function formatNutritionDay(date: string, entries: NutritionEntry[]): str
     }
     totals.calories += e.calories || 0; totals.protein_g += e.protein_g || 0;
     totals.carbs_g += e.carbs_g || 0; totals.fat_g += e.fat_g || 0;
+    produce.veg_g += e.veg_g || 0; produce.leafy_g += e.leafy_g || 0; produce.fruit_g += e.fruit_g || 0;
   }
   lines.push('|---|---|---|---|---|---|---|');
   lines.push(`| | **Total** | | **${Math.round(totals.calories)}** | **${Math.round(totals.protein_g)}g** | **${Math.round(totals.carbs_g)}g** | **${Math.round(totals.fat_g)}g** |`);
+  // Produce goes on its own line rather than as three more table columns — the macro table is already
+  // wide, and produce is a separate goal set (fill-to-target, not paced). Leafy is shown nested to
+  // make the subset relationship visible: veg_g ALREADY includes it.
+  if (produce.veg_g || produce.fruit_g) {
+    lines.push('');
+    lines.push(`**Produce** — vegetables ${Math.round(produce.veg_g)}g (of which leafy ${Math.round(produce.leafy_g)}g) · fruit ${Math.round(produce.fruit_g)}g`);
+  }
   return lines.join('\n');
 }
