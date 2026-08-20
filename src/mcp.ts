@@ -223,9 +223,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return text(`Completed: ${r.text}\n\n` + reminders.formatReminders(await reminders.listReminders()));
     }
     if (name === 'get_lists') {
-      if (a.list) return text(lists.formatListItems(await lists.listItems(String(a.list)), String(a.list)));
       const names = await lists.availableLists();
       if (!names.length) return text('No lists yet.');
+      if (a.list) {
+        const want = String(a.list).trim().toLowerCase();
+        const match = names.find((n) => n.toLowerCase() === want);   // case-insensitive: 'Grocery' → 'grocery'
+        if (match) return text(lists.formatListItems(await lists.listItems(match), match));
+        // Requested list doesn't exist in any casing — show the real lists so a name mismatch never
+        // reads back as a false "empty".
+        const blocks: string[] = [];
+        for (const n of names) blocks.push(lists.formatListItems(await lists.listItems(n), n));
+        return text(`No list named "${a.list}". Your lists:\n\n` + blocks.join('\n\n'));
+      }
       const blocks: string[] = [];
       for (const n of names) blocks.push(lists.formatListItems(await lists.listItems(n), n));
       return text(blocks.join('\n\n'));

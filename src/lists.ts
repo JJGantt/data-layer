@@ -17,12 +17,24 @@ export async function listItems(listName: string): Promise<ListItem[]> {
   return (data ?? []) as ListItem[];
 }
 
+// Resolve a requested list name to an EXISTING one case-insensitively (so 'Grocery'/'GROCERY' hit the
+// stored 'grocery'); falls back to the trimmed input for a genuinely new list. Without this, a caller's
+// casing differing from what's stored (models default to Title Case) read back as a false "empty" and
+// spawned case-variant duplicate lists.
+export async function resolveListName(name: string): Promise<string> {
+  const want = String(name || '').trim();
+  const { data } = await getClient().from('lists').select('name');
+  const hit = (data ?? []).find(r => String(r.name).toLowerCase() === want.toLowerCase());
+  return hit ? String(hit.name) : want;
+}
+
 export async function addItem(listName: string, text: string): Promise<ListItem> {
   const sb = getClient();
-  await sb.from('lists').upsert({ name: listName }, { onConflict: 'name', ignoreDuplicates: true });
+  const list = await resolveListName(listName);
+  await sb.from('lists').upsert({ name: list }, { onConflict: 'name', ignoreDuplicates: true });
   const n = now(); const id = uuid();
   const { data } = await sb.from('list_items')
-    .insert({ id, list_name: listName, text, done: false, deleted: false, created: n, updated: n })
+    .insert({ id, list_name: list, text, done: false, deleted: false, created: n, updated: n })
     .select().single();
   return data as ListItem;
 }
@@ -62,11 +74,12 @@ export async function createList(listName: string): Promise<boolean> {
 }
 
 async function resolveListItemId(listName: string, prefix: string): Promise<string | null> {
+  const list = await resolveListName(listName);   // case-insensitive: 'Grocery' → 'grocery'
   const { data: exact } = await getClient().from('list_items').select('id')
-    .eq('id', prefix).eq('list_name', listName).eq('deleted', false).maybeSingle();
+    .eq('id', prefix).eq('list_name', list).eq('deleted', false).maybeSingle();
   if (exact) return exact.id;
   const { data: matches } = await getClient().from('list_items').select('id')
-    .eq('list_name', listName).eq('deleted', false).like('id', `${prefix}%`);
+    .eq('list_name', list).eq('deleted', false).like('id', `${prefix}%`);
   if (matches?.length === 1) return matches[0].id;
   return null;
 }
