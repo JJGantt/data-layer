@@ -50,6 +50,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     { name: 'complete_list_item', description: "Check off / complete an item on a list (e.g. 'I got the milk', 'check off eggs'). Identify the item by its id from get_lists; call get_lists first if you do not already have it.", inputSchema: { type: 'object' as const, properties: { list: { type: 'string', description: 'The list the item is on.' }, id: { type: 'string', description: 'Item id or its leading characters (from get_lists).' } }, required: ['list', 'id'] } },
     { name: 'get_notes', description: "Read Jared's freeform notes. Omit `name` to list the note names; pass `name` to read that note's full content.", inputSchema: { type: 'object' as const, properties: { name: { type: 'string', description: 'Optional note name to read its content. Omit to list all note names.' } } } },
     { name: 'create_note', description: "Create a note, or REPLACE an existing note's content (e.g. 'make a note called packing: passport, charger'). Saving a name that already exists overwrites it, so to ADD to an existing note, read it first with get_notes and pass the combined content back.", inputSchema: { type: 'object' as const, properties: { name: { type: 'string', description: 'Note name/title.' }, content: { type: 'string', description: 'The note body.' } }, required: ['name', 'content'] } },
+    { name: 'delete_reminder', description: 'Delete a reminder ENTIRELY (e.g. "delete that reminder", "remove the dentist reminder"). This removes it — different from complete_reminder, which marks it done but keeps it in history. Identify by id or leading characters from get_reminders.', inputSchema: { type: 'object' as const, properties: { id: { type: 'string', description: 'Reminder id or its leading characters (from get_reminders).' } }, required: ['id'] } },
+    { name: 'remove_from_list', description: "Remove an item from a list ENTIRELY (e.g. 'take milk off the groceries', 'remove eggs from the list'). This deletes the item — different from complete_list_item, which just checks it off. Identify by id from get_lists (call it first if you don't have the id).", inputSchema: { type: 'object' as const, properties: { list: { type: 'string', description: 'The list the item is on.' }, id: { type: 'string', description: 'Item id or its leading characters (from get_lists).' } }, required: ['list', 'id'] } },
+    { name: 'delete_list', description: "Delete an ENTIRE list and everything on it (e.g. 'delete my packing list', 'get rid of the hardware list'). Removes the list and all its items. Matches the list name case-insensitively.", inputSchema: { type: 'object' as const, properties: { list: { type: 'string', description: "List name to delete, e.g. 'groceries'." } }, required: ['list'] } },
+    { name: 'delete_note', description: "Delete a note (e.g. 'delete the packing note', 'remove that note'). Matches the note name case-insensitively.", inputSchema: { type: 'object' as const, properties: { name: { type: 'string', description: 'Note name to delete.' } }, required: ['name'] } },
   ],
 }));
 
@@ -263,6 +267,26 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (name === 'create_note') {
       await notes.setNote(String(a.name), String(a.content));
       return text(`Saved note '${a.name}'.`);
+    }
+    if (name === 'delete_reminder') {
+      const r = await reminders.removeReminder(String(a.id));
+      if (!r) return text(`No reminder matched id '${a.id}'.`);
+      return text(`Deleted reminder: ${r.text}\n\n` + reminders.formatReminders(await reminders.listReminders()));
+    }
+    if (name === 'remove_from_list') {
+      const it = await lists.removeItem(String(a.list), String(a.id));
+      if (!it) return text(`No matching item in '${a.list}' for id '${a.id}'.`);
+      return text(`Removed from **${a.list}**: ${it.text}\n\n` + lists.formatListItems(await lists.listItems(String(a.list)), String(a.list)));
+    }
+    if (name === 'delete_list') {
+      const deleted = await lists.removeList(String(a.list));
+      if (!deleted) return text(`No list named '${a.list}'.`);
+      return text(`Deleted the '${deleted}' list and all its items.`);
+    }
+    if (name === 'delete_note') {
+      const deleted = await notes.deleteNote(String(a.name));
+      if (!deleted) { const nn = await notes.availableNotes(); return text(`No note named '${a.name}'.` + (nn.length ? ` Available: ${nn.join(', ')}` : '')); }
+      return text(`Deleted note '${deleted}'.`);
     }
 
     return text(`Unknown tool: ${name}`);

@@ -22,3 +22,13 @@ export async function allNotes(): Promise<Note[]> {
   const { data } = await getClient().from('notes').select('*').order('name');
   return (data ?? []) as Note[];
 }
+
+// Delete a note by name (case-insensitive). Returns the stored name deleted, or null if none matched.
+export async function deleteNote(name: string): Promise<string | null> {
+  const want = String(name || '').trim();
+  const { data } = await getClient().from('notes').select('name');
+  const hit = (data ?? []).find(r => String(r.name).toLowerCase() === want.toLowerCase());
+  if (!hit) return null;
+  await getClient().from('notes').delete().eq('name', hit.name);
+  return String(hit.name);
+}

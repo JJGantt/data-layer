@@ -73,6 +73,17 @@ export async function createList(listName: string): Promise<boolean> {
   return true;
 }
 
+// Delete a whole list (case-insensitive) plus all its items. Returns the stored name, or null if none matched.
+export async function removeList(listName: string): Promise<string | null> {
+  const want = String(listName || '').trim();
+  const names = await availableLists();
+  const hit = names.find(n => n.toLowerCase() === want.toLowerCase());
+  if (!hit) return null;
+  await getClient().from('list_items').delete().eq('list_name', hit);
+  await getClient().from('lists').delete().eq('name', hit);
+  return hit;
+}
+
 async function resolveListItemId(listName: string, prefix: string): Promise<string | null> {
   const list = await resolveListName(listName);   // case-insensitive: 'Grocery' → 'grocery'
   const { data: exact } = await getClient().from('list_items').select('id')
