@@ -2,10 +2,15 @@ import { getClient } from './client.js';
 import { deriveCaloriesFromMacros, type MacroNutrition, type MacroNutritionInput, ValidationError, uuid } from './helpers.js';
 import { getRecipeNutrition } from './recipes.js';
 
-// How an ingredient counts toward the produce goals. ONE judgment per ingredient — the leafy⊂veg
-// nesting is derived in rollup(), never asked of the model, so spinach can't be double-counted.
-export type ProduceType = 'leafy' | 'vegetable' | 'fruit';
-export const PRODUCE_TYPES: ProduceType[] = ['leafy', 'vegetable', 'fruit'];
+// How an ingredient counts toward the produce goals. ONE judgment per ingredient, and the three
+// categories are MUTUALLY EXCLUSIVE by name so there is nothing to get wrong: a vegetable is either
+// leafy or explicitly non-leafy. The leafy⊂veg nesting is a display concern, derived in
+// produceRollup() — the model never sees it and can never double-count spinach.
+export type ProduceType = 'leafy_green' | 'non_leafy_vegetable' | 'fruit';
+export const PRODUCE_TYPES: ProduceType[] = ['leafy_green', 'non_leafy_vegetable', 'fruit'];
+// Pre-rename values, accepted silently so an in-flight call from a process still holding the old
+// tool schema can't fail or land unclassified.
+const PRODUCE_TYPE_ALIASES: Record<string, ProduceType> = { leafy: 'leafy_green', vegetable: 'non_leafy_vegetable' };
 
 export interface NutritionIngredient {
   name: string;
@@ -112,11 +117,12 @@ function normalizeProduce(ing: any, name: string, context: string): { produce_g?
   if (!hasType && !hasGrams) return {};
 
   if (hasType && !hasGrams) throw new ValidationError(`${context}: ingredient '${name}' has produce_type '${rawType}' but no produce_g — give its as-eaten weight in grams.`);
-  if (hasGrams && !hasType) throw new ValidationError(`${context}: ingredient '${name}' has produce_g but no produce_type — set it to 'leafy', 'vegetable', or 'fruit'.`);
+  if (hasGrams && !hasType) throw new ValidationError(`${context}: ingredient '${name}' has produce_g but no produce_type — set it to 'leafy_green', 'non_leafy_vegetable', or 'fruit'.`);
 
-  const produce_type = String(rawType).trim().toLowerCase() as ProduceType;
+  const raw = String(rawType).trim().toLowerCase();
+  const produce_type = (PRODUCE_TYPE_ALIASES[raw] ?? raw) as ProduceType;
   if (!PRODUCE_TYPES.includes(produce_type)) {
-    throw new ValidationError(`${context}: ingredient '${name}' has an unknown produce_type '${rawType}'. Use 'leafy' (leafy greens), 'vegetable' (every other vegetable, including mushrooms, starchy vegetables, and legumes), or 'fruit' (including avocado and tomato).`);
+    throw new ValidationError(`${context}: ingredient '${name}' has an unknown produce_type '${rawType}'. Use 'leafy_green' (spinach, kale, arugula, lettuce, chard), 'non_leafy_vegetable' (EVERY other vegetable — broccoli, mushrooms, peppers, potato, corn, peas, beans), or 'fruit' (including avocado and tomato).`);
   }
   if (!isFiniteNumber(rawGrams)) throw new ValidationError(`${context}: ingredient '${name}' has a non-numeric produce_g.`);
   if (rawGrams < 0) throw new ValidationError(`${context}: ingredient '${name}' has a negative produce_g.`);
@@ -150,8 +156,8 @@ function produceRollup(ingredients: NutritionIngredient[]): ProduceRollup {
   for (const g of ingredients) {
     const grams = g.produce_g ?? 0;
     if (!grams || !g.produce_type) continue;
-    if (g.produce_type === 'leafy') { t.leafy_g += grams; t.veg_g += grams; }
-    else if (g.produce_type === 'vegetable') t.veg_g += grams;
+    if (g.produce_type === 'leafy_green') { t.leafy_g += grams; t.veg_g += grams; }
+    else if (g.produce_type === 'non_leafy_vegetable') t.veg_g += grams;
     else if (g.produce_type === 'fruit') t.fruit_g += grams;
   }
   return { veg_g: round10(t.veg_g), leafy_g: round10(t.leafy_g), fruit_g: round10(t.fruit_g) };
