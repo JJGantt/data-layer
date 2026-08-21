@@ -44,17 +44,17 @@ export async function recentTargets(limit = 3): Promise<NutritionTargetEntry[]> 
   return (data ?? []) as NutritionTargetEntry[];
 }
 
-export interface ProduceTargets { veg_g: number; leafy_g: number; fruit_g: number; }
+export interface ProduceTargets { veg_g: number; dark_green_g: number; fruit_g: number; }
 
 // Fallbacks matching the migration's seeded values, so a missing/garbled row can't zero the goals.
-const PRODUCE_TARGET_DEFAULTS: ProduceTargets = { veg_g: 300, leafy_g: 75, fruit_g: 250 };
+const PRODUCE_TARGET_DEFAULTS: ProduceTargets = { veg_g: 300, dark_green_g: 150, fruit_g: 250 };
 const PRODUCE_TARGET_KEYS: Record<string, keyof ProduceTargets> = {
-  produce_target_veg_g: 'veg_g', produce_target_leafy_g: 'leafy_g', produce_target_fruit_g: 'fruit_g',
+  produce_target_veg_g: 'veg_g', produce_target_dark_green_g: 'dark_green_g', produce_target_fruit_g: 'fruit_g',
 };
 
 // Daily produce goals. These are FIXED constants in app_settings — unlike the macro targets, which the
 // hub's adaptive-maintenance engine recomputes from weight trend + intake on every stream build.
-// veg_g INCLUDES leafy_g (leafy greens are a floor within the vegetable total, not a separate bucket).
+// veg_g INCLUDES dark_green_g (dark greens are a floor within the vegetable total, not a separate bucket).
 export async function produceTargets(): Promise<ProduceTargets> {
   const { data } = await getClient().from('app_settings').select('key, value').like('key', 'produce_target_%');
   const out = { ...PRODUCE_TARGET_DEFAULTS };
@@ -67,7 +67,7 @@ export async function produceTargets(): Promise<ProduceTargets> {
 }
 
 export function formatProduceTargets(t: ProduceTargets): string {
-  return `Produce targets (daily, fixed): ${t.veg_g}g vegetables (of which ${t.leafy_g}g leafy greens) · ${t.fruit_g}g fruit`;
+  return `Produce targets (daily, fixed): ${t.veg_g}g vegetables (of which ${t.dark_green_g}g dark green) · ${t.fruit_g}g fruit`;
 }
 
 export function formatProfile(profile: { height_in: number | null }, weights: WeightEntry[], targets: NutritionTargetEntry[] = [], produce?: ProduceTargets): string {

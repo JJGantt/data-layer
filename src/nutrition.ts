@@ -2,15 +2,20 @@ import { getClient } from './client.js';
 import { deriveCaloriesFromMacros, type MacroNutrition, type MacroNutritionInput, ValidationError, uuid } from './helpers.js';
 import { getRecipeNutrition } from './recipes.js';
 
-// How an ingredient counts toward the produce goals. ONE judgment per ingredient, and the three
-// categories are MUTUALLY EXCLUSIVE by name so there is nothing to get wrong: a vegetable is either
-// leafy or explicitly non-leafy. The leafy⊂veg nesting is a display concern, derived in
-// produceRollup() — the model never sees it and can never double-count spinach.
-export type ProduceType = 'leafy_green' | 'non_leafy_vegetable' | 'fruit';
-export const PRODUCE_TYPES: ProduceType[] = ['leafy_green', 'non_leafy_vegetable', 'fruit'];
+// How an ingredient counts toward the produce goals. ONE judgment per ingredient; the three
+// categories are MUTUALLY EXCLUSIVE. The split is GREENNESS, not leafiness: vitamin K1, lutein and
+// folate all track how dark green a vegetable is, and broccoli (102 mcg K1 / 1,400 mcg lutein per
+// 100 g) belongs with spinach, not with carrots (13 / 256) or mushrooms (0 / 0). Matches the USDA
+// "dark green vegetables" subgroup. The dark-green ⊂ vegetable nesting is a display concern derived
+// in produceRollup() — the model never sees it and can never double-count.
+export type ProduceType = 'dark_green_vegetable' | 'other_vegetable' | 'fruit';
+export const PRODUCE_TYPES: ProduceType[] = ['dark_green_vegetable', 'other_vegetable', 'fruit'];
 // Pre-rename values, accepted silently so an in-flight call from a process still holding the old
 // tool schema can't fail or land unclassified.
-const PRODUCE_TYPE_ALIASES: Record<string, ProduceType> = { leafy: 'leafy_green', vegetable: 'non_leafy_vegetable' };
+const PRODUCE_TYPE_ALIASES: Record<string, ProduceType> = {
+  leafy: 'dark_green_vegetable', leafy_green: 'dark_green_vegetable',
+  vegetable: 'other_vegetable', non_leafy_vegetable: 'other_vegetable',
+};
 
 export interface NutritionIngredient {
   name: string;
@@ -20,12 +25,12 @@ export interface NutritionIngredient {
 }
 
 // Daily produce totals, rolled up from the ingredients exactly like the macros are.
-export interface ProduceRollup { veg_g: number; leafy_g: number; fruit_g: number; }
+export interface ProduceRollup { veg_g: number; dark_green_g: number; fruit_g: number; }
 
 export interface NutritionEntry {
   id: string; date: string; occurred_at: string; name: string; quantity: number;
   calories: number | null; protein_g: number | null; carbs_g: number | null; fat_g: number | null;
-  veg_g?: number | null; leafy_g?: number | null; fruit_g?: number | null;
+  veg_g?: number | null; dark_green_g?: number | null; fruit_g?: number | null;
   ingredients: NutritionIngredient[] | null; logged: string; staged?: boolean;
   warnings?: string[];   // non-persisted: macro/calorie sanity warnings surfaced back to the caller
 }
@@ -117,12 +122,12 @@ function normalizeProduce(ing: any, name: string, context: string): { produce_g?
   if (!hasType && !hasGrams) return {};
 
   if (hasType && !hasGrams) throw new ValidationError(`${context}: ingredient '${name}' has produce_type '${rawType}' but no produce_g — give its as-eaten weight in grams.`);
-  if (hasGrams && !hasType) throw new ValidationError(`${context}: ingredient '${name}' has produce_g but no produce_type — set it to 'leafy_green', 'non_leafy_vegetable', or 'fruit'.`);
+  if (hasGrams && !hasType) throw new ValidationError(`${context}: ingredient '${name}' has produce_g but no produce_type — set it to 'dark_green_vegetable', 'other_vegetable', or 'fruit'.`);
 
   const raw = String(rawType).trim().toLowerCase();
   const produce_type = (PRODUCE_TYPE_ALIASES[raw] ?? raw) as ProduceType;
   if (!PRODUCE_TYPES.includes(produce_type)) {
-    throw new ValidationError(`${context}: ingredient '${name}' has an unknown produce_type '${rawType}'. Use 'leafy_green' (spinach, kale, arugula, lettuce, chard), 'non_leafy_vegetable' (EVERY other vegetable — broccoli, mushrooms, peppers, potato, corn, peas, beans), or 'fruit' (including avocado and tomato).`);
+    throw new ValidationError(`${context}: ingredient '${name}' has an unknown produce_type '${rawType}'. Use 'dark_green_vegetable' (spinach, kale, arugula, lettuce, chard, broccoli, Brussels sprouts, asparagus, green beans, peas), 'other_vegetable' (mushrooms, onion, cauliflower, carrots, peppers, potato, corn, tomato, beans), or 'fruit' (including avocado).`);
   }
   if (!isFiniteNumber(rawGrams)) throw new ValidationError(`${context}: ingredient '${name}' has a non-numeric produce_g.`);
   if (rawGrams < 0) throw new ValidationError(`${context}: ingredient '${name}' has a negative produce_g.`);
@@ -148,19 +153,19 @@ function rollup(ingredients: NutritionIngredient[]): MacroNutrition {
   return { calories: round10(t.calories), protein_g: round10(t.protein_g), carbs_g: round10(t.carbs_g), fat_g: round10(t.fat_g) };
 }
 
-// Produce rollup, same rule: the entry's produce IS the sum of its ingredients'. Leafy greens count
-// toward BOTH leafy_g and veg_g — the subset relationship lives here rather than in the model's head,
-// so 50 g of spinach is logged once (type 'leafy') and lands in both totals.
+// Produce rollup, same rule: the entry's produce IS the sum of its ingredients'. Dark green vegetables
+// count toward BOTH dark_green_g and veg_g — the subset relationship lives here rather than in the
+// model's head, so 225 g of broccoli is logged once and lands in both totals.
 function produceRollup(ingredients: NutritionIngredient[]): ProduceRollup {
-  const t = { veg_g: 0, leafy_g: 0, fruit_g: 0 };
+  const t = { veg_g: 0, dark_green_g: 0, fruit_g: 0 };
   for (const g of ingredients) {
     const grams = g.produce_g ?? 0;
     if (!grams || !g.produce_type) continue;
-    if (g.produce_type === 'leafy_green') { t.leafy_g += grams; t.veg_g += grams; }
-    else if (g.produce_type === 'non_leafy_vegetable') t.veg_g += grams;
+    if (g.produce_type === 'dark_green_vegetable') { t.dark_green_g += grams; t.veg_g += grams; }
+    else if (g.produce_type === 'other_vegetable') t.veg_g += grams;
     else if (g.produce_type === 'fruit') t.fruit_g += grams;
   }
-  return { veg_g: round10(t.veg_g), leafy_g: round10(t.leafy_g), fruit_g: round10(t.fruit_g) };
+  return { veg_g: round10(t.veg_g), dark_green_g: round10(t.dark_green_g), fruit_g: round10(t.fruit_g) };
 }
 
 function pad(v: number): string { return String(v).padStart(2, '0'); }
@@ -319,7 +324,7 @@ export async function editStaged(idPrefix: string, fields: {
     const prod = produceRollup(out.ingredients);
     patch.ingredients = out.ingredients;
     patch.calories = nutr.calories; patch.protein_g = nutr.protein_g; patch.carbs_g = nutr.carbs_g; patch.fat_g = nutr.fat_g;
-    patch.veg_g = prod.veg_g; patch.leafy_g = prod.leafy_g; patch.fruit_g = prod.fruit_g;
+    patch.veg_g = prod.veg_g; patch.dark_green_g = prod.dark_green_g; patch.fruit_g = prod.fruit_g;
     warnings = out.warnings;
   }
   if (Object.keys(patch).length === 0) return row;
@@ -360,7 +365,7 @@ export async function deleteNutritionEntry(idPrefix: string): Promise<NutritionE
 export function formatNutritionDay(date: string, entries: NutritionEntry[]): string {
   if (!entries.length) return `No nutrition logged for ${date}.`;
   const totals = { calories: 0, protein_g: 0, carbs_g: 0, fat_g: 0 };
-  const produce = { veg_g: 0, leafy_g: 0, fruit_g: 0 };
+  const produce = { veg_g: 0, dark_green_g: 0, fruit_g: 0 };
   const lines = [
     `**Nutrition log — ${date}**`, '',
     '| ID | Food | Qty | Cal | Protein | Carbs | Fat |',
@@ -379,7 +384,7 @@ export function formatNutritionDay(date: string, entries: NutritionEntry[]): str
     }
     totals.calories += e.calories || 0; totals.protein_g += e.protein_g || 0;
     totals.carbs_g += e.carbs_g || 0; totals.fat_g += e.fat_g || 0;
-    produce.veg_g += e.veg_g || 0; produce.leafy_g += e.leafy_g || 0; produce.fruit_g += e.fruit_g || 0;
+    produce.veg_g += e.veg_g || 0; produce.dark_green_g += e.dark_green_g || 0; produce.fruit_g += e.fruit_g || 0;
   }
   lines.push('|---|---|---|---|---|---|---|');
   lines.push(`| | **Total** | | **${Math.round(totals.calories)}** | **${Math.round(totals.protein_g)}g** | **${Math.round(totals.carbs_g)}g** | **${Math.round(totals.fat_g)}g** |`);
@@ -388,7 +393,7 @@ export function formatNutritionDay(date: string, entries: NutritionEntry[]): str
   // make the subset relationship visible: veg_g ALREADY includes it.
   if (produce.veg_g || produce.fruit_g) {
     lines.push('');
-    lines.push(`**Produce** — vegetables ${Math.round(produce.veg_g)}g (of which leafy ${Math.round(produce.leafy_g)}g) · fruit ${Math.round(produce.fruit_g)}g`);
+    lines.push(`**Produce** — vegetables ${Math.round(produce.veg_g)}g (of which dark green ${Math.round(produce.dark_green_g)}g) · fruit ${Math.round(produce.fruit_g)}g`);
   }
   return lines.join('\n');
 }
