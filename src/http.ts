@@ -63,15 +63,6 @@ const server = http.createServer(async (req, res) => {
       const item = await lists.addItem(listItemsMatch[1], body.text);
       return json(res, { item });
     }
-    const listItemActionMatch = path.match(/^\/data\/lists\/([^/]+)\/items\/([^/]+)\/(check|uncheck)$/);
-    if (listItemActionMatch && method === 'PATCH') {
-      const [, listName, id, action] = listItemActionMatch;
-      const item = action === 'check'
-        ? await lists.checkItem(listName, id)
-        : await lists.uncheckItem(listName, id);
-      if (!item) return json(res, { error: 'not found' }, 404);
-      return json(res, { item });
-    }
     const listItemDeleteMatch = path.match(/^\/data\/lists\/([^/]+)\/items\/([^/]+)$/);
     if (listItemDeleteMatch && method === 'DELETE') {
       const item = await lists.removeItem(listItemDeleteMatch[1], listItemDeleteMatch[2]);
@@ -86,12 +77,6 @@ const server = http.createServer(async (req, res) => {
     if (path === '/data/reminders' && method === 'POST') {
       const body = await parseBody(req);
       const r = await reminders.addReminder(body.text, body.due);
-      return json(res, { reminder: r });
-    }
-    const reminderCompleteMatch = path.match(/^\/data\/reminders\/([^/]+)\/complete$/);
-    if (reminderCompleteMatch && method === 'PATCH') {
-      const r = await reminders.completeReminder(reminderCompleteMatch[1]);
-      if (!r) return json(res, { error: 'not found' }, 404);
       return json(res, { reminder: r });
     }
     const reminderDeleteMatch = path.match(/^\/data\/reminders\/([^/]+)$/);

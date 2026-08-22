@@ -1,9 +1,13 @@
 import { getClient } from './client.js';
 import { now, uuid } from './helpers.js';
 
+// There is ONE way for a reminder to leave the list: `deleted`. There is no separate "done" state —
+// checking something off and getting rid of it are the same act, so modelling them apart only created
+// two flags that had to be kept in sync and two surfaces that disagreed about what a tick meant.
+// `deleted` is soft: the row stays for a recovery window and is purged later, so nothing is lost.
 export interface Reminder {
   id: string; text: string; due: string | null;
-  done: boolean; deleted: boolean; created: string; updated: string;
+  deleted: boolean; created: string; updated: string;
 }
 
 export async function listReminders(): Promise<Reminder[]> {
@@ -14,20 +18,12 @@ export async function listReminders(): Promise<Reminder[]> {
 export async function addReminder(text: string, due?: string): Promise<Reminder> {
   const n = now(); const id = uuid();
   const { data } = await getClient().from('reminders')
-    .insert({ id, text, due: due || null, done: false, deleted: false, created: n, updated: n })
+    .insert({ id, text, due: due || null, deleted: false, created: n, updated: n })
     .select().single();
   return data as Reminder;
 }
 
-export async function completeReminder(idPrefix: string): Promise<Reminder | null> {
-  const id = await resolveReminderId(idPrefix);
-  if (!id) return null;
-  const n = now();
-  await getClient().from('reminders').update({ done: true, updated: n }).eq('id', id);
-  const { data } = await getClient().from('reminders').select('*').eq('id', id).single();
-  return data as Reminder;
-}
-
+/** Clear a reminder — checking it off and deleting it are the same thing. Soft, so it's recoverable. */
 export async function removeReminder(idPrefix: string): Promise<Reminder | null> {
   const id = await resolveReminderId(idPrefix);
   if (!id) return null;
@@ -51,9 +47,8 @@ export function formatReminders(items: Reminder[]): string {
   const active = items.filter(i => !i.deleted);
   if (!active.length) return 'No active reminders.';
   const lines = active.map(i => {
-    const check = i.done ? '[x]' : '[ ]';
     const due = i.due ? ` (due: ${i.due})` : '';
-    return `${check} ${i.text}${due}  [id: ${i.id.slice(0, 8)}]`;
+    return `- ${i.text}${due}  [id: ${i.id.slice(0, 8)}]`;
   });
   return `**Reminders** (${active.length} items):\n${lines.join('\n')}`;
 }

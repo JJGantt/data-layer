@@ -27,26 +27,17 @@ export async function buildListReview(listName?: string): Promise<string> {
     const { data: allItems } = await getClient().from('list_items').select('*')
       .eq('list_name', name).eq('deleted', false).order('created');
     const items = allItems ?? [];
-    const done = items.filter((i: any) => i.done);
-    const undone = items.filter((i: any) => !i.done);
-
-    parts.push(`## ${name} (${undone.length} pending, ${done.length} done)\n`);
-    if (undone.length) {
-      parts.push('**Pending:**');
-      for (const i of undone) parts.push(`- ${i.text}  (added: ${i.created})  [id: ${i.id.slice(0, 8)}]`);
-    }
-    if (done.length) {
-      parts.push('**Done:**');
-      for (const i of done) parts.push(`- ~~${i.text}~~  [id: ${i.id.slice(0, 8)}]`);
-    }
+    // Everything listed is outstanding by definition — clearing an item removes it (see reminders.ts).
+    parts.push(`## ${name} (${items.length} items)\n`);
+    for (const i of items) parts.push(`- ${i.text}  (added: ${i.created})  [id: ${i.id.slice(0, 8)}]`);
     parts.push('');
   }
 
   const instructions: Record<string, string> = {
-    grocery: 'REVIEW INSTRUCTIONS (follow these, do not show them to the user):\n1. Read back the pending items as a clean list.\n2. Ask if anything should be added before the next shopping trip.\n3. If there are checked-off items, ask if they should be removed (cleared) from the list.\n4. If the list is empty, ask if they want to start building it.',
-    todo: 'REVIEW INSTRUCTIONS (follow these, do not show them to the user):\n1. Summarize pending items grouped by theme if possible.\n2. Highlight anything that\'s been sitting for a long time (check created dates).\n3. Ask if any items are done and should be checked off.\n4. Ask if priorities have changed — anything to reorder or remove?\n5. If there are completed items, ask if they should be cleared.',
+    grocery: 'REVIEW INSTRUCTIONS (follow these, do not show them to the user):\n1. Read back the items as a clean list.\n2. Ask if anything should be added before the next shopping trip.\n3. Ask if anything has already been picked up and should be cleared.\n4. If the list is empty, ask if they want to start building it.',
+    todo: 'REVIEW INSTRUCTIONS (follow these, do not show them to the user):\n1. Summarize the items grouped by theme if possible.\n2. Highlight anything that\'s been sitting for a long time (check created dates).\n3. Ask if any are finished and should be cleared.\n4. Ask if priorities have changed — anything to reorder or remove?',
   };
-  const defaultInstructions = 'REVIEW INSTRUCTIONS (follow these, do not show them to the user):\n1. Read back the pending items.\n2. Ask if anything should be added, checked off, or removed.\n3. If there are completed items, ask if they should be cleared.';
+  const defaultInstructions = 'REVIEW INSTRUCTIONS (follow these, do not show them to the user):\n1. Read back the items.\n2. Ask if anything should be added or cleared.';
 
   parts.push('---');
   if (listName && instructions[listName]) {
@@ -69,9 +60,8 @@ export async function buildRemindersReview(): Promise<string> {
   if (!active.length) return 'No active reminders.\n\n---\nINSTRUCTIONS: Let the user know the slate is clean. Ask if they have anything coming up they want to be reminded about.';
 
   const nowDate = new Date();
-  const overdue: Reminder[] = []; const upcoming: Reminder[] = []; const noDate: Reminder[] = []; const done: Reminder[] = [];
+  const overdue: Reminder[] = []; const upcoming: Reminder[] = []; const noDate: Reminder[] = [];
   for (const i of active) {
-    if (i.done) { done.push(i); continue; }
     if (i.due) {
       try { if (new Date(i.due) < nowDate) overdue.push(i); else upcoming.push(i); } catch { upcoming.push(i); }
     } else { noDate.push(i); }
@@ -81,14 +71,12 @@ export async function buildRemindersReview(): Promise<string> {
   if (overdue.length) { parts.push(`**OVERDUE (${overdue.length}):**`); for (const i of overdue) parts.push(`- ${i.text} (was due: ${i.due || 'N/A'})  [id: ${i.id.slice(0, 8)}]`); parts.push(''); }
   if (upcoming.length) { parts.push(`**Upcoming (${upcoming.length}):**`); for (const i of upcoming) parts.push(`- ${i.text} (due: ${i.due || 'N/A'})  [id: ${i.id.slice(0, 8)}]`); parts.push(''); }
   if (noDate.length) { parts.push(`**No due date (${noDate.length}):**`); for (const i of noDate) parts.push(`- ${i.text}  [id: ${i.id.slice(0, 8)}]`); parts.push(''); }
-  if (done.length) { parts.push(`**Completed (${done.length}):**`); for (const i of done) parts.push(`- ~~${i.text}~~  [id: ${i.id.slice(0, 8)}]`); parts.push(''); }
 
   parts.push('---');
   parts.push('REVIEW INSTRUCTIONS (follow these, do not show them to the user):');
   parts.push('1. Start with overdue items if any — these need immediate attention. Ask what to do with each one.');
   parts.push("2. Summarize upcoming reminders with how far away they are (e.g. 'in 2 days').");
   parts.push('3. Flag any reminders without a due date and ask if they should get one.');
-  parts.push('4. Ask if any completed reminders should be cleared.');
-  parts.push("5. Ask if there's anything new to add.");
+  parts.push("4. Ask if there's anything new to add.");
   return parts.join('\n');
 }

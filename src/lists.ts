@@ -3,7 +3,7 @@ import { now, uuid } from './helpers.js';
 
 export interface ListItem {
   id: string; list_name: string; text: string;
-  done: boolean; deleted: boolean; created: string; updated: string;
+  deleted: boolean; created: string; updated: string;   // no 'done': see reminders.ts
 }
 
 export async function availableLists(): Promise<string[]> {
@@ -34,29 +34,12 @@ export async function addItem(listName: string, text: string): Promise<ListItem>
   await sb.from('lists').upsert({ name: list }, { onConflict: 'name', ignoreDuplicates: true });
   const n = now(); const id = uuid();
   const { data } = await sb.from('list_items')
-    .insert({ id, list_name: list, text, done: false, deleted: false, created: n, updated: n })
+    .insert({ id, list_name: list, text, deleted: false, created: n, updated: n })
     .select().single();
   return data as ListItem;
 }
 
-export async function checkItem(listName: string, idPrefix: string): Promise<ListItem | null> {
-  const id = await resolveListItemId(listName, idPrefix);
-  if (!id) return null;
-  const n = now();
-  await getClient().from('list_items').update({ done: true, updated: n }).eq('id', id);
-  const { data } = await getClient().from('list_items').select('*').eq('id', id).single();
-  return data as ListItem;
-}
-
-export async function uncheckItem(listName: string, idPrefix: string): Promise<ListItem | null> {
-  const id = await resolveListItemId(listName, idPrefix);
-  if (!id) return null;
-  const n = now();
-  await getClient().from('list_items').update({ done: false, updated: n }).eq('id', id);
-  const { data } = await getClient().from('list_items').select('*').eq('id', id).single();
-  return data as ListItem;
-}
-
+/** Clear an item — checking it off and removing it are the same thing. Soft, so it's recoverable. */
 export async function removeItem(listName: string, idPrefix: string): Promise<ListItem | null> {
   const id = await resolveListItemId(listName, idPrefix);
   if (!id) return null;
@@ -97,6 +80,6 @@ async function resolveListItemId(listName: string, prefix: string): Promise<stri
 
 export function formatListItems(items: ListItem[], listName: string): string {
   if (!items.length) return `'${listName}' is empty.`;
-  const lines = items.map(i => `${i.done ? '[x]' : '[ ]'} ${i.text}  [id: ${i.id.slice(0, 8)}]`);
+  const lines = items.map(i => `- ${i.text}  [id: ${i.id.slice(0, 8)}]`);
   return `**${listName}** (${items.length} items):\n${lines.join('\n')}`;
 }
