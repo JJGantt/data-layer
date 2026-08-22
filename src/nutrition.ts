@@ -1,5 +1,5 @@
 import { getClient } from './client.js';
-import { deriveCaloriesFromMacros, type MacroNutrition, type MacroNutritionInput, ValidationError, uuid } from './helpers.js';
+import { deriveCaloriesFromMacros, now, type MacroNutrition, type MacroNutritionInput, ValidationError, uuid } from './helpers.js';
 import { getRecipeNutrition } from './recipes.js';
 
 // How an ingredient counts toward the produce goals. ONE judgment per ingredient; the three
@@ -169,17 +169,9 @@ function produceRollup(ingredients: NutritionIngredient[]): ProduceRollup {
 }
 
 function pad(v: number): string { return String(v).padStart(2, '0'); }
-function localTimestamp(d: Date): string {
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
-}
-// NOT helpers.now(). Same format, but this reads the real machine clock and does NOT honor
-// DATA_TS_OVERRIDE — so on a voice command these stamps are pipeline-completion time (~30s late),
-// not the audio capture start. It only bites `logged` (bookkeeping): the user-facing `occurred_at`
-// normally comes from the model, which the voice worker tells to pass the moment he actually spoke.
-function nowLocal(): string { return localTimestamp(new Date()); }
 function normalizeOccurredAt(value?: string): string {
   const raw = (value || '').trim();
-  if (!raw) return nowLocal();
+  if (!raw) return now();
   if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return `${raw}T12:00:00`;
   return raw;
 }
@@ -189,7 +181,7 @@ function normalizeOccurredAt(value?: string): string {
 const EATING_DAY_BOUNDARY_HOUR = 4;
 function dateFromOccurredAt(value: string): string {
   const m = value.match(/^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}):(\d{2}))?/);
-  if (!m) return nowLocal().slice(0, 10);
+  if (!m) return now().slice(0, 10);
   const [y, mo, d, h, mi, s] = m.slice(1).map((v) => (v === undefined ? 0 : Number(v)));
   const dt = new Date(y, mo - 1, d, h, mi, s);
   dt.setHours(dt.getHours() - EATING_DAY_BOUNDARY_HOUR);
@@ -235,7 +227,7 @@ export async function logNutrition(items: {
   ingredients?: NutritionIngredient[] | null;
 }[], opts?: { staged?: boolean }): Promise<NutritionEntry[]> {
   const staged = opts?.staged ?? false;
-  const loggedAt = nowLocal();
+  const loggedAt = now();
   const added: NutritionEntry[] = [];
   const sb = getClient();
 
@@ -262,7 +254,7 @@ export async function logNutrition(items: {
 
 // getNutrition returns only COMMITTED (eaten) entries — staged meals are never counted as eaten.
 export async function getNutrition(date?: string): Promise<NutritionEntry[]> {
-  const day = date ? dateFromOccurredAt(normalizeOccurredAt(date)) : dateFromOccurredAt(nowLocal());
+  const day = date ? dateFromOccurredAt(normalizeOccurredAt(date)) : dateFromOccurredAt(now());
   const { data } = await getClient().from('nutrition_entries').select('*').eq('date', day).eq('staged', false).order('logged');
   return (data ?? []) as NutritionEntry[];
 }
@@ -297,7 +289,7 @@ async function findStaged(idPrefix: string): Promise<NutritionEntry | null> {
 export async function commitStaged(idPrefix: string): Promise<NutritionEntry | null> {
   const row = await findStaged(idPrefix);
   if (!row) return null;
-  const occurredAt = nowLocal();
+  const occurredAt = now();
   const { data } = await getClient().from('nutrition_entries')
     .update({ staged: false, occurred_at: occurredAt, date: dateFromOccurredAt(occurredAt), logged: occurredAt })
     .eq('id', row.id).select().single();

@@ -10,8 +10,8 @@ import { randomUUID } from 'node:crypto';
 // No override (typed/web commands, direct API callers) → the real machine clock: pure wall clock, no
 // timezone concept at all, whatever this host reads right now.
 // (Named toEastern/now for historical reasons — it used to force America/New_York regardless of where
-// the host actually was; that was the bug. Format-identical to nutrition.ts's nowLocal()/
-// localTimestamp() — but those read the real clock only and do NOT honor the override; see there.)
+// the host actually was; that was the bug. nutrition.ts used to keep its own clock helper that skipped
+// the override, so voice-logged food stamped ~30s late; it now calls this, so every table agrees.)
 export function now(): string {
   const o = process.env.DATA_TS_OVERRIDE;
   if (o && !isNaN(new Date(o).getTime())) return ensureEastern(o);
