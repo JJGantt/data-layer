@@ -135,6 +135,8 @@ export interface SetRow { id: number; occurred_at: string; exercise: string; wei
  */
 export async function logSets(items: { exercise: string; weight_lbs: number; reps: number; categories?: string[]; muscles?: Record<string, number> }[]): Promise<SetRow[]> {
   const sb = getClient();
+  // now() is voice-aware: for a voice-logged set it resolves to the audio CAPTURE START (when he spoke),
+  // not the current instant — see helpers.ts. That's what makes rest gaps between sets read true.
   const ts = now();
   const rows: { occurred_at: string; exercise: string; weight_lbs: number; reps: number }[] = [];
   for (const it of items) {

@@ -172,6 +172,10 @@ function pad(v: number): string { return String(v).padStart(2, '0'); }
 function localTimestamp(d: Date): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
+// NOT helpers.now(). Same format, but this reads the real machine clock and does NOT honor
+// DATA_TS_OVERRIDE — so on a voice command these stamps are pipeline-completion time (~30s late),
+// not the audio capture start. It only bites `logged` (bookkeeping): the user-facing `occurred_at`
+// normally comes from the model, which the voice worker tells to pass the moment he actually spoke.
 function nowLocal(): string { return localTimestamp(new Date()); }
 function normalizeOccurredAt(value?: string): string {
   const raw = (value || '').trim();

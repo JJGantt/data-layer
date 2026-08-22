@@ -1,13 +1,17 @@
 import { randomUUID } from 'node:crypto';
 
-// Pure wall clock, no timezone concept at all — whatever this machine's own clock reads, right now.
-// (Named toEastern/now for historical reasons — it used to force America/New_York regardless of
-// where the host actually was; that was the bug. Matches nutrition.ts's nowLocal()/localTimestamp().)
-//
-// DATA_TS_OVERRIDE: when set (an ISO timestamp), `now()` returns THAT instant instead of the real
-// clock. The voice worker sets it to the command's audio-recording START time, so a set logged by
-// voice is timestamped when you actually spoke (your rest-clock reference) rather than 30s later when
-// the command finishes traversing the pipeline. Absent (typed/web commands) → real wall clock.
+// READ THIS BEFORE ASSUMING now() IS THE CURRENT TIME — IT OFTEN ISN'T.
+// Under the voice worker, now() returns THE MOMENT THE USER STARTED SPEAKING, not the current instant:
+// voice-pipeline's worker.py stamps the DATA_TS_OVERRIDE env var on this MCP subprocess with the
+// command's audio-recording start (voice_requests.capture_start), and now() honors it. Deliberate — a
+// set logged by voice has to land at Jared's rest-clock reference, not ~30s later when the command
+// finishes traversing transcription + routing + the model. Every caller below inherits that: `today()`
+// is the day he spoke, and anything stamped with now() is voice-aware whether or not it says so.
+// No override (typed/web commands, direct API callers) → the real machine clock: pure wall clock, no
+// timezone concept at all, whatever this host reads right now.
+// (Named toEastern/now for historical reasons — it used to force America/New_York regardless of where
+// the host actually was; that was the bug. Format-identical to nutrition.ts's nowLocal()/
+// localTimestamp() — but those read the real clock only and do NOT honor the override; see there.)
 export function now(): string {
   const o = process.env.DATA_TS_OVERRIDE;
   if (o && !isNaN(new Date(o).getTime())) return ensureEastern(o);
