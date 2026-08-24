@@ -346,6 +346,101 @@ export function formatStagedList(entries: NutritionEntry[]): string {
   return lines.join('\n');
 }
 
+// Grams this ingredient contributes to the dish's cooked weight, or null when it can't be known.
+// `unit: 'g'` is the direct case; a produce row carries produce_g (its as-eaten weight) even when the
+// portion is a count, which covers "0.5 avocado" and friends. Anything else — 'block', 'cup', 'scoop'
+// — is food-specific and NOT derivable from the unit alone, so it returns null and the caller has to
+// supply total_g rather than have this silently invent a density.
+// Scaled portions want significant figures, not decimal places: a blanket 3dp turns 161 g of broccoli
+// into "126.713 g", which reads like a precision nobody has. Grams land whole, small counts keep
+// enough resolution to stay distinguishable.
+function roundAmount(v: number): number {
+  const abs = Math.abs(v);
+  const dp = abs >= 100 ? 0 : abs >= 10 ? 1 : abs >= 1 ? 2 : 3;
+  const f = 10 ** dp;
+  return Math.round(v * f) / f;
+}
+
+function ingredientGrams(g: NutritionIngredient): number | null {
+  const unit = (g.unit || '').trim().toLowerCase();
+  if (unit === 'g' && isFiniteNumber(g.amount)) return Number(g.amount);
+  if (isFiniteNumber(g.produce_g) && Number(g.produce_g) > 0) return Number(g.produce_g);
+  return null;
+}
+
+// Scale a logged dish down by the weight left uneaten.
+//
+// You cook 432 g of a stir-fry, eat most of it, 92 g goes in the bin — every ingredient should shrink
+// by the same fraction, because leftovers are a sample of the whole dish, not of one part of it. So
+// this takes the leftover weight, works out the dish's total cooked weight, and scales each
+// ingredient's amount AND macros by (total - leftover) / total.
+//
+// Totals are re-derived from the scaled ingredients by the same rollup every other write uses, so
+// parent == sum of ingredients still holds. Display names are rebuilt from the new amounts (dropping
+// `name` lets normalizeIngredient regenerate it), so a row never reads "161 g broccoli" while
+// carrying the macros for 127 g.
+//
+// total_g: pass it when the dish contains a portion this can't weigh (tofu by the block, rice by the
+// cup). Without it, an unweighable ingredient is an error naming the offenders — better than assuming
+// a density and quietly scaling by the wrong factor.
+export async function subtractLeftovers(idPrefix: string, grams: number, totalGOverride?: number): Promise<{
+  entry: NutritionEntry; total_g: number; eaten_g: number; factor: number; assumedTotal: boolean;
+  before: { calories: number | null; protein_g: number | null; carbs_g: number | null; fat_g: number | null };
+} | null> {
+  if (!isFiniteNumber(grams) || grams <= 0) throw new ValidationError('Leftover grams must be a positive number.');
+  const sb = getClient();
+  let { data: row } = await sb.from('nutrition_entries').select('*').eq('id', idPrefix).maybeSingle();
+  if (!row) {
+    const { data: matches } = await sb.from('nutrition_entries').select('*').like('id', `${idPrefix}%`);
+    if (matches?.length === 1) row = matches[0];
+    else if ((matches?.length ?? 0) > 1) throw new ValidationError(`Ambiguous entry id '${idPrefix}' — ${matches!.length} entries match that prefix.`);
+  }
+  if (!row) return null;
+  const entry = row as NutritionEntry;
+  const ings = (entry.ingredients ?? []) as NutritionIngredient[];
+  if (!ings.length) throw new ValidationError(`Entry '${entry.name}' has no ingredients to scale.`);
+
+  let total: number;
+  if (isFiniteNumber(totalGOverride)) {
+    if (Number(totalGOverride) <= 0) throw new ValidationError('total_g must be a positive number.');
+    total = Number(totalGOverride);
+  } else {
+    const unweighable = ings.filter((g) => ingredientGrams(g) == null).map((g) => g.name || g.food || '?');
+    if (unweighable.length) {
+      throw new ValidationError(
+        `Can't weigh ${unweighable.length === 1 ? 'this ingredient' : 'these ingredients'} of '${entry.name}': ${unweighable.join(', ')}. ` +
+        'Their portions are not in grams and are not produce, so the total cooked weight is unknown. ' +
+        'Estimate the whole dish\'s cooked weight and pass it as total_g.');
+    }
+    total = ings.reduce((s, g) => s + (ingredientGrams(g) ?? 0), 0);
+  }
+  if (grams >= total) throw new ValidationError(`Leftover (${grams} g) is not less than the dish's total weight (${round10(total)} g).`);
+
+  const factor = (total - grams) / total;
+  const scaled = ings.map((g) => {
+    const out: any = { ...g };
+    delete out.name;                         // regenerated from the new amount below
+    if (isFiniteNumber(g.amount)) out.amount = roundAmount(Number(g.amount) * factor);
+    for (const k of ['calories', 'protein_g', 'carbs_g', 'fat_g', 'produce_g'] as const) {
+      if (isFiniteNumber((g as any)[k])) out[k] = round10(Number((g as any)[k]) * factor);
+    }
+    if (!g.food) out.name = g.name;          // legacy row with no structured portion: keep its label
+    return out;
+  });
+
+  const { ingredients } = normalizeIngredients(scaled, `Entry '${entry.name}'`, false);
+  const nutr = rollup(ingredients);
+  const prod = produceRollup(ingredients);
+  const before = { calories: entry.calories, protein_g: entry.protein_g, carbs_g: entry.carbs_g, fat_g: entry.fat_g };
+  const { data } = await sb.from('nutrition_entries').update({
+    ingredients, calories: nutr.calories, protein_g: nutr.protein_g, carbs_g: nutr.carbs_g, fat_g: nutr.fat_g,
+    veg_g: prod.veg_g, dark_green_g: prod.dark_green_g, fruit_g: prod.fruit_g,
+  }).eq('id', entry.id).select().single();
+
+  return { entry: data as NutritionEntry, total_g: round10(total), eaten_g: round10(total - grams),
+           factor: Math.round(factor * 1000) / 1000, before, assumedTotal: isFiniteNumber(totalGOverride) };
+}
+
 export async function deleteNutritionEntry(idPrefix: string): Promise<NutritionEntry | null> {
   const sb = getClient();
   let { data: row } = await sb.from('nutrition_entries').select('*').eq('id', idPrefix).maybeSingle();
