@@ -15,6 +15,9 @@ export interface ListItem {
   title: string | null;      // short label for narrow surfaces; falls back to `text`
   due: string | null;        // local-naive 'YYYY-MM-DD' or 'YYYY-MM-DDTHH:MM' — dated ⇒ it fires
   repeat_every: string | null;   // '1 day', '2 hours', … — null ⇒ one-shot. Null IS the boolean.
+  // When it was FIRST due. Never moves. `due` is the NEXT firing time and marches forward on a
+  // repeater, so only this can answer "has its moment been and gone?" — see migration 00060.
+  scheduled_at: string | null;
   deleted: boolean; created: string; updated: string;
 }
 
@@ -22,18 +25,14 @@ export interface ListItem {
 export const DEFAULT_LIST = 'todo';
 
 /**
- * Dating an item makes it repeat daily unless the caller says otherwise. The point is that a due date
- * means "don't let me forget this", and a one-shot notification you happen to miss — asleep, driving,
- * phone face-down — is gone for good. Repeating daily keeps asking until the item is actually cleared,
- * and clearing is one tap.
+ * Repeating is OPT-IN. Dating something used to default it to a daily repeat, on the reasoning that a
+ * one-shot notification missed while asleep is gone for good — but that safety net is better served
+ * by the expired state: an item whose scheduled moment has passed stays visible and flagged until it
+ * is cleared. That is a persistent signal; a daily re-fire is a transient one that can be missed just
+ * as easily as the first, while adding noise to every appointment that has simply been and gone.
  *
- * '1 day' rather than '24 hours' deliberately: the former is calendar arithmetic on wall-clock
- * components, so a 9am item stays 9am across a DST boundary instead of drifting to 8 or 10.
- *
- * The hub writes list_items straight to Supabase rather than through this module, so it carries the
- * same default in server.js — keep the two in step.
+ * Repeats remain a real feature for things that genuinely recur ("vitamins every evening").
  */
-export const DEFAULT_REPEAT = '1 day';
 
 export async function availableLists(): Promise<string[]> {
   const { data } = await getClient().from('lists').select('name').order('name');
@@ -63,11 +62,22 @@ export async function listItems(listName: string): Promise<ListItem[]> {
   return (data ?? []) as ListItem[];
 }
 
-/** Everything dated, across every list, soonest first — the view that used to be "reminders". */
+/**
+ * Everything dated, across every list, ordered by when it was FIRST scheduled — so the longest
+ * outstanding sits at the top and upcoming items follow. Ordering by `due` instead would shuffle a
+ * repeating item to the back the moment it fired, which is precisely when it most needs attention.
+ */
 export async function dueItems(): Promise<ListItem[]> {
   const { data } = await getClient().from('list_items').select('*')
-    .eq('deleted', false).not('due', 'is', null).order('due');
+    .eq('deleted', false).not('due', 'is', null).order('scheduled_at');
   return (data ?? []) as ListItem[];
+}
+
+/** Its originally-scheduled moment has passed and it has not been cleared. Independent of repeating. */
+export function isExpired(i: ListItem, nowLocal: string): boolean {
+  if (!i.scheduled_at) return false;
+  const m = /T\d/.test(i.scheduled_at) ? i.scheduled_at : `${i.scheduled_at.slice(0, 10)}T09:00:00`;
+  return m <= nowLocal;
 }
 
 // Resolve a requested list name to an EXISTING one case-insensitively (so 'Grocery'/'GROCERY' hit the
@@ -95,11 +105,12 @@ export async function addItem(
       id, list_name: list, text,
       title: opts.title?.trim() || null,
       due: opts.due || null,
+      scheduled_at: opts.due || null,
       // Only meaningful alongside a due — a recurrence with no first occurrence has nothing to recur
       // from. Explicit '' (as opposed to absent) is how a caller asks for a genuine one-shot.
-      repeat_every: opts.due
-        ? (opts.repeat_every === undefined ? DEFAULT_REPEAT : (opts.repeat_every.trim() || null))
-        : null,
+      // Only meaningful alongside a due — a recurrence with no first occurrence has nothing to
+      // recur from.
+      repeat_every: opts.due ? (opts.repeat_every?.trim() || null) : null,
       deleted: false, created: n, updated: n,
     })
     .select().single();
@@ -130,13 +141,14 @@ export async function setDue(
   if (!id) return null;
   const update: Record<string, unknown> = { updated: now() };
   if ('due' in patch) update.due = patch.due || null;
-  if ('repeat_every' in patch) update.repeat_every = patch.repeat_every || null;
-  // Dating something that wasn't dated makes it a reminder, and a reminder repeats by default — same
-  // rule as addItem. Only when the caller didn't state a recurrence and the item hasn't got one.
-  if (patch.due && !('repeat_every' in patch)) {
-    const { data: cur } = await getClient().from('list_items').select('repeat_every').eq('id', id).maybeSingle();
-    if (!cur?.repeat_every) update.repeat_every = DEFAULT_REPEAT;
+  // Anchor the first time something becomes dated, and only then — re-dating an already-dated item
+  // must not move it, or the item would stop reading as expired just because it was rescheduled.
+  if (patch.due) {
+    const { data: cur } = await getClient().from('list_items').select('scheduled_at').eq('id', id).maybeSingle();
+    if (!cur?.scheduled_at) update.scheduled_at = patch.due;
   }
+  if (!update.due && 'due' in patch) update.scheduled_at = null;   // un-dated ⇒ no moment to have passed
+  if ('repeat_every' in patch) update.repeat_every = patch.repeat_every || null;
   if (!update.due && 'due' in patch) update.repeat_every = null;   // un-dated ⇒ nothing left to repeat
   await getClient().from('list_items').update(update).eq('id', id);
   const { data } = await getClient().from('list_items').select('*').eq('id', id).single();
