@@ -49,6 +49,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     { name: 'get_notes', description: "Read Jared's freeform notes. Omit `name` to list the note names; pass `name` to read that note's full content.", inputSchema: { type: 'object' as const, properties: { name: { type: 'string', description: 'Optional note name to read its content. Omit to list all note names.' } } } },
     { name: 'create_note', description: "Create a note, or REPLACE an existing note's content (e.g. 'make a note called packing: passport, charger'). Saving a name that already exists overwrites it, so to ADD to an existing note, read it first with get_notes and pass the combined content back.", inputSchema: { type: 'object' as const, properties: { name: { type: 'string', description: 'Note name/title.' }, content: { type: 'string', description: 'The note body.' } }, required: ['name', 'content'] } },
     { name: 'remove_from_list', description: "Clear an item — use this for BOTH checking something off and deleting it, and for reminders too, because they are all the same action here: 'got the milk', 'check off eggs', 'I did that', 'mark it done', 'delete that reminder'. There is no separate checked-off or completed state; a cleared item leaves the list. The removal is soft, so it can be recovered. Identify by id from get_lists or get_due; `list` is optional and omitting it searches every list.", inputSchema: { type: 'object' as const, properties: { list: { type: 'string', description: 'Optional list the item is on; omit to search every list.' }, id: { type: 'string', description: 'Item id or its leading characters (from get_lists or get_due).' } }, required: ['id'] } },
+    { name: 'set_list_emoji', description: "Give a list an emoji, or change the one it has ('make the grocery list a shopping cart', 'use a box for Amazon'). The emoji leads the notification when a dated item on that list comes due — '📦 Amazon — order the filter'. A list without one falls back to a clock. Pass an empty emoji to remove it.", inputSchema: { type: 'object' as const, properties: { list: { type: 'string', description: "List name, e.g. 'grocery'." }, emoji: { type: 'string', description: 'A single emoji, e.g. "🛒". Empty removes it.' } }, required: ['list'] } },
     { name: 'delete_list', description: "Delete an ENTIRE list and everything on it (e.g. 'delete my packing list', 'get rid of the hardware list'). Removes the list and all its items. Matches the list name case-insensitively.", inputSchema: { type: 'object' as const, properties: { list: { type: 'string', description: "List name to delete, e.g. 'groceries'." } }, required: ['list'] } },
     { name: 'delete_note', description: "Delete a note (e.g. 'delete the packing note', 'remove that note'). Matches the note name case-insensitively.", inputSchema: { type: 'object' as const, properties: { name: { type: 'string', description: 'Note name to delete.' } }, required: ['name'] } },
   ],
@@ -292,6 +293,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (!it) return text(`No matching item for id '${a.id}'${where ? ` in '${where}'` : ''}.`);
       return text(`Removed from **${it.list_name}**: ${lists.itemLabel(it)}\n\n`
         + lists.formatListItems(await lists.listItems(it.list_name), it.list_name));
+    }
+    if (name === 'set_list_emoji') {
+      const hit = await lists.setListEmoji(String(a.list), a.emoji ? String(a.emoji) : null);
+      if (!hit) return text(`No list named '${a.list}'.`);
+      return text(a.emoji ? `**${hit}** is now ${a.emoji}.` : `Removed the emoji from **${hit}**.`);
     }
     if (name === 'delete_list') {
       const deleted = await lists.removeList(String(a.list));

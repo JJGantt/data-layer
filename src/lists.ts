@@ -26,6 +26,23 @@ export async function availableLists(): Promise<string[]> {
   return (data ?? []).map(r => r.name);
 }
 
+/** A list's emoji, or null. Lives on the list, not on its items — it describes the list. */
+export async function listEmoji(listName: string): Promise<string | null> {
+  const name = await resolveListName(listName);
+  const { data } = await getClient().from('lists').select('emoji').eq('name', name).maybeSingle();
+  return (data?.emoji as string | null) ?? null;
+}
+
+/** Set (or clear, with null) a list's emoji. Returns the stored list name, or null if none matched. */
+export async function setListEmoji(listName: string, emoji: string | null): Promise<string | null> {
+  const want = String(listName || '').trim();
+  const names = await availableLists();
+  const hit = names.find(n => n.toLowerCase() === want.toLowerCase());
+  if (!hit) return null;
+  await getClient().from('lists').update({ emoji: emoji || null }).eq('name', hit);
+  return hit;
+}
+
 export async function listItems(listName: string): Promise<ListItem[]> {
   const { data } = await getClient().from('list_items').select('*')
     .eq('list_name', listName).eq('deleted', false).order('created');
