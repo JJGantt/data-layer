@@ -21,6 +21,20 @@ export interface ListItem {
 /** Where an item goes when the caller didn't name a list. */
 export const DEFAULT_LIST = 'todo';
 
+/**
+ * Dating an item makes it repeat daily unless the caller says otherwise. The point is that a due date
+ * means "don't let me forget this", and a one-shot notification you happen to miss — asleep, driving,
+ * phone face-down — is gone for good. Repeating daily keeps asking until the item is actually cleared,
+ * and clearing is one tap.
+ *
+ * '1 day' rather than '24 hours' deliberately: the former is calendar arithmetic on wall-clock
+ * components, so a 9am item stays 9am across a DST boundary instead of drifting to 8 or 10.
+ *
+ * The hub writes list_items straight to Supabase rather than through this module, so it carries the
+ * same default in server.js — keep the two in step.
+ */
+export const DEFAULT_REPEAT = '1 day';
+
 export async function availableLists(): Promise<string[]> {
   const { data } = await getClient().from('lists').select('name').order('name');
   return (data ?? []).map(r => r.name);
@@ -81,7 +95,11 @@ export async function addItem(
       id, list_name: list, text,
       title: opts.title?.trim() || null,
       due: opts.due || null,
-      repeat_every: opts.repeat_every?.trim() || null,
+      // Only meaningful alongside a due — a recurrence with no first occurrence has nothing to recur
+      // from. Explicit '' (as opposed to absent) is how a caller asks for a genuine one-shot.
+      repeat_every: opts.due
+        ? (opts.repeat_every === undefined ? DEFAULT_REPEAT : (opts.repeat_every.trim() || null))
+        : null,
       deleted: false, created: n, updated: n,
     })
     .select().single();
@@ -113,6 +131,13 @@ export async function setDue(
   const update: Record<string, unknown> = { updated: now() };
   if ('due' in patch) update.due = patch.due || null;
   if ('repeat_every' in patch) update.repeat_every = patch.repeat_every || null;
+  // Dating something that wasn't dated makes it a reminder, and a reminder repeats by default — same
+  // rule as addItem. Only when the caller didn't state a recurrence and the item hasn't got one.
+  if (patch.due && !('repeat_every' in patch)) {
+    const { data: cur } = await getClient().from('list_items').select('repeat_every').eq('id', id).maybeSingle();
+    if (!cur?.repeat_every) update.repeat_every = DEFAULT_REPEAT;
+  }
+  if (!update.due && 'due' in patch) update.repeat_every = null;   // un-dated ⇒ nothing left to repeat
   await getClient().from('list_items').update(update).eq('id', id);
   const { data } = await getClient().from('list_items').select('*').eq('id', id).single();
   return data as ListItem;
