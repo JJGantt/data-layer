@@ -7,7 +7,6 @@
 
 import http from 'node:http';
 import * as lists from './lists.js';
-import * as reminders from './reminders.js';
 import * as notes from './notes.js';
 import * as health from './health.js';
 import * as workouts from './workouts.js';
@@ -60,30 +59,26 @@ const server = http.createServer(async (req, res) => {
     }
     if (listItemsMatch && method === 'POST') {
       const body = await parseBody(req);
-      const item = await lists.addItem(listItemsMatch[1], body.text);
+      const item = await lists.addItem(listItemsMatch[1], body.text, { title: body.title, due: body.due });
       return json(res, { item });
     }
     const listItemDeleteMatch = path.match(/^\/data\/lists\/([^/]+)\/items\/([^/]+)$/);
     if (listItemDeleteMatch && method === 'DELETE') {
-      const item = await lists.removeItem(listItemDeleteMatch[1], listItemDeleteMatch[2]);
+      const item = await lists.removeItem(listItemDeleteMatch[1] || null, listItemDeleteMatch[2]);
       if (!item) return json(res, { error: 'not found' }, 404);
       return json(res, { item });
     }
 
-    // ── Reminders ──
-    if (path === '/data/reminders' && method === 'GET') {
-      return json(res, { reminders: await reminders.listReminders() });
+    // ── Dated items (what used to be "reminders": now just items that have a due date) ──
+    if (path === '/data/due' && method === 'GET') {
+      return json(res, { items: await lists.dueItems() });
     }
-    if (path === '/data/reminders' && method === 'POST') {
+    const setDueMatch = path.match(/^\/data\/due\/([^/]+)$/);
+    if (setDueMatch && (method === 'PATCH' || method === 'PUT')) {
       const body = await parseBody(req);
-      const r = await reminders.addReminder(body.text, body.due);
-      return json(res, { reminder: r });
-    }
-    const reminderDeleteMatch = path.match(/^\/data\/reminders\/([^/]+)$/);
-    if (reminderDeleteMatch && method === 'DELETE') {
-      const r = await reminders.removeReminder(reminderDeleteMatch[1]);
-      if (!r) return json(res, { error: 'not found' }, 404);
-      return json(res, { reminder: r });
+      const item = await lists.setDue(body.list ?? null, setDueMatch[1], body.due ?? null);
+      if (!item) return json(res, { error: 'not found' }, 404);
+      return json(res, { item });
     }
 
     // ── Notes ──
@@ -230,8 +225,8 @@ const server = http.createServer(async (req, res) => {
     if (reviewListMatch && method === 'GET') {
       return json(res, { text: await reviews.buildListReview(reviewListMatch[1]) });
     }
-    if (path === '/data/reviews/reminders' && method === 'GET') {
-      return json(res, { text: await reviews.buildRemindersReview() });
+    if (path === '/data/reviews/due' && method === 'GET') {
+      return json(res, { text: await reviews.buildDueReview() });
     }
 
     // Status

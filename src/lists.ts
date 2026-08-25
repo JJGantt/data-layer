@@ -1,10 +1,24 @@
 import { getClient } from './client.js';
 import { now, uuid } from './helpers.js';
 
+// Lists hold every kind of item, dated or not. There is no separate reminders table any more (see
+// migration 00056): a "reminder" is just an item with a `due`, and the scheduler fires anything dated
+// regardless of which list it sits on. An Amazon item that must be ordered by Friday is a dated
+// Amazon item — it fires and badges exactly like everything else. There are no classes of item.
+//
+// There is also ONE way for an item to leave a list: `deleted`. No separate "done" — checking
+// something off and getting rid of it are the same act, and modelling them apart only produced two
+// flags to keep in sync and two surfaces that disagreed about what a tick meant. `deleted` is soft:
+// the row stays for a recovery window, then is purged.
 export interface ListItem {
   id: string; list_name: string; text: string;
-  deleted: boolean; created: string; updated: string;   // no 'done': see reminders.ts
+  title: string | null;      // short label for narrow surfaces; falls back to `text`
+  due: string | null;        // local-naive 'YYYY-MM-DD' or 'YYYY-MM-DDTHH:MM' — dated ⇒ it fires
+  deleted: boolean; created: string; updated: string;
 }
+
+/** Where an item goes when the caller didn't name a list. */
+export const DEFAULT_LIST = 'todo';
 
 export async function availableLists(): Promise<string[]> {
   const { data } = await getClient().from('lists').select('name').order('name');
@@ -14,6 +28,13 @@ export async function availableLists(): Promise<string[]> {
 export async function listItems(listName: string): Promise<ListItem[]> {
   const { data } = await getClient().from('list_items').select('*')
     .eq('list_name', listName).eq('deleted', false).order('created');
+  return (data ?? []) as ListItem[];
+}
+
+/** Everything dated, across every list, soonest first — the view that used to be "reminders". */
+export async function dueItems(): Promise<ListItem[]> {
+  const { data } = await getClient().from('list_items').select('*')
+    .eq('deleted', false).not('due', 'is', null).order('due');
   return (data ?? []) as ListItem[];
 }
 
@@ -28,23 +49,41 @@ export async function resolveListName(name: string): Promise<string> {
   return hit ? String(hit.name) : want;
 }
 
-export async function addItem(listName: string, text: string): Promise<ListItem> {
+export async function addItem(
+  listName: string,
+  text: string,
+  opts: { title?: string; due?: string } = {},
+): Promise<ListItem> {
   const sb = getClient();
-  const list = await resolveListName(listName);
+  const list = await resolveListName(listName || DEFAULT_LIST);
   await sb.from('lists').upsert({ name: list }, { onConflict: 'name', ignoreDuplicates: true });
   const n = now(); const id = uuid();
   const { data } = await sb.from('list_items')
-    .insert({ id, list_name: list, text, deleted: false, created: n, updated: n })
+    .insert({
+      id, list_name: list, text,
+      title: opts.title?.trim() || null,
+      due: opts.due || null,
+      deleted: false, created: n, updated: n,
+    })
     .select().single();
   return data as ListItem;
 }
 
 /** Clear an item — checking it off and removing it are the same thing. Soft, so it's recoverable. */
-export async function removeItem(listName: string, idPrefix: string): Promise<ListItem | null> {
+export async function removeItem(listName: string | null, idPrefix: string): Promise<ListItem | null> {
   const id = await resolveListItemId(listName, idPrefix);
   if (!id) return null;
   const n = now();
   await getClient().from('list_items').update({ deleted: true, updated: n }).eq('id', id);
+  const { data } = await getClient().from('list_items').select('*').eq('id', id).single();
+  return data as ListItem;
+}
+
+/** Set, change or clear an item's due date. Passing null un-dates it, which stops it firing. */
+export async function setDue(listName: string | null, idPrefix: string, due: string | null): Promise<ListItem | null> {
+  const id = await resolveListItemId(listName, idPrefix);
+  if (!id) return null;
+  await getClient().from('list_items').update({ due: due || null, updated: now() }).eq('id', id);
   const { data } = await getClient().from('list_items').select('*').eq('id', id).single();
   return data as ListItem;
 }
@@ -67,19 +106,42 @@ export async function removeList(listName: string): Promise<string | null> {
   return hit;
 }
 
-async function resolveListItemId(listName: string, prefix: string): Promise<string | null> {
-  const list = await resolveListName(listName);   // case-insensitive: 'Grocery' → 'grocery'
-  const { data: exact } = await getClient().from('list_items').select('id')
-    .eq('id', prefix).eq('list_name', list).eq('deleted', false).maybeSingle();
+// `listName` is optional: with reminders folded in, a caller often holds an id that came from the
+// cross-list dated view and has no idea which list the item sits on. Omitting it searches all lists.
+async function resolveListItemId(listName: string | null, prefix: string): Promise<string | null> {
+  const sb = getClient();
+  const list = listName ? await resolveListName(listName) : null;   // case-insensitive: 'Grocery' → 'grocery'
+
+  let exactQ = sb.from('list_items').select('id').eq('id', prefix).eq('deleted', false);
+  if (list) exactQ = exactQ.eq('list_name', list);
+  const { data: exact } = await exactQ.maybeSingle();
   if (exact) return exact.id;
-  const { data: matches } = await getClient().from('list_items').select('id')
-    .eq('list_name', list).eq('deleted', false).like('id', `${prefix}%`);
+
+  let likeQ = sb.from('list_items').select('id').eq('deleted', false).like('id', `${prefix}%`);
+  if (list) likeQ = likeQ.eq('list_name', list);
+  const { data: matches } = await likeQ;
   if (matches?.length === 1) return matches[0].id;
   return null;
 }
 
+/** What a row calls itself on a narrow surface. */
+export function itemLabel(i: ListItem): string {
+  return (i.title && i.title.trim()) || i.text;
+}
+
+function line(i: ListItem, withList = false): string {
+  const where = withList ? ` [${i.list_name}]` : '';
+  const due = i.due ? ` (due: ${i.due})` : '';
+  return `- ${itemLabel(i)}${where}${due}  [id: ${i.id.slice(0, 8)}]`;
+}
+
 export function formatListItems(items: ListItem[], listName: string): string {
   if (!items.length) return `'${listName}' is empty.`;
-  const lines = items.map(i => `- ${i.text}  [id: ${i.id.slice(0, 8)}]`);
-  return `**${listName}** (${items.length} items):\n${lines.join('\n')}`;
+  return `**${listName}** (${items.length} items):\n${items.map(i => line(i)).join('\n')}`;
+}
+
+/** The cross-list dated view. Says which list each item is on, since they come from all of them. */
+export function formatDueItems(items: ListItem[]): string {
+  if (!items.length) return 'Nothing has a due date.';
+  return `**Due** (${items.length} items):\n${items.map(i => line(i, true)).join('\n')}`;
 }

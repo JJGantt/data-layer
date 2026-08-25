@@ -8,7 +8,6 @@ import { hostname } from 'os';
 import * as health from './health.js';
 import * as workouts from './workouts.js';
 import * as nutrition from './nutrition.js';
-import * as reminders from './reminders.js';
 import * as lists from './lists.js';
 import * as notes from './notes.js';
 
@@ -43,14 +42,13 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     { name: 'edit_staged', description: "Edit a staged meal's name and/or ingredients; the server re-derives the entry totals from the ingredients. For a simple food you may pass `nutrition` (macros) and it's folded into the single ingredient. Identify it by ID or 8-char prefix.", inputSchema: { type: 'object' as const, properties: { id: { type: 'string', description: 'Staged meal ID or 8-char prefix.' }, name: { type: 'string' }, nutrition: { type: 'object', properties: { calories: { type: 'number' }, protein_g: { type: 'number' }, carbs_g: { type: 'number' }, fat_g: { type: 'number' } } }, ingredients: { type: 'array', items: { type: 'object', properties: { food: { type: 'string' }, amount: { type: 'number' }, unit: { type: 'string' }, name: { type: 'string' }, calories: { type: 'number' }, protein_g: { type: 'number' }, carbs_g: { type: 'number' }, fat_g: { type: 'number' }, produce_g: { type: 'number', description: 'As-eaten weight of the produce itself, in GRAMS. Required whenever produce_type is set.' }, produce_type: { type: 'string', enum: ['dark_green_vegetable', 'other_vegetable', 'fruit'], description: "Set ONLY for fruits/vegetables; pick exactly one (mutually exclusive). 'dark_green_vegetable' = dark green THROUGHOUT (spinach, kale, arugula, romaine, chard, broccoli, Brussels sprouts, asparagus, green beans, peas). 'other_vegetable' = every other vegetable (mushrooms, onion, cauliflower, cabbage, carrots, peppers, tomato, cucumber, celery, zucchini, potato, corn, legumes). 'fruit' = fruits including avocado. Broccoli IS dark green; cucumber/celery/zucchini/green peppers are only green-skinned and are not. Omit for grains, dairy, meat, eggs, oils, condiments." } } } } }, required: ['id'] } },
     { name: 'remove_staged', description: 'Remove/delete a staged meal by ID or 8-char prefix. Does not affect committed entries.', inputSchema: { type: 'object' as const, properties: { id: { type: 'string', description: 'Staged meal ID or 8-char prefix.' } }, required: ['id'] } },
     { name: 'reload_wall', description: 'Reload the TV wall display (the Pi kiosk browser). Use when the wall is frozen, blank, stale, or showing a crashed/"Aw Snap" page. Kills the kiosk chromium; the Pi automatically relaunches it fresh within a few seconds.', inputSchema: { type: 'object' as const, properties: {} } },
-    { name: 'get_reminders', description: 'List all active reminders (things to do or be reminded of), each with its id. Use when Jared asks what his reminders are or what he needs to do.', inputSchema: { type: 'object' as const, properties: {} } },
-    { name: 'create_reminder', description: "Add a reminder — a thing to do or be reminded of (e.g. 'remind me to call the dentist', 'remind me to renew the registration'). Put ONLY the thing itself in `text` (no date words baked in); if a specific time was stated, put it in `due`.", inputSchema: { type: 'object' as const, properties: { text: { type: 'string', description: 'What to be reminded of, e.g. "call the dentist".' }, due: { type: 'string', description: 'Optional due date/time as ISO 8601 (YYYY-MM-DD or YYYY-MM-DDTHH:MM). Omit if no specific time was given.' } }, required: ['text'] } },
+    { name: 'get_due', description: "Show everything with a due date, across ALL lists, soonest first. A 'reminder' is simply an item that has a due date — there is no separate reminders list — so use this when Jared asks what his reminders are, what is coming up, or what is overdue.", inputSchema: { type: 'object' as const, properties: {} } },
     { name: 'get_lists', description: "Show Jared's lists (groceries, todos, packing, hardware, etc.). Omit `list` to see every list with its items; pass `list` to see just that one. Use when he asks what is on a list.", inputSchema: { type: 'object' as const, properties: { list: { type: 'string', description: "Optional list name to show only that list, e.g. 'groceries'. Omit to show all lists." } } } },
-    { name: 'add_to_list', description: "Add an item to a list (e.g. 'add milk to groceries', 'put drano on the hardware list'). The list is created automatically if it does not exist yet. Reuse an existing list name when the intent is clearly the same list.", inputSchema: { type: 'object' as const, properties: { list: { type: 'string', description: "List name, e.g. 'groceries'." }, text: { type: 'string', description: 'The item to add, e.g. "milk".' } }, required: ['list', 'text'] } },
+    { name: 'add_to_list', description: "Add an item to a list — this covers BOTH list items and reminders, because a reminder is only an item with a due date. 'add milk to groceries' is an undated item; 'remind me to call the dentist at 3pm' is an item on the todo list with `due` set; 'order the filter from Amazon by Friday' is an item on the Amazon list with `due` set. Anything with a due date fires a notification at that time and counts toward the app badge, whichever list it is on. Omit `list` to use the default todo list. The list is created automatically if it does not exist. Reuse an existing list name when the intent is clearly the same list.", inputSchema: { type: 'object' as const, properties: { list: { type: 'string', description: "List name, e.g. 'groceries'. Omit for the default 'todo' list." }, text: { type: 'string', description: 'The item itself, e.g. "milk" or "call the dentist". Do NOT bake date words into this — put times in `due`.' }, title: { type: 'string', description: 'Optional SHORT label (a few words) for narrow displays like the phone widget. Set this whenever `text` runs longer than a few words; put the gist here and the detail in `text`.' }, due: { type: 'string', description: 'Optional due date/time, ISO 8601 local (YYYY-MM-DD or YYYY-MM-DDTHH:MM). Setting it makes the item fire a notification then. Omit if no time was given.' } }, required: ['text'] } },
+    { name: 'set_due', description: "Set, change or clear the due date on an existing item — 'remind me about the milk tomorrow at 9', 'push the dentist one to Friday', 'snooze that', or clear it so it stops firing. Identify the item by id from get_due or get_lists.", inputSchema: { type: 'object' as const, properties: { id: { type: 'string', description: 'Item id or its leading characters.' }, list: { type: 'string', description: 'Optional list to search; omit to search every list.' }, due: { type: 'string', description: 'New due date/time, ISO 8601 local (YYYY-MM-DD or YYYY-MM-DDTHH:MM). Omit or pass empty to REMOVE the due date, which stops it firing.' } }, required: ['id'] } },
     { name: 'get_notes', description: "Read Jared's freeform notes. Omit `name` to list the note names; pass `name` to read that note's full content.", inputSchema: { type: 'object' as const, properties: { name: { type: 'string', description: 'Optional note name to read its content. Omit to list all note names.' } } } },
     { name: 'create_note', description: "Create a note, or REPLACE an existing note's content (e.g. 'make a note called packing: passport, charger'). Saving a name that already exists overwrites it, so to ADD to an existing note, read it first with get_notes and pass the combined content back.", inputSchema: { type: 'object' as const, properties: { name: { type: 'string', description: 'Note name/title.' }, content: { type: 'string', description: 'The note body.' } }, required: ['name', 'content'] } },
-    { name: 'delete_reminder', description: 'Clear a reminder — use this for BOTH finishing one and deleting one, because they are the same action here: "I did that", "mark it done", "check that off", "delete that reminder", "remove the dentist one". There is no separate complete/done state. The removal is soft, so it can be recovered. Identify by id or leading characters from get_reminders.', inputSchema: { type: 'object' as const, properties: { id: { type: 'string', description: 'Reminder id or its leading characters (from get_reminders).' } }, required: ['id'] } },
-    { name: 'remove_from_list', description: "Clear an item off a list — use this for BOTH checking something off and deleting it, because they are the same action here: 'got the milk', 'check off eggs', 'take milk off the groceries', 'remove eggs from the list'. There is no separate checked-off state; a cleared item leaves the list. The removal is soft, so it can be recovered. Identify by id from get_lists (call it first if you don't have the id).", inputSchema: { type: 'object' as const, properties: { list: { type: 'string', description: 'The list the item is on.' }, id: { type: 'string', description: 'Item id or its leading characters (from get_lists).' } }, required: ['list', 'id'] } },
+    { name: 'remove_from_list', description: "Clear an item — use this for BOTH checking something off and deleting it, and for reminders too, because they are all the same action here: 'got the milk', 'check off eggs', 'I did that', 'mark it done', 'delete that reminder'. There is no separate checked-off or completed state; a cleared item leaves the list. The removal is soft, so it can be recovered. Identify by id from get_lists or get_due; `list` is optional and omitting it searches every list.", inputSchema: { type: 'object' as const, properties: { list: { type: 'string', description: 'Optional list the item is on; omit to search every list.' }, id: { type: 'string', description: 'Item id or its leading characters (from get_lists or get_due).' } }, required: ['id'] } },
     { name: 'delete_list', description: "Delete an ENTIRE list and everything on it (e.g. 'delete my packing list', 'get rid of the hardware list'). Removes the list and all its items. Matches the list name case-insensitively.", inputSchema: { type: 'object' as const, properties: { list: { type: 'string', description: "List name to delete, e.g. 'groceries'." } }, required: ['list'] } },
     { name: 'delete_note', description: "Delete a note (e.g. 'delete the packing note', 'remove that note'). Matches the note name case-insensitively.", inputSchema: { type: 'object' as const, properties: { name: { type: 'string', description: 'Note name to delete.' } }, required: ['name'] } },
   ],
@@ -229,12 +227,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return text('Reloading the wall display — chromium will relaunch in a few seconds.');
     }
 
-    if (name === 'get_reminders') {
-      return text(reminders.formatReminders(await reminders.listReminders()));
-    }
-    if (name === 'create_reminder') {
-      const r = await reminders.addReminder(String(a.text), a.due ? String(a.due) : undefined);
-      return text(`Reminder added: ${r.text}${r.due ? ` (due: ${r.due})` : ''}\n\n` + reminders.formatReminders(await reminders.listReminders()));
+    if (name === 'get_due') {
+      return text(lists.formatDueItems(await lists.dueItems()));
     }
     if (name === 'get_lists') {
       const names = await lists.availableLists();
@@ -254,8 +248,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return text(blocks.join('\n\n'));
     }
     if (name === 'add_to_list') {
-      const item = await lists.addItem(String(a.list), String(a.text));
-      return text(`Added to **${a.list}**: ${item.text}\n\n` + lists.formatListItems(await lists.listItems(String(a.list)), String(a.list)));
+      const list = String(a.list || lists.DEFAULT_LIST);
+      const item = await lists.addItem(list, String(a.text), {
+        title: a.title ? String(a.title) : undefined,
+        due: a.due ? String(a.due) : undefined,
+      });
+      const when = item.due ? ` — due ${item.due}` : '';
+      return text(`Added to **${item.list_name}**: ${lists.itemLabel(item)}${when}\n\n`
+        + lists.formatListItems(await lists.listItems(item.list_name), item.list_name));
+    }
+    if (name === 'set_due') {
+      const where = a.list ? String(a.list) : null;
+      const it = await lists.setDue(where, String(a.id), a.due ? String(a.due) : null);
+      if (!it) return text(`No item matched id '${a.id}'${where ? ` on '${where}'` : ''}.`);
+      return text(it.due
+        ? `**${lists.itemLabel(it)}** (${it.list_name}) is now due ${it.due}.`
+        : `**${lists.itemLabel(it)}** (${it.list_name}) no longer has a due date, so it will not fire.`);
     }
     if (name === 'get_notes') {
       if (a.name) {
@@ -270,15 +278,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       await notes.setNote(String(a.name), String(a.content));
       return text(`Saved note '${a.name}'.`);
     }
-    if (name === 'delete_reminder') {
-      const r = await reminders.removeReminder(String(a.id));
-      if (!r) return text(`No reminder matched id '${a.id}'.`);
-      return text(`Deleted reminder: ${r.text}\n\n` + reminders.formatReminders(await reminders.listReminders()));
-    }
     if (name === 'remove_from_list') {
-      const it = await lists.removeItem(String(a.list), String(a.id));
-      if (!it) return text(`No matching item in '${a.list}' for id '${a.id}'.`);
-      return text(`Removed from **${a.list}**: ${it.text}\n\n` + lists.formatListItems(await lists.listItems(String(a.list)), String(a.list)));
+      const where = a.list ? String(a.list) : null;
+      const it = await lists.removeItem(where, String(a.id));
+      if (!it) return text(`No matching item for id '${a.id}'${where ? ` in '${where}'` : ''}.`);
+      return text(`Removed from **${it.list_name}**: ${lists.itemLabel(it)}\n\n`
+        + lists.formatListItems(await lists.listItems(it.list_name), it.list_name));
     }
     if (name === 'delete_list') {
       const deleted = await lists.removeList(String(a.list));

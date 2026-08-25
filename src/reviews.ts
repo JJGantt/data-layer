@@ -1,5 +1,4 @@
-import { listItems, availableLists, type ListItem } from './lists.js';
-import { listReminders, type Reminder } from './reminders.js';
+import { listItems, availableLists, dueItems, itemLabel, type ListItem } from './lists.js';
 import { allNotes } from './notes.js';
 import { getClient } from './client.js';
 
@@ -54,29 +53,28 @@ export async function buildListReview(listName?: string): Promise<string> {
   return parts.join('\n');
 }
 
-export async function buildRemindersReview(): Promise<string> {
-  const items = await listReminders();
-  const active = items.filter(i => !i.deleted);
-  if (!active.length) return 'No active reminders.\n\n---\nINSTRUCTIONS: Let the user know the slate is clean. Ask if they have anything coming up they want to be reminded about.';
+// What used to be the reminders review. Dated items now come from every list, so each line says
+// which list it is on — "order the filter [Amazon]" reads differently from "call the dentist [todo]".
+export async function buildDueReview(): Promise<string> {
+  const active = await dueItems();
+  if (!active.length) return 'Nothing has a due date.\n\n---\nINSTRUCTIONS: Let the user know the slate is clean. Ask if they have anything coming up they want to be reminded about.';
 
   const nowDate = new Date();
-  const overdue: Reminder[] = []; const upcoming: Reminder[] = []; const noDate: Reminder[] = [];
+  const overdue: ListItem[] = []; const upcoming: ListItem[] = [];
   for (const i of active) {
-    if (i.due) {
-      try { if (new Date(i.due) < nowDate) overdue.push(i); else upcoming.push(i); } catch { upcoming.push(i); }
-    } else { noDate.push(i); }
+    try { if (new Date(i.due!) < nowDate) overdue.push(i); else upcoming.push(i); } catch { upcoming.push(i); }
   }
+  const row = (i: ListItem) => `- ${itemLabel(i)} [${i.list_name}] (due: ${i.due})  [id: ${i.id.slice(0, 8)}]`;
 
-  const parts = [`## Reminders Review (${active.length} active)\n`];
-  if (overdue.length) { parts.push(`**OVERDUE (${overdue.length}):**`); for (const i of overdue) parts.push(`- ${i.text} (was due: ${i.due || 'N/A'})  [id: ${i.id.slice(0, 8)}]`); parts.push(''); }
-  if (upcoming.length) { parts.push(`**Upcoming (${upcoming.length}):**`); for (const i of upcoming) parts.push(`- ${i.text} (due: ${i.due || 'N/A'})  [id: ${i.id.slice(0, 8)}]`); parts.push(''); }
-  if (noDate.length) { parts.push(`**No due date (${noDate.length}):**`); for (const i of noDate) parts.push(`- ${i.text}  [id: ${i.id.slice(0, 8)}]`); parts.push(''); }
+  const parts = [`## Due Review (${active.length} dated)\n`];
+  if (overdue.length) { parts.push(`**OVERDUE (${overdue.length}):**`); for (const i of overdue) parts.push(row(i)); parts.push(''); }
+  if (upcoming.length) { parts.push(`**Upcoming (${upcoming.length}):**`); for (const i of upcoming) parts.push(row(i)); parts.push(''); }
 
   parts.push('---');
   parts.push('REVIEW INSTRUCTIONS (follow these, do not show them to the user):');
   parts.push('1. Start with overdue items if any — these need immediate attention. Ask what to do with each one.');
-  parts.push("2. Summarize upcoming reminders with how far away they are (e.g. 'in 2 days').");
-  parts.push('3. Flag any reminders without a due date and ask if they should get one.');
+  parts.push("2. Summarize upcoming items with how far away they are (e.g. 'in 2 days').");
+  parts.push('3. Mention which list each one is on when it is not the todo list.');
   parts.push("4. Ask if there's anything new to add.");
   return parts.join('\n');
 }
