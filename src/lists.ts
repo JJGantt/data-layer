@@ -14,6 +14,7 @@ export interface ListItem {
   id: string; list_name: string; text: string;
   title: string | null;      // short label for narrow surfaces; falls back to `text`
   due: string | null;        // local-naive 'YYYY-MM-DD' or 'YYYY-MM-DDTHH:MM' — dated ⇒ it fires
+  repeat_every: string | null;   // '1 day', '2 hours', … — null ⇒ one-shot. Null IS the boolean.
   deleted: boolean; created: string; updated: string;
 }
 
@@ -52,7 +53,7 @@ export async function resolveListName(name: string): Promise<string> {
 export async function addItem(
   listName: string,
   text: string,
-  opts: { title?: string; due?: string } = {},
+  opts: { title?: string; due?: string; repeat_every?: string } = {},
 ): Promise<ListItem> {
   const sb = getClient();
   const list = await resolveListName(listName || DEFAULT_LIST);
@@ -63,6 +64,7 @@ export async function addItem(
       id, list_name: list, text,
       title: opts.title?.trim() || null,
       due: opts.due || null,
+      repeat_every: opts.repeat_every?.trim() || null,
       deleted: false, created: n, updated: n,
     })
     .select().single();
@@ -79,11 +81,22 @@ export async function removeItem(listName: string | null, idPrefix: string): Pro
   return data as ListItem;
 }
 
-/** Set, change or clear an item's due date. Passing null un-dates it, which stops it firing. */
-export async function setDue(listName: string | null, idPrefix: string, due: string | null): Promise<ListItem | null> {
+/**
+ * Set, change or clear an item's due date and/or its repeat period. Passing due=null un-dates it,
+ * which stops it firing; repeat_every=null makes a recurring item one-shot without un-dating it.
+ * Fields are only touched when present, so re-dating something doesn't silently cancel its repeat.
+ */
+export async function setDue(
+  listName: string | null,
+  idPrefix: string,
+  patch: { due?: string | null; repeat_every?: string | null },
+): Promise<ListItem | null> {
   const id = await resolveListItemId(listName, idPrefix);
   if (!id) return null;
-  await getClient().from('list_items').update({ due: due || null, updated: now() }).eq('id', id);
+  const update: Record<string, unknown> = { updated: now() };
+  if ('due' in patch) update.due = patch.due || null;
+  if ('repeat_every' in patch) update.repeat_every = patch.repeat_every || null;
+  await getClient().from('list_items').update(update).eq('id', id);
   const { data } = await getClient().from('list_items').select('*').eq('id', id).single();
   return data as ListItem;
 }
@@ -131,7 +144,7 @@ export function itemLabel(i: ListItem): string {
 
 function line(i: ListItem, withList = false): string {
   const where = withList ? ` [${i.list_name}]` : '';
-  const due = i.due ? ` (due: ${i.due})` : '';
+  const due = i.due ? ` (due: ${i.due}${i.repeat_every ? `, repeats every ${i.repeat_every}` : ''})` : '';
   return `- ${itemLabel(i)}${where}${due}  [id: ${i.id.slice(0, 8)}]`;
 }
 
