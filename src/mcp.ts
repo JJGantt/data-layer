@@ -11,6 +11,7 @@ import * as nutrition from './nutrition.js';
 import * as lists from './lists.js';
 import * as desk from './desk.js';
 import * as notes from './notes.js';
+import * as reports from './reports.js';
 
 const server = new Server({ name: 'data', version: '2.0.0' }, { capabilities: { tools: {} } });
 
@@ -57,6 +58,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     { name: 'get_sessions', description: "What Claude sessions are running or parked on Jared's machines, and what each last said. Use when he asks what is being worked on, what happened with something, or whether a job finished.", inputSchema: { type: 'object' as const, properties: {} } },
     { name: 'resume_session', description: "Bring a parked session back with its full context, optionally with a follow-up. Use when he wants to continue something from get_sessions.", inputSchema: { type: 'object' as const, properties: { session: { type: 'string', description: 'Session id from get_sessions.' }, prompt: { type: 'string', description: 'Optional follow-up to send once it is back.' } }, required: ['session'] } },
     { name: 'end_session', description: 'Close a running session for good. Use when he says he is done with one.', inputSchema: { type: 'object' as const, properties: { session: { type: 'string', description: 'Session id from get_sessions.' } }, required: ['session'] } },
+    { name: 'publish_report', description: "Publish an HTML write-up of work you have just finished. Call this when you complete a task that was dispatched to you, before you give your normal reply. Jared gets a phone notification and reads the page there; your ordinary reply still stands in the session, so this is an extra artifact and never a replacement for answering. Write a self-contained HTML fragment for the page body (no <html>, <head> or <body> tags). What reads well: a short lead paragraph answering 'what happened' before any detail, then sections with <h2> headings; tables for comparisons and before/after; <a href> links out to files, commits, docs and anything on the web worth following; and inline <svg> for charts, diagrams and plots. Length should match the work \u2014 a one-line fix does not need sections. HARD CONSTRAINT: the page is served under a Content-Security-Policy that blocks ALL JavaScript and every external stylesheet. No <script>, no charting library, no CDN link tag. Anything visual must be inline <svg>, which can draw any chart or diagram you need. Inline <style> blocks and style attributes DO work, and images work as data: URIs or https: URLs.", inputSchema: { type: 'object' as const, properties: { title: { type: 'string', description: "Short page title, e.g. \"Widget freshness fix\". Shown as the notification title." }, summary: { type: 'string', description: "One sentence saying what you did. This becomes the notification body, so it must stand alone on a lock screen." }, html: { type: 'string', description: "The report body as HTML. Inline SVG for visuals; no scripts." } }, required: ['title', 'summary', 'html'] } },
     { name: 'delete_list', description: "Delete an ENTIRE list and everything on it (e.g. 'delete my packing list', 'get rid of the hardware list'). Removes the list and all its items. Matches the list name case-insensitively.", inputSchema: { type: 'object' as const, properties: { list: { type: 'string', description: "List name to delete, e.g. 'groceries'." } }, required: ['list'] } },
     { name: 'delete_note', description: "Delete a note (e.g. 'delete the packing note', 'remove that note'). Matches the note name case-insensitively.", inputSchema: { type: 'object' as const, properties: { name: { type: 'string', description: 'Note name to delete.' } }, required: ['name'] } },
   ],
@@ -310,6 +312,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const rows = await desk.listRepos();
       if (!rows.length) return text('No projects published.');
       return text(rows.map((r) => `- ${r.name}${r.branch && r.branch !== 'main' ? ` (${r.branch})` : ''}`).join('\n'));
+    }
+    if (name === 'publish_report') {
+      const id = await reports.publishReport(String(a.title || ''), String(a.summary || ''), String(a.html || ''));
+      return text(`Published. Jared gets a notification; the page is at /report/${id}.`);
     }
     if (name === 'start_session') {
       const machine = String(a.machine || 'pi').toLowerCase() === 'mac' ? 'mac' : 'pi';
