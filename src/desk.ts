@@ -54,7 +54,51 @@ export async function startSession(repo: string | undefined, prompt: string, mac
     payload: { path: target.path, name: target.name, target: machine, ...(prompt ? { prompt } : {}) },
   });
   if (error) return { ok: false as const, error: error.message };
+  await setFocus(id, machine);
   return { ok: true as const, id, repo: target.name, machine, matched: !!hit || !want };
+}
+
+/**
+ * Point follow-ups at the dispatch just made.
+ *
+ * Moved ONLY from here and from resume — never from anything a human does at a keyboard. Jared may be
+ * working in another session at the same moment, and "the most recently active session" would send a
+ * dictated follow-up straight into it. The pointer belongs to the assistant's own dispatches.
+ *
+ * A command id, not a session id: at this moment the session does not exist yet. The machine creates
+ * it a moment later and records command_id on the row, which is what resolves the two.
+ */
+export async function setFocus(commandId: string, machine: Machine) {
+  await getClient().from('desk_focus')
+    .upsert({ id: 'current', command_id: commandId, session_id: null, machine, updated: new Date().toISOString() },
+            { onConflict: 'id' });
+}
+
+/** The session a follow-up should go to, resolved through the dispatch that created it. */
+export async function focusedSession(): Promise<DeskSession | null> {
+  const { data: f } = await getClient().from('desk_focus').select('*').eq('id', 'current').maybeSingle();
+  if (!f?.command_id) return null;
+  const { data } = await getClient().from('desk_sessions').select('*').eq('command_id', f.command_id).maybeSingle();
+  return (data as DeskSession) ?? null;
+}
+
+/**
+ * Send a follow-up into the focused session.
+ *
+ * Resolution can legitimately fail two ways, and they mean different things: nothing has been
+ * dispatched yet, or the dispatch has not become a session yet (a launch takes a few seconds). Saying
+ * which one saves Jared guessing whether it worked.
+ */
+export async function followUp(prompt: string) {
+  const { data: f } = await getClient().from('desk_focus').select('*').eq('id', 'current').maybeSingle();
+  if (!f?.command_id) return { ok: false as const, error: 'no session has been started from here yet' };
+  const s = await focusedSession();
+  if (!s) return { ok: false as const, error: 'the last dispatch has not opened its session yet — try again in a moment' };
+  const id = uuid();
+  const { error } = await getClient().from('desk_commands').insert({
+    id, kind: 'follow_up', payload: { session: s.id, prompt, target: f.machine || 'pi' },
+  });
+  return error ? { ok: false as const, error: error.message } : { ok: true as const, id, repo: s.repo, session: s.id };
 }
 
 export async function listSessions(): Promise<DeskSession[]> {
@@ -73,7 +117,10 @@ export async function sessionCommand(kind: 'resume_session' | 'end_session', ses
   const { error } = await getClient().from('desk_commands').insert({
     id, kind, payload: { session, target: 'pi', ...(prompt ? { prompt } : {}) },
   });
-  return error ? { ok: false as const, error: error.message } : { ok: true as const, id };
+  if (error) return { ok: false as const, error: error.message };
+  // Resuming makes that session the one you are talking to again, so follow-ups should go there.
+  if (kind === 'resume_session') await setFocus(id, 'pi');
+  return { ok: true as const, id };
 }
 
 export function formatSessions(rows: DeskSession[], q: any[]): string {
