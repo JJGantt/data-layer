@@ -21,8 +21,10 @@ jobs:
   migrate:
     runs-on: ubuntu-latest
     env:
+      # The access token is the ONLY credential needed — `link` and `db push` both authenticate with
+      # it, verified against the live project from a clean directory. There is no DB password here
+      # because the CLI never opens a direct psql connection for this.
       SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
-      SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
       PROJECT_REF: felyggqjjhltwokdfhop
     steps:
       - uses: actions/checkout@v4
