@@ -27,6 +27,28 @@ function repoName(): string | null {
   return base || null;
 }
 
+/**
+ * Undo HTML-escaping when a publisher sent entities instead of markup.
+ *
+ * A model that hedges — writing `&lt;p&gt;` rather than `<p>` — would otherwise publish a page that
+ * renders as its own source, which is exactly what happened on the first real report. Decoding is
+ * therefore not a nicety, it is what makes the feature survive a model being cautious.
+ *
+ * The condition is deliberately narrow: decode ONLY when there is no real tag anywhere but there are
+ * escaped ones. A genuine fragment always contains at least one real tag, and a report that
+ * legitimately shows literal markup inside <code> must keep its entities intact.
+ */
+function decodeIfFullyEscaped(html: string): string {
+  if (/<[a-zA-Z][^>]*>/.test(html)) return html;   // real markup present — trust it as written
+  if (!/&lt;[a-zA-Z/]/.test(html)) return html;    // nothing escaped either — plain text, leave it
+  return html
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#0?39;/g, "'")
+    .replace(/&amp;/g, '&');                       // last: &amp;lt; must become &lt;, not <
+}
+
 export async function publishReport(title: string, summary: string, html: string): Promise<string> {
   const id = uuid();
   const { error } = await getClient().from('reports').insert({
@@ -35,7 +57,7 @@ export async function publishReport(title: string, summary: string, html: string
     repo: repoName(),
     title: title.slice(0, 200),
     summary: summary.slice(0, 300),
-    html,
+    html: decodeIfFullyEscaped(html),
   });
   if (error) throw new Error(`could not publish report: ${error.message}`);
   return id;
