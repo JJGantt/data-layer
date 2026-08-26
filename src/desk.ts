@@ -41,7 +41,7 @@ export async function knownRepo(name: string): Promise<{ path: string; name: str
  * conversation that started it, and the Mac sleeps. Choose 'mac' when the work wants the Mac
  * specifically — iOS, where compiling locally is the whole advantage.
  */
-export async function startSession(repo: string | undefined, prompt: string, machine: Machine = 'pi') {
+export async function startSession(repo: string | undefined, prompt: string, machine: Machine = 'pi', report = false) {
   // No repo named, or one that matches nothing, lands in the home directory. A request the router
   // could not pin to a project still gets sent somewhere it can act — refusing it would be worse,
   // and the session can find its own way from there.
@@ -51,7 +51,9 @@ export async function startSession(repo: string | undefined, prompt: string, mac
   const id = uuid();
   const { error } = await getClient().from('desk_commands').insert({
     id, kind: 'open_session',
-    payload: { path: target.path, name: target.name, target: machine, ...(prompt ? { prompt } : {}) },
+    // `report` is opt-in and only ever set when Jared asked for a write-up. The launchers append
+    // their report directive on this flag alone, so an ordinary dispatch stays a plain session.
+    payload: { path: target.path, name: target.name, target: machine, ...(prompt ? { prompt } : {}), ...(report ? { report: true } : {}) },
   });
   if (error) return { ok: false as const, error: error.message };
   await setFocus(id, machine);
