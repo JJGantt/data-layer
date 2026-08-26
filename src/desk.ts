@@ -15,6 +15,13 @@ export interface DeskSession {
   claude_session_id: string | null; started: string; last_seen: string;
 }
 
+/** Every project a machine has published, most recently touched first. */
+export async function listRepos(): Promise<{ name: string; branch: string | null; last_active: string | null }[]> {
+  const { data } = await getClient().from('repos')
+    .select('name,branch,last_active').order('last_active', { ascending: false, nullsFirst: false });
+  return (data ?? []) as any;
+}
+
 /** Repos a machine has published. The path is never taken from a caller — only ever selected. */
 export async function knownRepo(name: string): Promise<{ path: string; name: string } | null> {
   const { data } = await getClient().from('repos').select('path,name');
@@ -34,16 +41,20 @@ export async function knownRepo(name: string): Promise<{ path: string; name: str
  * conversation that started it, and the Mac sleeps. Choose 'mac' when the work wants the Mac
  * specifically — iOS, where compiling locally is the whole advantage.
  */
-export async function startSession(repo: string, prompt: string, machine: Machine = 'pi') {
-  const hit = await knownRepo(repo);
-  if (!hit) return { ok: false as const, error: `no repo matching '${repo}'` };
+export async function startSession(repo: string | undefined, prompt: string, machine: Machine = 'pi') {
+  // No repo named, or one that matches nothing, lands in the home directory. A request the router
+  // could not pin to a project still gets sent somewhere it can act — refusing it would be worse,
+  // and the session can find its own way from there.
+  const want = String(repo || '').trim();
+  const hit = want && want.toLowerCase() !== 'root' ? await knownRepo(want) : null;
+  const target = hit ?? { path: '~', name: 'root' };
   const id = uuid();
   const { error } = await getClient().from('desk_commands').insert({
     id, kind: 'open_session',
-    payload: { path: hit.path, name: hit.name, target: machine, ...(prompt ? { prompt } : {}) },
+    payload: { path: target.path, name: target.name, target: machine, ...(prompt ? { prompt } : {}) },
   });
   if (error) return { ok: false as const, error: error.message };
-  return { ok: true as const, id, repo: hit.name, machine };
+  return { ok: true as const, id, repo: target.name, machine, matched: !!hit || !want };
 }
 
 export async function listSessions(): Promise<DeskSession[]> {
