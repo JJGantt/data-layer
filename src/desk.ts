@@ -9,9 +9,85 @@ import { uuid } from './helpers.js';
 
 export type Machine = 'pi' | 'mac';
 
+/** The worker each machine's desk consumer heartbeats as. */
+const DESK_WORKER: Record<Machine, string> = { pi: 'pi-desk', mac: 'desk' };
+// Same 90s the hub and pi-desk use: three missed 30s beats.
+const DESK_STALE_S = 90;
+
+/**
+ * Is the machine that would run this actually there?
+ *
+ * Checked BEFORE a command is written, because the queue has no way to fail: a command for a machine
+ * that is asleep is claimed by nobody, expires unread, and the caller was already told it started.
+ */
+export async function machineAwake(machine: Machine): Promise<boolean> {
+  const { data } = await getClient().from('worker_presence')
+    .select('last_seen').eq('worker', DESK_WORKER[machine]).maybeSingle();
+  const t = data?.last_seen;
+  return !!t && (Date.now() - new Date(t).getTime()) / 1000 <= DESK_STALE_S;
+}
+
+/**
+ * Keep a command that could not run.
+ *
+ * A dispatched prompt is usually minutes of dictated speech that cannot be said again the same way,
+ * so nothing is ever dropped — it is parked here with the reason, and retried later only if Jared
+ * still wants it. Deliberately not a retry queue: see the migration.
+ */
+export async function deadLetter(
+  kind: string, payload: any, machine: Machine | null, reason: string,
+  source = 'dispatch', commandId: string | null = null,
+): Promise<string | null> {
+  const id = uuid();
+  const { error } = await getClient().from('desk_dead_letters')
+    .insert({ id, command_id: commandId, kind, payload, machine, reason, source });
+  // A failure to record a failure is the one case with nothing left to fall back on — say so in the
+  // log rather than swallowing it, and still return the caller an honest null.
+  if (error) { console.error('[desk] dead letter:', error.message); return null; }
+  return id;
+}
+
+/** Failed commands not yet retried or dismissed, newest first. */
+export async function deadLetters(includeClosed = false) {
+  let q = getClient().from('desk_dead_letters').select('*').order('created', { ascending: false }).limit(50);
+  if (!includeClosed) q = q.is('retried', null).is('dismissed', null);
+  const { data } = await q;
+  return data ?? [];
+}
+
+/** Re-dispatch a saved command, unchanged, if its machine is up now. */
+export async function retryDeadLetter(id: string) {
+  const { data: row } = await getClient().from('desk_dead_letters').select('*').eq('id', id).maybeSingle();
+  if (!row) return { ok: false as const, error: 'no such saved command' };
+  if (row.retried) return { ok: false as const, error: 'already retried' };
+  const machine = (row.machine === 'mac' ? 'mac' : 'pi') as Machine;
+  if (!(await machineAwake(machine))) {
+    return { ok: false as const, error: `the ${machine === 'mac' ? 'Mac' : 'Pi'} is still not responding — leaving it saved` };
+  }
+  const cmdId = uuid();
+  const { error } = await getClient().from('desk_commands')
+    .insert({ id: cmdId, kind: row.kind, payload: { ...row.payload, target: machine } });
+  if (error) return { ok: false as const, error: error.message };
+  await getClient().from('desk_dead_letters')
+    .update({ retried: new Date().toISOString(), retry_command_id: cmdId }).eq('id', id);
+  // A re-sent dispatch is the thing being talked to again, exactly as a fresh one would be.
+  if (row.kind === 'open_session' || row.kind === 'resume_session') await setFocus(cmdId, machine);
+  return { ok: true as const, id: cmdId };
+}
+
+/** Drop one for good — it was not worth doing after all. */
+export async function dismissDeadLetter(id: string) {
+  const { error } = await getClient().from('desk_dead_letters')
+    .update({ dismissed: new Date().toISOString() }).eq('id', id);
+  return error ? { ok: false as const, error: error.message } : { ok: true as const };
+}
+
 export interface DeskSession {
   id: string; worker: string; repo: string; status: string;
   prompt: string | null; last_reply: string | null;
+  // last_reply is the FINAL message of a turn when `working` is false, and the previous turn's
+  // answer while a new one is in flight. reply_at is when that text landed.
+  working: boolean; reply_at: string | null;
   claude_session_id: string | null; started: string; last_seen: string;
 }
 
@@ -49,12 +125,17 @@ export async function startSession(repo: string | undefined, prompt: string, mac
   const hit = want && want.toLowerCase() !== 'root' ? await knownRepo(want) : null;
   const target = hit ?? { path: '~', name: 'root' };
   const id = uuid();
-  const { error } = await getClient().from('desk_commands').insert({
-    id, kind: 'open_session',
-    // `report` is opt-in and only ever set when Jared asked for a write-up. The launchers append
-    // their report directive on this flag alone, so an ordinary dispatch stays a plain session.
-    payload: { path: target.path, name: target.name, target: machine, ...(prompt ? { prompt } : {}), ...(report ? { report: true } : {}), ...(label ? { label: label.slice(0, 60) } : {}) },
-  });
+  // `report` is opt-in and only ever set when Jared asked for a write-up. The launchers append
+  // their report directive on this flag alone, so an ordinary dispatch stays a plain session.
+  const payload = { path: target.path, name: target.name, target: machine, ...(prompt ? { prompt } : {}), ...(report ? { report: true } : {}), ...(label ? { label: label.slice(0, 60) } : {}) };
+  // The machine has to be there NOW. Writing the command anyway is the silent failure this guards:
+  // nobody claims it, it expires unread, and the reply already said a session had started.
+  if (!(await machineAwake(machine))) {
+    const saved = await deadLetter('open_session', payload, machine, `the ${machine === 'mac' ? 'Mac' : 'Pi'} is not responding`);
+    return { ok: false as const, machine, saved,
+             error: `The ${machine === 'mac' ? 'Mac' : 'Pi'} is not responding, so nothing was started. The prompt is saved and can be retried.` };
+  }
+  const { error } = await getClient().from('desk_commands').insert({ id, kind: 'open_session', payload });
   if (error) return { ok: false as const, error: error.message };
   await setFocus(id, machine);
   return { ok: true as const, id, repo: target.name, machine, matched: !!hit || !want };
@@ -94,11 +175,24 @@ export async function focusedSession(): Promise<DeskSession | null> {
 export async function followUp(prompt: string) {
   const { data: f } = await getClient().from('desk_focus').select('*').eq('id', 'current').maybeSingle();
   if (!f?.command_id) return { ok: false as const, error: 'no session has been started from here yet' };
+  const machine = (f.machine === 'mac' ? 'mac' : 'pi') as Machine;
   const s = await focusedSession();
-  if (!s) return { ok: false as const, error: 'the last dispatch has not opened its session yet — try again in a moment' };
+  // Nothing to type into. Both cases lose the words unless they are kept: the session has not opened
+  // yet, or it has since ended — which the machines now report accurately, so this is reachable.
+  if (!s || s.status !== 'resident') {
+    const reason = !s ? 'the last dispatch has not opened its session yet' : 'the session it was aimed at has ended';
+    const saved = await deadLetter('follow_up', { session: s?.id ?? null, prompt, target: machine }, machine, reason);
+    return { ok: false as const, saved, error: `${reason} — nothing was sent. The follow-up is saved and can be retried.` };
+  }
+  if (!(await machineAwake(machine))) {
+    const saved = await deadLetter('follow_up', { session: s.id, prompt, target: machine }, machine,
+                                   `the ${machine === 'mac' ? 'Mac' : 'Pi'} is not responding`);
+    return { ok: false as const, saved,
+             error: `The ${machine === 'mac' ? 'Mac' : 'Pi'} is not responding, so the follow-up was not sent. It is saved and can be retried.` };
+  }
   const id = uuid();
   const { error } = await getClient().from('desk_commands').insert({
-    id, kind: 'follow_up', payload: { session: s.id, prompt, target: f.machine || 'pi' },
+    id, kind: 'follow_up', payload: { session: s.id, prompt, target: machine },
   });
   return error ? { ok: false as const, error: error.message } : { ok: true as const, id, repo: s.repo, session: s.id };
 }
@@ -113,15 +207,33 @@ export async function queued() {
   return data ?? [];
 }
 
-/** Resume an evicted session with its full context, or end a running one. */
+/**
+ * Resume an evicted session with its full context, or end a running one.
+ *
+ * The target comes from the session's own row. Hardcoding 'pi' sent every Mac session's close and
+ * resume to the Pi, which rejects the id outright — the Mac's are `mac-…`, and its consumer never
+ * saw the command at all.
+ */
 export async function sessionCommand(kind: 'resume_session' | 'end_session', session: string, prompt?: string) {
+  const { data: row } = await getClient().from('desk_sessions').select('worker,status').eq('id', session).maybeSingle();
+  if (!row) return { ok: false as const, error: `no session called ${session}` };
+  const machine: Machine = row.worker === 'desk' ? 'mac' : 'pi';
+  // The Mac runs sessions in Terminal tabs Jared can see and close himself; it has no parking, so
+  // there is no transcript id to bring one back with. Say that rather than queueing a no-op.
+  if (machine === 'mac' && kind === 'resume_session') {
+    return { ok: false as const, error: 'Mac sessions are not parked and cannot be resumed — that one is in a Terminal tab.' };
+  }
+  const payload = { session, target: machine, ...(prompt ? { prompt } : {}) };
+  if (!(await machineAwake(machine))) {
+    const saved = await deadLetter(kind, payload, machine, `the ${machine === 'mac' ? 'Mac' : 'Pi'} is not responding`);
+    return { ok: false as const, saved,
+             error: `The ${machine === 'mac' ? 'Mac' : 'Pi'} is not responding, so that did not happen. It is saved and can be retried.` };
+  }
   const id = uuid();
-  const { error } = await getClient().from('desk_commands').insert({
-    id, kind, payload: { session, target: 'pi', ...(prompt ? { prompt } : {}) },
-  });
+  const { error } = await getClient().from('desk_commands').insert({ id, kind, payload });
   if (error) return { ok: false as const, error: error.message };
   // Resuming makes that session the one you are talking to again, so follow-ups should go there.
-  if (kind === 'resume_session') await setFocus(id, 'pi');
+  if (kind === 'resume_session') await setFocus(id, machine);
   return { ok: true as const, id };
 }
 
