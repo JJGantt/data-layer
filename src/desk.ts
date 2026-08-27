@@ -325,10 +325,11 @@ export async function sessionCommand(kind: 'resume_session' | 'end_session', ses
   const row = found.row;
   session = row.id;
   const machine: Machine = row.worker === 'desk' ? 'mac' : 'pi';
-  // The Mac runs sessions in Terminal tabs Jared can see and close himself; it has no parking, so
-  // there is no transcript id to bring one back with. Say that rather than queueing a no-op.
-  if (machine === 'mac' && kind === 'resume_session') {
-    return { ok: false as const, error: 'Mac sessions are not parked and cannot be resumed — that one is in a Terminal tab.' };
+  // Both machines park and resume now: a closed session with a recorded transcript comes back with
+  // its whole conversation, in a new tab or a new tmux session. Only one without a transcript is
+  // genuinely gone — that is what the `ended` status means, as against `evicted`.
+  if (kind === 'resume_session' && (row as any).status === 'ended') {
+    return { ok: false as const, error: 'that session has no transcript recorded, so there is nothing to resume' };
   }
   const payload = { session, target: machine, ...(prompt ? { prompt } : {}) };
   if (!(await machineAwake(machine))) {
