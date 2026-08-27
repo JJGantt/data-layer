@@ -1,0 +1,13 @@
+-- Where a session came from: work dispatched to a machine, or one Jared opened himself.
+--
+-- The Mac now recognises sessions nobody dispatched — a `claude` process sitting in a Terminal tab —
+-- so the panel can show everything running, not only what was sent. They are the same kind of thing
+-- and want the same liveness and last-reply treatment, but they are not interchangeable:
+--
+--   The follow-up pointer must never move to an adopted session. A dictated follow-up is aimed at
+--   the work Jared handed over, and the whole reason desk_focus follows dispatches rather than
+--   "the most recently active session" is that he is usually typing in another one at the same time.
+--   Adoption therefore only ever writes desk_sessions, never desk_focus.
+--
+-- Existing rows were all dispatched, which is what the default says.
+alter table desk_sessions add column if not exists origin text not null default 'dispatched';
