@@ -345,6 +345,40 @@ export async function sessionCommand(kind: 'resume_session' | 'end_session', ses
   return { ok: true as const, id };
 }
 
+/**
+ * Name a session — and name the SESSION, not just our row.
+ *
+ * A live session is sent `/rename <name>`, which is the same command Jared types: Claude Code renames
+ * itself, its terminal tab title changes, and it writes the `custom-title` record that the reconcile
+ * tick reads back into `label` a moment later. The row is also set here so the pane changes at once
+ * rather than a tick later.
+ *
+ * A parked session has no process to type into, so it gets the label alone; the name reaches the
+ * session itself only if it is resumed.
+ */
+export async function renameSession(ref: string, name: string) {
+  const clean = String(name || '').replace(/[\r\n]+/g, ' ').trim().slice(0, 60);
+  if (!clean) return { ok: false as const, error: 'no name given' };
+  const found = await resolveSession(ref);
+  if (!found.ok) return { ok: false as const, error: found.error };
+  const row = found.row;
+  const machine: Machine = row.worker === 'desk' ? 'mac' : 'pi';
+
+  await getClient().from('desk_sessions').update({ label: clean }).eq('id', row.id);
+  if (row.status !== 'resident') {
+    return { ok: true as const, name: clean, live: false, repo: row.repo };
+  }
+  if (!(await machineAwake(machine))) {
+    // The label is already set, so nothing is lost — only the session's own name is out of step.
+    return { ok: true as const, name: clean, live: false, repo: row.repo };
+  }
+  const id = uuid();
+  const { error } = await getClient().from('desk_commands')
+    .insert({ id, kind: 'rename_session', payload: { session: row.id, name: clean, target: machine } });
+  if (error) return { ok: false as const, error: error.message };
+  return { ok: true as const, id, name: clean, live: true, repo: row.repo };
+}
+
 export function formatSessions(rows: DeskSession[], q: any[]): string {
   if (!rows.length && !q.length) return 'No sessions running or parked.';
   const lines: string[] = [];
