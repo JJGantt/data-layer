@@ -31,6 +31,14 @@ tool missing from it stays visible in the schema and is refused when called, whi
 escalation to Opus work — so the omission looks like a model failure, not a config gap. Add the tool
 there, or check the `validate_safe_tools()` line in the worker's startup log.
 
+## A session is named by number, not by id
+
+`resolveSession` takes what Jared actually says — "3", "status-hub", or a full id. The numbering rule
+(`numberSessions`: active sessions, oldest first, from 1) is duplicated in the hub's `/api/sessions`
+and the two must agree, or the pane and the voice tools disagree about which session is which. An
+ambiguous name returns the choices rather than picking one: ending or moving the wrong session is not
+recoverable.
+
 ## Conventions
 
 - Migrations are numbered and append-only. Never edit one that has been applied; add another.
