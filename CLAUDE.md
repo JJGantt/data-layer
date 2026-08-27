@@ -34,8 +34,10 @@ there, or check the `validate_safe_tools()` line in the worker's startup log.
 ## A session is named by number, not by id
 
 `resolveSession` takes what Jared actually says — "3", "status-hub", or a full id. The numbering rule
-(`numberSessions`: active sessions, oldest first, from 1) is duplicated in the hub's `/api/sessions`
-and the two must agree, or the pane and the voice tools disagree about which session is which. An
+(`numberSessions`: active sessions by recency, **1 is the most recent**) is duplicated in the hub's
+`/api/sessions` and the two must agree, or the pane and the voice tools disagree about which session
+is which. The number is a position in the current list, never identity — closing one renumbers the
+rest, which is what keeps the list 1..N over what is actually open. An
 ambiguous name returns the choices rather than picking one: ending or moving the wrong session is not
 recoverable.
 

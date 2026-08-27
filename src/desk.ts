@@ -200,18 +200,24 @@ export async function followUp(prompt: string) {
 /**
  * Sessions with a NUMBER, which is how they get talked about out loud.
  *
- * "Session three" has to mean the same thing to the voice tools and to the pane, so the rule lives
- * here and the hub implements the identical one: every ACTIVE session (resident or evicted), ordered
- * by when it started, numbered from 1. Oldest first is deliberate — a new session takes the next
- * number instead of renumbering everything that was already on screen.
+ * **1 is the most recent.** Only ACTIVE sessions (resident or evicted) are numbered, in order of
+ * recency, so the list is always 1..N over what is actually there — "session two" means the second
+ * most recent, today and tomorrow.
  *
- * The numbers are not identity. Ending a session renumbers the ones after it, which is the price of
- * keeping them short enough to say; the full id is still there for anything durable.
+ * The number is a POSITION, not identity: it belongs to the list, not to the session, and closing
+ * one renumbers the rest. That is the point. Numbers that stick to a session drift upward for ever
+ * and you end up saying "session eleven" to name one of four things on screen.
+ *
+ * Ordering by `last_seen` also puts running sessions above parked ones without a second rule —
+ * a resident row is touched every reconcile tick, a parked one stopped being touched when it closed.
+ *
+ * The hub's `/api/sessions` implements the identical rule; the two have to agree or the pane and the
+ * voice tools disagree about which session is which.
  */
 export function numberSessions(rows: DeskSession[]): (DeskSession & { n: number })[] {
   return rows
     .filter((r) => r.status === 'resident' || r.status === 'evicted')
-    .sort((a, b) => new Date(a.started).getTime() - new Date(b.started).getTime())
+    .sort((a, b) => new Date(b.last_seen).getTime() - new Date(a.last_seen).getTime())
     .map((r, i) => ({ ...r, n: i + 1 }));
 }
 
