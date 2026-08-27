@@ -197,9 +197,106 @@ export async function followUp(prompt: string) {
   return error ? { ok: false as const, error: error.message } : { ok: true as const, id, repo: s.repo, session: s.id };
 }
 
+/**
+ * Sessions with a NUMBER, which is how they get talked about out loud.
+ *
+ * "Session three" has to mean the same thing to the voice tools and to the pane, so the rule lives
+ * here and the hub implements the identical one: every ACTIVE session (resident or evicted), ordered
+ * by when it started, numbered from 1. Oldest first is deliberate — a new session takes the next
+ * number instead of renumbering everything that was already on screen.
+ *
+ * The numbers are not identity. Ending a session renumbers the ones after it, which is the price of
+ * keeping them short enough to say; the full id is still there for anything durable.
+ */
+export function numberSessions(rows: DeskSession[]): (DeskSession & { n: number })[] {
+  return rows
+    .filter((r) => r.status === 'resident' || r.status === 'evicted')
+    .sort((a, b) => new Date(a.started).getTime() - new Date(b.started).getTime())
+    .map((r, i) => ({ ...r, n: i + 1 }));
+}
+
 export async function listSessions(): Promise<DeskSession[]> {
   const { data } = await getClient().from('desk_sessions').select('*').order('last_seen', { ascending: false });
   return (data ?? []) as DeskSession[];
+}
+
+/**
+ * Find the session someone named — by number ("session three"), by repo or label, or by full id.
+ *
+ * An ambiguous name is answered with the choices rather than a guess: picking one of three status-hub
+ * sessions at random and then ending or moving it is not a recoverable mistake.
+ */
+export async function resolveSession(ref: string): Promise<
+  { ok: true; row: DeskSession & { n: number } } | { ok: false; error: string }> {
+  const want = String(ref || '').trim();
+  if (!want) return { ok: false, error: 'which session?' };
+  const rows = numberSessions(await listSessions());
+  if (!rows.length) return { ok: false, error: 'no sessions are running or parked' };
+
+  if (/^\d+$/.test(want)) {
+    const hit = rows.find((r) => r.n === Number(want));
+    return hit ? { ok: true, row: hit }
+               : { ok: false, error: `there is no session ${want} — there are ${rows.length}` };
+  }
+  const exact = rows.find((r) => r.id === want);
+  if (exact) return { ok: true, row: exact };
+
+  const low = want.toLowerCase();
+  const hits = rows.filter((r) => String(r.repo || '').toLowerCase().startsWith(low)
+                               || String((r as any).label || '').toLowerCase().includes(low));
+  if (hits.length === 1) return { ok: true, row: hits[0] };
+  if (!hits.length) return { ok: false, error: `nothing matches '${want}'` };
+  return { ok: false, error: `${hits.length} sessions match '${want}' — say the number: `
+    + hits.map((h) => `${h.n} (${(h as any).label || h.repo})`).join(', ') };
+}
+
+/**
+ * Hand a session to the other machine.
+ *
+ * The transfer is claimed by the machine GIVING IT UP, which closes the session, flushes the last of
+ * the mirror and only then asks the destination to resume — one writer at a time, or the transcript
+ * forks into two conversations with one id.
+ *
+ * When the source machine is not responding there is nothing to close and nothing left to flush, so
+ * the destination is asked directly. That is the case this whole mechanism exists for: the laptop is
+ * shut and the work should carry on somewhere else, using the mirror as of the last completed turn.
+ */
+export async function transferSession(ref: string, machine: Machine) {
+  const found = await resolveSession(ref);
+  if (!found.ok) return { ok: false as const, error: found.error };
+  const row = found.row;
+  const source: Machine = row.worker === 'desk' ? 'mac' : 'pi';
+  const where = (m: Machine) => (m === 'mac' ? 'the Mac' : 'the Pi');
+  if (source === machine) return { ok: false as const, error: `that session is already on ${where(machine)}` };
+  if (!row.claude_session_id) {
+    return { ok: false as const, error: 'that session has no transcript recorded, so there is nothing to move' };
+  }
+  if (!(await machineAwake(machine))) {
+    const saved = await deadLetter('transfer_session', { session: row.id, target: source, to: machine },
+                                   machine, `${where(machine)} is not responding`);
+    return { ok: false as const, saved, error: `${where(machine)} is not responding, so nothing was moved. The request is saved.` };
+  }
+
+  if (await machineAwake(source)) {
+    const id = uuid();
+    const { error } = await getClient().from('desk_commands')
+      .insert({ id, kind: 'transfer_session', payload: { session: row.id, target: source, to: machine } });
+    if (error) return { ok: false as const, error: error.message };
+    return { ok: true as const, id, repo: row.repo, machine, live: true };
+  }
+
+  // Source unreachable: go straight to the destination with what was mirrored, and mark the old row
+  // handed over so the source closes that session if it ever comes back with it still open.
+  const id = uuid();
+  const { error } = await getClient().from('desk_commands').insert({
+    id, kind: 'resume_mirrored',
+    payload: { target: machine, claude_session_id: row.claude_session_id, repo: row.repo,
+               label: (row as any).label ?? null, origin: (row as any).origin ?? 'dispatched', from: source },
+  });
+  if (error) return { ok: false as const, error: error.message };
+  await getClient().from('desk_sessions')
+    .update({ status: 'transferred', ended: new Date().toISOString(), working: false }).eq('id', row.id);
+  return { ok: true as const, id, repo: row.repo, machine, live: false };
 }
 
 export async function queued() {
@@ -215,8 +312,12 @@ export async function queued() {
  * saw the command at all.
  */
 export async function sessionCommand(kind: 'resume_session' | 'end_session', session: string, prompt?: string) {
-  const { data: row } = await getClient().from('desk_sessions').select('worker,status').eq('id', session).maybeSingle();
-  if (!row) return { ok: false as const, error: `no session called ${session}` };
+  // Takes whatever Jared said — a number, a repo, an id — because these are spoken commands and the
+  // id is the one form he will never use.
+  const found = await resolveSession(session);
+  if (!found.ok) return { ok: false as const, error: found.error };
+  const row = found.row;
+  session = row.id;
   const machine: Machine = row.worker === 'desk' ? 'mac' : 'pi';
   // The Mac runs sessions in Terminal tabs Jared can see and close himself; it has no parking, so
   // there is no transcript id to bring one back with. Say that rather than queueing a no-op.
@@ -240,15 +341,22 @@ export async function sessionCommand(kind: 'resume_session' | 'end_session', ses
 export function formatSessions(rows: DeskSession[], q: any[]): string {
   if (!rows.length && !q.length) return 'No sessions running or parked.';
   const lines: string[] = [];
-  const res = rows.filter((r) => r.status === 'resident');
-  const ev = rows.filter((r) => r.status === 'evicted');
+  // Numbered, because the number is how Jared refers to one out loud, and it has to be the same
+  // number the pane shows. The machine is named for the same reason: "move it to the Mac" needs him
+  // to know where it is now.
+  const numbered = numberSessions(rows);
+  const line = (r: DeskSession & { n: number }) =>
+    `- **${r.n}.** ${(r as any).label || r.repo} (${r.repo} on the ${r.worker === 'desk' ? 'Mac' : 'Pi'})`
+    + ` — ${(r.last_reply || r.prompt || 'no output yet').replace(/\s+/g, ' ').slice(0, 100)}`;
+  const res = numbered.filter((r) => r.status === 'resident');
+  const ev = numbered.filter((r) => r.status === 'evicted');
   if (res.length) {
     lines.push(`**Running** (${res.length}):`);
-    for (const r of res) lines.push(`- ${r.repo} — ${(r.last_reply || r.prompt || 'no output yet').slice(0, 100)}  [${r.id}]`);
+    for (const r of res) lines.push(line(r));
   }
   if (ev.length) {
     lines.push(`**Parked** (${ev.length}, resumable with full context):`);
-    for (const r of ev) lines.push(`- ${r.repo} — ${(r.last_reply || r.prompt || '').slice(0, 100)}  [${r.id}]`);
+    for (const r of ev) lines.push(line(r));
   }
   if (q.length) {
     lines.push(`**Queued** (${q.length}, waiting for a slot):`);
