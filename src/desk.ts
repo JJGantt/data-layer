@@ -240,16 +240,18 @@ export async function followUp(prompt: string) {
 /**
  * Sessions with a NUMBER, which is how they get talked about out loud.
  *
- * **1 is the most recent.** Only ACTIVE sessions (resident or evicted) are numbered, in order of
- * recency, so the list is always 1..N over what is actually there — "session two" means the second
- * most recent, today and tomorrow.
+ * **1 is the newest.** Only ACTIVE sessions (resident or evicted) are numbered, so the list is
+ * always 1..N over what is actually there.
  *
- * The number is a POSITION, not identity: it belongs to the list, not to the session, and closing
- * one renumbers the rest. That is the point. Numbers that stick to a session drift upward for ever
- * and you end up saying "session eleven" to name one of four things on screen.
+ * ORDERED BY `started`, WHICH NEVER CHANGES. Ordering by `last_seen` was the obvious reading of "most
+ * recent" and it made the numbers unusable: every row is touched by its reconcile tick every 30s, so
+ * the order reshuffled between two reads seconds apart — measured, with two sessions sharing a
+ * timestamp to the second. A number said out loud has to still mean the same session by the time it
+ * is resolved, and a spoken command is several seconds of speech plus a model turn.
  *
- * Ordering by `last_seen` also puts running sessions above parked ones without a second rule —
- * a resident row is touched every reconcile tick, a parked one stopped being touched when it closed.
+ * The number is a POSITION, not identity: it belongs to the list, not to the session, and closing one
+ * renumbers the rest. Numbers that stick to a session drift upward for ever and you end up saying
+ * "session eleven" to name one of four things on screen.
  *
  * The hub's `/api/sessions` implements the identical rule; the two have to agree or the pane and the
  * voice tools disagree about which session is which.
@@ -257,7 +259,7 @@ export async function followUp(prompt: string) {
 export function numberSessions(rows: DeskSession[]): (DeskSession & { n: number })[] {
   return rows
     .filter((r) => r.status === 'resident' || r.status === 'evicted')
-    .sort((a, b) => new Date(b.last_seen).getTime() - new Date(a.last_seen).getTime())
+    .sort((a, b) => new Date(b.started).getTime() - new Date(a.started).getTime())
     .map((r, i) => ({ ...r, n: i + 1 }));
 }
 
