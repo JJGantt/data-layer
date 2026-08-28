@@ -440,6 +440,19 @@ export async function renameSession(ref: string, name: string) {
   return { ok: true as const, id, name: clean, live: true, repo: row.repo };
 }
 
+/**
+ * Which wall the TV shows.
+ *
+ * The kiosk cannot be navigated from outside — it is a browser on a machine nothing here can reach —
+ * so the setting is written and the page follows it. It applies only to the TV; the phone app serves
+ * the same markup and must not be dragged along.
+ */
+export async function setWall(mode: 'standard' | 'sessions') {
+  const { error } = await getClient().from('app_settings')
+    .upsert({ key: 'wall_mode', value: mode }, { onConflict: 'key' });
+  return error ? { ok: false as const, error: error.message } : { ok: true as const, mode };
+}
+
 export function formatSessions(rows: DeskSession[], q: any[]): string {
   if (!rows.length && !q.length) return 'No sessions running or parked.';
   const lines: string[] = [];
