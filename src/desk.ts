@@ -208,7 +208,13 @@ export async function focusSession(ref: string) {
  */
 export async function followUp(prompt: string) {
   const { data: f } = await getClient().from('desk_focus').select('*').eq('id', 'current').maybeSingle();
-  if (!f?.command_id) return { ok: false as const, error: 'no session has been started from here yet' };
+  // EITHER pointer counts. `command_id` is the dispatch just made; `session_id` is a session focused
+  // deliberately, and focusing CLEARS command_id — so gating on command_id alone made every follow-up
+  // after a focus fail with "no session has been started from here yet", while the reply claimed it
+  // had been sent. Three rounds of prompt-wording chased that before it turned out to be this line.
+  if (!f?.command_id && !f?.session_id) {
+    return { ok: false as const, error: 'no session has been started or focused from here yet' };
+  }
   const machine = (f.machine === 'mac' ? 'mac' : 'pi') as Machine;
   const s = await focusedSession();
   // Nothing to type into. Both cases lose the words unless they are kept: the session has not opened
