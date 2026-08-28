@@ -157,12 +157,46 @@ export async function setFocus(commandId: string, machine: Machine) {
             { onConflict: 'id' });
 }
 
-/** The session a follow-up should go to, resolved through the dispatch that created it. */
+/**
+ * The session a follow-up should go to.
+ *
+ * Two ways it can be set, and `session_id` wins because it is the deliberate one: Jared naming a
+ * session he wants to talk to. `command_id` is the automatic one — the dispatch just made — and is
+ * how the pointer moves when he starts work rather than chooses it.
+ */
 export async function focusedSession(): Promise<DeskSession | null> {
   const { data: f } = await getClient().from('desk_focus').select('*').eq('id', 'current').maybeSingle();
+  if (f?.session_id) {
+    const { data } = await getClient().from('desk_sessions').select('*').eq('id', f.session_id).maybeSingle();
+    return (data as DeskSession) ?? null;
+  }
   if (!f?.command_id) return null;
   const { data } = await getClient().from('desk_sessions').select('*').eq('command_id', f.command_id).maybeSingle();
   return (data as DeskSession) ?? null;
+}
+
+/**
+ * Point at a session that already exists, so what he says next goes there.
+ *
+ * This is the half the pointer was missing. It only ever moved to the LAST THING DISPATCHED, which is
+ * fine while starting work and useless for going back to something — on a wall or a watch there is no
+ * other way to say which of five sessions he means.
+ *
+ * Still never automatic: choosing is an act, and the reason the pointer ignores "the most recently
+ * active session" is that Jared is usually typing in one of those.
+ */
+export async function focusSession(ref: string) {
+  const found = await resolveSession(ref);
+  if (!found.ok) return { ok: false as const, error: found.error };
+  const row = found.row;
+  if (row.status !== 'resident') {
+    return { ok: false as const, error: `that session is not running — resume it first` };
+  }
+  const machine: Machine = row.worker === 'desk' ? 'mac' : 'pi';
+  await getClient().from('desk_focus').upsert(
+    { id: 'current', session_id: row.id, command_id: null, machine, updated: new Date().toISOString() },
+    { onConflict: 'id' });
+  return { ok: true as const, session: row.id, repo: row.repo, label: (row as any).label ?? null, machine };
 }
 
 /**
