@@ -257,9 +257,19 @@ export async function followUp(prompt: string) {
  * voice tools disagree about which session is which.
  */
 export function numberSessions(rows: DeskSession[]): (DeskSession & { n: number })[] {
+  // RUNNING FIRST, then parked, newest first within each. The number has to be the POSITION IN THE
+  // LIST HE IS LOOKING AT — that is where "the second session" comes from — and every surface shows
+  // running above parked. Numbering the two together by age alone put the running sessions at 12 and
+  // 13 while parked ones held 1 through 11, so the badges read 12, 13, 1, 2, 3 down the screen and
+  // the second row was not session two.
+  //
+  // It also keeps the low numbers on the sessions that can actually be spoken to: focus and follow-up
+  // only reach a running one.
+  const rank = (r: DeskSession) => (r.status === 'resident' ? 0 : 1);
   return rows
     .filter((r) => r.status === 'resident' || r.status === 'evicted')
-    .sort((a, b) => new Date(b.started).getTime() - new Date(a.started).getTime())
+    .sort((a, b) => rank(a) - rank(b)
+                 || new Date(b.started).getTime() - new Date(a.started).getTime())
     .map((r, i) => ({ ...r, n: i + 1 }));
 }
 
