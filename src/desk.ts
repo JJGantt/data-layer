@@ -272,12 +272,6 @@ export async function listSessions(): Promise<DeskSession[]> {
  * An ambiguous name is answered with the choices rather than a guess: picking one of three status-hub
  * sessions at random and then ending or moving it is not a recoverable mistake.
  */
-const SPOKEN_NUMBERS: Record<string, number> = {
-  one: 1, first: 1, two: 2, second: 2, three: 3, third: 3, four: 4, fourth: 4, five: 5, fifth: 5,
-  six: 6, sixth: 6, seven: 7, seventh: 7, eight: 8, eighth: 8, nine: 9, ninth: 9, ten: 10, tenth: 10,
-  eleven: 11, eleventh: 11, twelve: 12, twelfth: 12,
-};
-
 export async function resolveSession(ref: string): Promise<
   { ok: true; row: DeskSession & { n: number } } | { ok: false; error: string }> {
   const want = String(ref || '').trim();
@@ -285,14 +279,11 @@ export async function resolveSession(ref: string): Promise<
   const rows = numberSessions(await listSessions());
   if (!rows.length) return { ok: false, error: 'no sessions are running or parked' };
 
-  // "the fifth session" is how a number gets said out loud, and the router does not always convert it.
-  const low = want.toLowerCase().replace(/^the\s+/, '').replace(/\s+session$/, '').trim();
-  const spoken = SPOKEN_NUMBERS[low];
-  const num = /^\d+$/.test(want) ? Number(want) : spoken;
-  if (num !== undefined) {
-    const hit = rows.find((r) => r.n === num);
+  const low = want.toLowerCase();
+  if (/^\d+$/.test(want)) {
+    const hit = rows.find((r) => r.n === Number(want));
     return hit ? { ok: true, row: hit }
-               : { ok: false, error: `there is no session ${num} — there are ${rows.length}` };
+               : { ok: false, error: `there is no session ${want} — there are ${rows.length}` };
   }
   const exact = rows.find((r) => r.id === want);
   if (exact) return { ok: true, row: exact };
