@@ -1,0 +1,11 @@
+-- When Remote Control was switched on for a session we did not launch.
+--
+-- Every session the machines start carries `--remote-control` already. One Jared opens himself by
+-- typing `claude` does not, so it never appears in the Claude app — and the point of adopting those
+-- rows is that everything running is one system, reachable the same way.
+--
+-- `/remote-control` is an in-session toggle, so enabling it means TYPING INTO HIS SESSION. That is
+-- only ever done while the session is idle and has already answered something, so it cannot land in
+-- the middle of a half-written message. This column records that it has been done, so a session that
+-- was busy every time we looked is retried later rather than either spammed or skipped for ever.
+alter table desk_sessions add column if not exists rc_sent timestamptz;
