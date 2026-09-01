@@ -100,9 +100,43 @@ export async function getCatalog(): Promise<{ categories: string[]; muscles: str
   return { categories: [...VALID_CATEGORIES], muscles: [...VALID_MUSCLES], exercises };
 }
 
+/**
+ * Match a spoken exercise name against a catalog name, treating a trailing -s/-es as noise in EITHER
+ * direction: "overhead tricep extensions" finds "Overhead Tricep Extension", "chest presses" finds
+ * "Chest Press", "squat" finds "Squats", "push ups" finds "Push-Ups".
+ *
+ * Deliberately NOT fuzzy. The word COUNT must be equal and every word must align in place, so two
+ * movements that differ by a real word stay distinct — "Lunges" never matches "Reverse Lunges",
+ * "Leg Raises" never matches "Lateral Raises". Checked across the whole catalog: no entry matches
+ * another.
+ *
+ * Worth more than the convenience suggests. A miss here does not just fail the call — the error tells
+ * the caller the movement is new, so an agent obligingly registers a SECOND catalog entry for an
+ * exercise that already exists, which forks its history and splits every volume figure derived from
+ * it. Being strict about plurals cost real data before it cost a failed log.
+ */
+function catalogWords(s: string): string[] {
+  return String(s).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().split(/\s+/).filter(Boolean);
+}
+function sameWord(a: string, b: string): boolean {
+  return a === b || a === `${b}s` || b === `${a}s` || a === `${b}es` || b === `${a}es`;
+}
+function namesMatch(query: string, candidate: string): boolean {
+  const a = catalogWords(query);
+  const b = catalogWords(candidate);
+  return a.length > 0 && a.length === b.length && a.every((w, i) => sameWord(w, b[i]));
+}
+
 async function lookupCatalog(name: string): Promise<{ name: string; categories: string[] } | null> {
-  const { data } = await getClient().from('exercise_catalog').select('name, categories').ilike('name', name.trim()).maybeSingle();
-  return data ? { name: data.name, categories: (data.categories ?? []) as string[] } : null;
+  const sb = getClient();
+  const nm = name.trim();
+  // Exact (case-insensitive) is the overwhelmingly common path, and one indexed lookup.
+  const { data } = await sb.from('exercise_catalog').select('name, categories').ilike('name', nm).maybeSingle();
+  if (data) return { name: data.name, categories: (data.categories ?? []) as string[] };
+  // Only on a miss is the catalog worth pulling whole — a few dozen rows — to retry tolerantly.
+  const { data: all } = await sb.from('exercise_catalog').select('name, categories');
+  const hit = (all ?? []).find((r) => namesMatch(nm, r.name as string));
+  return hit ? { name: hit.name as string, categories: (hit.categories ?? []) as string[] } : null;
 }
 
 /** Create or replace a catalog entry (categories + fractional muscle map). Fixes mistakes too. */
