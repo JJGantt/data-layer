@@ -1,31 +1,13 @@
 import { getClient } from './client.js';
-import { deriveCaloriesFromMacros, now, type MacroNutrition, type MacroNutritionInput, ValidationError, uuid } from './helpers.js';
-import { getRecipeNutrition } from './recipes.js';
+import { now, type MacroNutritionInput, ValidationError, uuid } from './helpers.js';
+import { getRecipe, saveRecipe, type Recipe } from './recipes.js';
+import {
+  ingLabel, ingredientGrams, isFiniteNumber, normalizeIngredients, produceRollup, rollup,
+  round10, scaleIngredients, type NutritionIngredient, type ProduceRollup,
+} from './ingredients.js';
 
-// How an ingredient counts toward the produce goals. ONE judgment per ingredient; the three
-// categories are MUTUALLY EXCLUSIVE. The split is GREENNESS, not leafiness: vitamin K1, lutein and
-// folate all track how dark green a vegetable is, and broccoli (102 mcg K1 / 1,400 mcg lutein per
-// 100 g) belongs with spinach, not with carrots (13 / 256) or mushrooms (0 / 0). Matches the USDA
-// "dark green vegetables" subgroup. The dark-green ⊂ vegetable nesting is a display concern derived
-// in produceRollup() — the model never sees it and can never double-count.
-export type ProduceType = 'dark_green_vegetable' | 'other_vegetable' | 'fruit';
-export const PRODUCE_TYPES: ProduceType[] = ['dark_green_vegetable', 'other_vegetable', 'fruit'];
-// Pre-rename values, accepted silently so an in-flight call from a process still holding the old
-// tool schema can't fail or land unclassified.
-const PRODUCE_TYPE_ALIASES: Record<string, ProduceType> = {
-  leafy: 'dark_green_vegetable', leafy_green: 'dark_green_vegetable',
-  vegetable: 'other_vegetable', non_leafy_vegetable: 'other_vegetable',
-};
-
-export interface NutritionIngredient {
-  name: string;
-  food?: string; amount?: number | null; unit?: string;
-  calories: number | null; protein_g: number | null; carbs_g: number | null; fat_g: number | null;
-  produce_g?: number; produce_type?: ProduceType;   // absent on non-produce (grains, dairy, meat, oils)
-}
-
-// Daily produce totals, rolled up from the ingredients exactly like the macros are.
-export interface ProduceRollup { veg_g: number; dark_green_g: number; fruit_g: number; }
+export type { NutritionIngredient, ProduceRollup, ProduceType } from './ingredients.js';
+export { PRODUCE_TYPES } from './ingredients.js';
 
 export interface NutritionEntry {
   id: string; date: string; occurred_at: string; name: string; quantity: number;
@@ -33,139 +15,6 @@ export interface NutritionEntry {
   veg_g?: number | null; dark_green_g?: number | null; fruit_g?: number | null;
   ingredients: NutritionIngredient[] | null; logged: string; staged?: boolean;
   warnings?: string[];   // non-persisted: macro/calorie sanity warnings surfaced back to the caller
-}
-
-function isFiniteNumber(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value);
-}
-function round10(v: number): number { return Math.round(v * 10) / 10; }
-
-function fmtAmt(n: number): string { return String(Math.round(n * 1000) / 1000); }
-
-// Human-readable label for one ingredient: structured rows → "1 cup rolled oats" / "0.5 banana";
-// legacy rows (name only) → their stored name.
-function ingLabel(g: NutritionIngredient): string {
-  if (g.food && g.amount != null && isFiniteNumber(g.amount)) {
-    const un = (g.unit || '').trim();
-    return `${fmtAmt(g.amount)}${un ? ` ${un}` : ''} ${g.food}`;
-  }
-  return g.name || '—';
-}
-
-// A meal's calories legitimately diverge from 4/4/9·macros (fiber ≈ 2 cal/g not 4, sugar alcohols ≈ 0,
-// and alcohol is 7 cal/g but not protein/carb/fat at all). So we TRUST stated ingredient calories and
-// only SOFT-WARN when they're wildly out of line with the macros — the signature of a bad estimate
-// (e.g. milk logged as 190 cal but 6 P / 8 C, which only Atwaters to ~56). Non-blocking; surfaced back.
-const CAL_WARN_RATIO = 0.30;   // |stated − atwater| / atwater above this …
-const CAL_WARN_ABS = 40;       // … AND at least this many calories apart (don't nag on tiny foods).
-
-// Validate/clean one ingredient. P/C/F are REQUIRED and numeric (they're the source of truth now);
-// calories are optional and Atwater-derived per-ingredient when absent. Pushes a soft warning when a
-// STATED calorie value is grossly inconsistent with the ingredient's own macros.
-function normalizeIngredient(ing: any, context: string, i: number, warnings: string[], requireQuantity = false): NutritionIngredient {
-  const food = (ing?.food || '').trim();
-  const hasFood = !!food;
-  const unit = (ing?.unit || '').trim();
-  let amount: number | null = null;
-  if (ing?.amount != null) {
-    if (!isFiniteNumber(ing.amount)) throw new ValidationError(`${context}: ingredient #${i + 1} has a non-numeric amount.`);
-    amount = Math.round(ing.amount * 1000) / 1000;
-  }
-  // Every logged/staged FOOD must carry a portion: a `food` name + numeric `amount` (unit optional for
-  // bare counts like 1 banana). Recipes are exempt (they pass requireQuantity=false). This is the server
-  // backstop for "always record the quantity" — the errors are model-facing (estimate the portion; only
-  // ask the user when there was no quantity cue at all), never surfaced to the user directly.
-  if (requireQuantity) {
-    if (!hasFood) throw new ValidationError(`${context}: ingredient #${i + 1} must include a 'food' name and a numeric 'amount' (plus a 'unit' when measured). Estimate a reasonable portion from the user's quantity cue and send structured food/amount/unit — never log a food without a quantity. If there was no quantity indication at all for a food that needs one, ask the user instead of logging.`);
-    if (amount == null) throw new ValidationError(`${context}: ingredient '${food}' needs a numeric 'amount' (e.g. 1 cup, 6 oz, 1 serving). Estimate a reasonable portion — do not omit it.`);
-  }
-  let name = (ing?.name || '').trim();
-  if (!name) {
-    if (hasFood) name = `${fmtAmt(amount ?? 1)}${unit ? ` ${unit}` : ''} ${food}`;
-    else throw new ValidationError(`${context}: ingredient #${i + 1} requires a name.`);
-  }
-  const reqMacro = (v: unknown, field: string): number => {
-    if (!isFiniteNumber(v)) throw new ValidationError(`${context}: ingredient '${name}' requires a numeric ${field}.`);
-    if (v < 0) throw new ValidationError(`${context}: ingredient '${name}' has a negative ${field}.`);
-    return round10(v);
-  };
-  const protein_g = reqMacro(ing?.protein_g, 'protein_g');
-  const carbs_g = reqMacro(ing?.carbs_g, 'carbs_g');
-  const fat_g = reqMacro(ing?.fat_g, 'fat_g');
-
-  const atwater = deriveCaloriesFromMacros(protein_g, carbs_g, fat_g);
-  let calories: number;
-  if (ing?.calories == null) {
-    calories = atwater;                      // no stated calories → fall back to Atwater for THIS ingredient
-  } else {
-    if (!isFiniteNumber(ing.calories)) throw new ValidationError(`${context}: ingredient '${name}' has a non-numeric calorie value.`);
-    if (ing.calories < 0) throw new ValidationError(`${context}: ingredient '${name}' has negative calories.`);
-    calories = round10(ing.calories);
-    const diff = Math.abs(calories - atwater);
-    if (diff >= CAL_WARN_ABS && diff / Math.max(atwater, 1) > CAL_WARN_RATIO) {
-      warnings.push(`'${name}': ${calories} cal stated but ${protein_g}P/${carbs_g}C/${fat_g}F only implies ~${atwater} cal — double-check the macros (or it's an alcohol/high-fiber food).`);
-    }
-  }
-  const macros = { calories, protein_g, carbs_g, fat_g };
-  const produce = normalizeProduce(ing, name, context);
-  return hasFood ? { name, food, amount, unit, ...macros, ...produce } : { name, ...macros, ...produce };
-}
-
-// Produce classification for one ingredient. Both fields travel together — a type with no weight (or
-// a weight with no type) is a malformed call, not a silent zero, so the model gets told to fix it.
-// Non-produce ingredients simply omit both and contribute nothing to the produce totals.
-function normalizeProduce(ing: any, name: string, context: string): { produce_g?: number; produce_type?: ProduceType } {
-  const rawType = ing?.produce_type;
-  const rawGrams = ing?.produce_g;
-  const hasType = rawType != null && String(rawType).trim() !== '';
-  const hasGrams = rawGrams != null;
-  if (!hasType && !hasGrams) return {};
-
-  if (hasType && !hasGrams) throw new ValidationError(`${context}: ingredient '${name}' has produce_type '${rawType}' but no produce_g — give its as-eaten weight in grams.`);
-  if (hasGrams && !hasType) throw new ValidationError(`${context}: ingredient '${name}' has produce_g but no produce_type — set it to 'dark_green_vegetable', 'other_vegetable', or 'fruit'.`);
-
-  const raw = String(rawType).trim().toLowerCase();
-  const produce_type = (PRODUCE_TYPE_ALIASES[raw] ?? raw) as ProduceType;
-  if (!PRODUCE_TYPES.includes(produce_type)) {
-    throw new ValidationError(`${context}: ingredient '${name}' has an unknown produce_type '${rawType}'. Use 'dark_green_vegetable' (spinach, kale, arugula, lettuce, chard, broccoli, Brussels sprouts, asparagus, green beans, peas), 'other_vegetable' (mushrooms, onion, cauliflower, carrots, peppers, potato, corn, tomato, beans), or 'fruit' (including avocado).`);
-  }
-  if (!isFiniteNumber(rawGrams)) throw new ValidationError(`${context}: ingredient '${name}' has a non-numeric produce_g.`);
-  if (rawGrams < 0) throw new ValidationError(`${context}: ingredient '${name}' has a negative produce_g.`);
-  return { produce_g: round10(rawGrams), produce_type };
-}
-
-// Parse the ingredient list (≥1 required) and the warnings raised while validating it.
-function normalizeIngredients(raw: unknown, context: string, requireQuantity = false): { ingredients: NutritionIngredient[]; warnings: string[] } {
-  if (!Array.isArray(raw) || raw.length === 0) throw new ValidationError(`${context}: at least one ingredient is required.`);
-  const warnings: string[] = [];
-  const ingredients = raw.map((ing: any, i: number) => normalizeIngredient(ing, context, i, warnings, requireQuantity));
-  return { ingredients, warnings };
-}
-
-// The entry's totals ARE the sum of its ingredients — every field summed independently. This is the
-// single source of truth for calories/protein/carbs/fat; nothing else may set them.
-function rollup(ingredients: NutritionIngredient[]): MacroNutrition {
-  const t = { calories: 0, protein_g: 0, carbs_g: 0, fat_g: 0 };
-  for (const g of ingredients) {
-    t.calories += g.calories ?? 0; t.protein_g += g.protein_g ?? 0;
-    t.carbs_g += g.carbs_g ?? 0; t.fat_g += g.fat_g ?? 0;
-  }
-  return { calories: round10(t.calories), protein_g: round10(t.protein_g), carbs_g: round10(t.carbs_g), fat_g: round10(t.fat_g) };
-}
-
-// Produce rollup, same rule: the entry's produce IS the sum of its ingredients'. Dark green vegetables
-// count toward BOTH dark_green_g and veg_g — the subset relationship lives here rather than in the
-// model's head, so 225 g of broccoli is logged once and lands in both totals.
-function produceRollup(ingredients: NutritionIngredient[]): ProduceRollup {
-  const t = { veg_g: 0, dark_green_g: 0, fruit_g: 0 };
-  for (const g of ingredients) {
-    const grams = g.produce_g ?? 0;
-    if (!grams || !g.produce_type) continue;
-    if (g.produce_type === 'dark_green_vegetable') { t.dark_green_g += grams; t.veg_g += grams; }
-    else if (g.produce_type === 'other_vegetable') t.veg_g += grams;
-    else if (g.produce_type === 'fruit') t.fruit_g += grams;
-  }
-  return { veg_g: round10(t.veg_g), dark_green_g: round10(t.dark_green_g), fruit_g: round10(t.fruit_g) };
 }
 
 function pad(v: number): string { return String(v).padStart(2, '0'); }
@@ -187,38 +36,32 @@ function dateFromOccurredAt(value: string): string {
   dt.setHours(dt.getHours() - EATING_DAY_BOUNDARY_HOUR);
   return `${dt.getFullYear()}-${pad(dt.getMonth() + 1)}-${pad(dt.getDate())}`;
 }
-function scaleNutrition(n: MacroNutrition, qty: number): MacroNutrition {
-  return {
-    calories: round10(n.calories * qty),
-    protein_g: round10(n.protein_g * qty),
-    carbs_g: round10(n.carbs_g * qty),
-    fat_g: round10(n.fat_g * qty),
-  };
-}
-
 // Build the ingredient list for one logged item. EVERY entry is ≥1 ingredient:
 //  · explicit `ingredients` (a composite meal) → used as-is
-//  · a recipe → one ingredient carrying the recipe's macros × servings
+//  · a recipe → the recipe's OWN ingredients, every amount and macro scaled by servings
 //  · a simple food (top-level `nutrition`, no ingredients) → one name-only ingredient
 // The caller then derives the entry totals by summing these ingredients (never the other way around).
+//
+// A recipe expands rather than collapsing into one lump row carrying its totals, which is what it used
+// to do. That lump had no per-ingredient portions, so a recipe logged by name contributed nothing to
+// the produce goals (85 g of banana in the overnight oats counted as zero fruit) and could not be
+// scaled by subtract_leftovers. Expanding makes a recipe log identically to typing the meal out.
 async function resolveItemIngredients(item: {
   name?: string; recipe?: string; servings?: number; nutrition?: MacroNutritionInput; ingredients?: NutritionIngredient[] | null;
-}, servings: number): Promise<{ name: string; quantity: number; raw: any[]; exempt: boolean }> {
+}, servings: number): Promise<{ name: string; quantity: number; raw: any[] }> {
   if (item.recipe) {
-    const rn = await getRecipeNutrition(item.recipe);
-    if (!rn) throw new ValidationError(`Recipe not found: ${item.recipe.trim()}`);
-    const name = item.recipe.trim();
-    const scaled = scaleNutrition(rn, servings);
-    return { name, quantity: servings, raw: [{ name, ...scaled }], exempt: true };  // recipe: single recipe-macro ingredient, no per-portion amount/unit
+    const recipe = await getRecipe(item.recipe);
+    if (!recipe) throw new ValidationError(`Recipe not found: ${item.recipe.trim()}`);
+    return { name: recipe.name, quantity: servings, raw: scaleIngredients(recipe.ingredients, servings) };
   }
   const name = (item.name || '').trim();
   if (!name) throw new ValidationError('Manual nutrition entries require a name.');
   if (Array.isArray(item.ingredients) && item.ingredients.length) {
-    return { name, quantity: 1.0, raw: item.ingredients as any[], exempt: false };
+    return { name, quantity: 1.0, raw: item.ingredients as any[] };
   }
   // Simple food: collapse the top-level nutrition into a single name-only ingredient.
   if (item.nutrition == null) throw new ValidationError(`Nutrition entry '${name}' requires either ingredients or nutrition.`);
-  return { name, quantity: 1.0, raw: [{ name, ...item.nutrition }], exempt: false };
+  return { name, quantity: 1.0, raw: [{ name, ...item.nutrition }] };
 }
 
 export async function logNutrition(items: {
@@ -237,8 +80,8 @@ export async function logNutrition(items: {
     const servings = item.servings ?? 1.0;
     if (!Number.isFinite(servings) || servings <= 0) throw new ValidationError('Nutrition entries require servings to be greater than 0.');
 
-    const { name, quantity, raw, exempt } = await resolveItemIngredients(item, servings);
-    const { ingredients, warnings } = normalizeIngredients(raw, `Nutrition entry '${name}'`, !exempt);
+    const { name, quantity, raw } = await resolveItemIngredients(item, servings);
+    const { ingredients, warnings } = normalizeIngredients(raw, `Nutrition entry '${name}'`, true);
     const nutr = rollup(ingredients);   // totals = sum of ingredients, always
     const prod = produceRollup(ingredients);
 
@@ -274,15 +117,25 @@ export async function getStaged(): Promise<NutritionEntry[]> {
   return (data ?? []) as NutritionEntry[];
 }
 
-async function findStaged(idPrefix: string): Promise<NutritionEntry | null> {
+// Every by-id operation takes an 8-char prefix as readily as a full id, because that is what the
+// day table prints. `staged` narrows the search to (or away from) staged meals when the caller only
+// means one kind; omitted, it searches both.
+export async function findEntry(idPrefix: string, staged?: boolean): Promise<NutritionEntry | null> {
   const sb = getClient();
-  let { data: row } = await sb.from('nutrition_entries').select('*').eq('id', idPrefix).eq('staged', true).maybeSingle();
+  const scoped = () => {
+    const q = sb.from('nutrition_entries').select('*');
+    return staged === undefined ? q : q.eq('staged', staged);
+  };
+  let { data: row } = await scoped().eq('id', idPrefix).maybeSingle();
   if (!row) {
-    const { data: matches } = await sb.from('nutrition_entries').select('*').eq('staged', true).like('id', `${idPrefix}%`);
+    const { data: matches } = await scoped().like('id', `${idPrefix}%`);
     if (matches?.length === 1) row = matches[0];
+    else if ((matches?.length ?? 0) > 1) throw new ValidationError(`Ambiguous entry id '${idPrefix}' — ${matches!.length} entries match that prefix.`);
   }
   return (row as NutritionEntry) ?? null;
 }
+
+const findStaged = (idPrefix: string) => findEntry(idPrefix, true);
 
 // Commit a staged meal: flip staged→false and re-stamp the time to NOW (the moment you eat it), so
 // it lands as a normal entry on the current day and starts counting.
@@ -346,28 +199,6 @@ export function formatStagedList(entries: NutritionEntry[]): string {
   return lines.join('\n');
 }
 
-// Grams this ingredient contributes to the dish's cooked weight, or null when it can't be known.
-// `unit: 'g'` is the direct case; a produce row carries produce_g (its as-eaten weight) even when the
-// portion is a count, which covers "0.5 avocado" and friends. Anything else — 'block', 'cup', 'scoop'
-// — is food-specific and NOT derivable from the unit alone, so it returns null and the caller has to
-// supply total_g rather than have this silently invent a density.
-// Scaled portions want significant figures, not decimal places: a blanket 3dp turns 161 g of broccoli
-// into "126.713 g", which reads like a precision nobody has. Grams land whole, small counts keep
-// enough resolution to stay distinguishable.
-function roundAmount(v: number): number {
-  const abs = Math.abs(v);
-  const dp = abs >= 100 ? 0 : abs >= 10 ? 1 : abs >= 1 ? 2 : 3;
-  const f = 10 ** dp;
-  return Math.round(v * f) / f;
-}
-
-function ingredientGrams(g: NutritionIngredient): number | null {
-  const unit = (g.unit || '').trim().toLowerCase();
-  if (unit === 'g' && isFiniteNumber(g.amount)) return Number(g.amount);
-  if (isFiniteNumber(g.produce_g) && Number(g.produce_g) > 0) return Number(g.produce_g);
-  return null;
-}
-
 // Scale a logged dish down by the weight left uneaten.
 //
 // You cook 432 g of a stir-fry, eat most of it, 92 g goes in the bin — every ingredient should shrink
@@ -376,9 +207,7 @@ function ingredientGrams(g: NutritionIngredient): number | null {
 // ingredient's amount AND macros by (total - leftover) / total.
 //
 // Totals are re-derived from the scaled ingredients by the same rollup every other write uses, so
-// parent == sum of ingredients still holds. Display names are rebuilt from the new amounts (dropping
-// `name` lets normalizeIngredient regenerate it), so a row never reads "161 g broccoli" while
-// carrying the macros for 127 g.
+// parent == sum of ingredients still holds.
 //
 // total_g: pass it when the dish contains a portion this can't weigh (tofu by the block, rice by the
 // cup). Without it, an unweighable ingredient is an error naming the offenders — better than assuming
@@ -389,14 +218,8 @@ export async function subtractLeftovers(idPrefix: string, grams: number, totalGO
 } | null> {
   if (!isFiniteNumber(grams) || grams <= 0) throw new ValidationError('Leftover grams must be a positive number.');
   const sb = getClient();
-  let { data: row } = await sb.from('nutrition_entries').select('*').eq('id', idPrefix).maybeSingle();
-  if (!row) {
-    const { data: matches } = await sb.from('nutrition_entries').select('*').like('id', `${idPrefix}%`);
-    if (matches?.length === 1) row = matches[0];
-    else if ((matches?.length ?? 0) > 1) throw new ValidationError(`Ambiguous entry id '${idPrefix}' — ${matches!.length} entries match that prefix.`);
-  }
-  if (!row) return null;
-  const entry = row as NutritionEntry;
+  const entry = await findEntry(idPrefix);
+  if (!entry) return null;
   const ings = (entry.ingredients ?? []) as NutritionIngredient[];
   if (!ings.length) throw new ValidationError(`Entry '${entry.name}' has no ingredients to scale.`);
 
@@ -417,16 +240,7 @@ export async function subtractLeftovers(idPrefix: string, grams: number, totalGO
   if (grams >= total) throw new ValidationError(`Leftover (${grams} g) is not less than the dish's total weight (${round10(total)} g).`);
 
   const factor = (total - grams) / total;
-  const scaled = ings.map((g) => {
-    const out: any = { ...g };
-    delete out.name;                         // regenerated from the new amount below
-    if (isFiniteNumber(g.amount)) out.amount = roundAmount(Number(g.amount) * factor);
-    for (const k of ['calories', 'protein_g', 'carbs_g', 'fat_g', 'produce_g'] as const) {
-      if (isFiniteNumber((g as any)[k])) out[k] = round10(Number((g as any)[k]) * factor);
-    }
-    if (!g.food) out.name = g.name;          // legacy row with no structured portion: keep its label
-    return out;
-  });
+  const scaled = scaleIngredients(ings, factor);
 
   const { ingredients } = normalizeIngredients(scaled, `Entry '${entry.name}'`, false);
   const nutr = rollup(ingredients);
@@ -442,15 +256,31 @@ export async function subtractLeftovers(idPrefix: string, grams: number, totalGO
 }
 
 export async function deleteNutritionEntry(idPrefix: string): Promise<NutritionEntry | null> {
-  const sb = getClient();
-  let { data: row } = await sb.from('nutrition_entries').select('*').eq('id', idPrefix).maybeSingle();
-  if (!row) {
-    const { data: matches } = await sb.from('nutrition_entries').select('*').like('id', `${idPrefix}%`);
-    if (matches?.length === 1) row = matches[0];
-  }
-  if (!row) return null;
-  await sb.from('nutrition_entries').delete().eq('id', row.id);
-  return row as NutritionEntry;
+  const entry = await findEntry(idPrefix);
+  if (!entry) return null;
+  await getClient().from('nutrition_entries').delete().eq('id', entry.id);
+  return entry;
+}
+
+// "Save that as a recipe" — the meal you just logged, kept for next time. It goes through
+// saveRecipe() like any other save, so the recipe lands validated and its totals re-derived; the
+// entry's ingredients already carry portions, macros and produce, which is exactly what a recipe
+// needs and why this is a copy rather than a re-description.
+//
+// It lives here rather than in recipes.ts because a nutrition entry is nutrition's to read, and
+// nutrition already depends on recipes (logging one expands it). The other direction would be a cycle.
+export async function saveEntryAsRecipe(idPrefix: string, opts?: {
+  name?: string; steps?: string[]; notes?: string; tags?: string[];
+}): Promise<{ recipe: Recipe; action: string; warnings: string[]; from: NutritionEntry } | null> {
+  const entry = await findEntry(idPrefix);
+  if (!entry) return null;
+  const ings = entry.ingredients ?? [];
+  if (!ings.length) throw new ValidationError(`Entry '${entry.name}' has no ingredients to save as a recipe.`);
+  const saved = await saveRecipe({
+    name: (opts?.name || '').trim() || entry.name,
+    ingredients: ings, steps: opts?.steps, notes: opts?.notes, tags: opts?.tags,
+  });
+  return { ...saved, from: entry };
 }
 
 export function formatNutritionDay(date: string, entries: NutritionEntry[]): string {

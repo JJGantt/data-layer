@@ -190,7 +190,7 @@ const server = http.createServer(async (req, res) => {
       const body = await parseBody(req);
       body.name = decodeURIComponent(recipeMatch[1]);
       const result = await recipes.saveRecipe(body);
-      return json(res, { recipe: result.recipe, action: result.action });
+      return json(res, { recipe: result.recipe, action: result.action, warnings: result.warnings });
     }
     if (recipeMatch && method === 'DELETE') {
       const r = await recipes.deleteRecipe(decodeURIComponent(recipeMatch[1]));
