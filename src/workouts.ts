@@ -67,7 +67,7 @@ export function categoryLabel(cats: string[]): string {
 }
 
 // ---- catalog (normalized: exercise_catalog + exercise_muscles) ----
-export interface CatalogExercise { name: string; categories: string[]; muscles: Record<string, number>; }
+export interface CatalogExercise { id: number; name: string; categories: string[]; muscles: Record<string, number>; }
 
 /** Categories + muscle map keyed by exercise name, loaded once per operation. */
 async function catalogMaps(): Promise<{ cats: Map<string, string[]>; muscles: Map<string, { muscle: string; contribution: number }[]> }> {
@@ -87,77 +87,62 @@ async function catalogMaps(): Promise<{ cats: Map<string, string[]>; muscles: Ma
 
 export async function getCatalog(): Promise<{ categories: string[]; muscles: string[]; exercises: CatalogExercise[] }> {
   const sb = getClient();
-  const { data: catRows } = await sb.from('exercise_catalog').select('name, categories');
-  const { data: muscleRows } = await sb.from('exercise_muscles').select('name, muscle, contribution');
-  const byName = new Map<string, Record<string, number>>();
+  const { data: catRows } = await sb.from('exercise_catalog').select('id, name, categories');
+  const { data: muscleRows } = await sb.from('exercise_muscles').select('exercise_id, muscle, contribution');
+  const byId = new Map<number, Record<string, number>>();
   for (const m of (muscleRows ?? [])) {
-    if (!byName.has(m.name)) byName.set(m.name, {});
-    byName.get(m.name)![m.muscle] = m.contribution;
+    if (!byId.has(m.exercise_id)) byId.set(m.exercise_id, {});
+    byId.get(m.exercise_id)![m.muscle] = m.contribution;
   }
+  // The id leads, because it is the only thing a caller may pass back.
   const exercises = (catRows ?? []).map(c => ({
-    name: c.name, categories: (c.categories ?? []) as string[], muscles: byName.get(c.name) ?? {},
+    id: c.id as number, name: c.name, categories: (c.categories ?? []) as string[], muscles: byId.get(c.id) ?? {},
   })).sort((a, b) => a.name.localeCompare(b.name));
   return { categories: [...VALID_CATEGORIES], muscles: [...VALID_MUSCLES], exercises };
 }
 
-/**
- * Match a spoken exercise name against a catalog name, treating a trailing -s/-es as noise in EITHER
- * direction: "overhead tricep extensions" finds "Overhead Tricep Extension", "chest presses" finds
- * "Chest Press", "squat" finds "Squats", "push ups" finds "Push-Ups".
- *
- * Deliberately NOT fuzzy. The word COUNT must be equal and every word must align in place, so two
- * movements that differ by a real word stay distinct — "Lunges" never matches "Reverse Lunges",
- * "Leg Raises" never matches "Lateral Raises". Checked across the whole catalog: no entry matches
- * another.
- *
- * Worth more than the convenience suggests. A miss here does not just fail the call — the error tells
- * the caller the movement is new, so an agent obligingly registers a SECOND catalog entry for an
- * exercise that already exists, which forks its history and splits every volume figure derived from
- * it. Being strict about plurals cost real data before it cost a failed log.
- */
-function catalogWords(s: string): string[] {
-  return String(s).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim().split(/\s+/).filter(Boolean);
-}
-function sameWord(a: string, b: string): boolean {
-  return a === b || a === `${b}s` || b === `${a}s` || a === `${b}es` || b === `${a}es`;
-}
-function namesMatch(query: string, candidate: string): boolean {
-  const a = catalogWords(query);
-  const b = catalogWords(candidate);
-  return a.length > 0 && a.length === b.length && a.every((w, i) => sameWord(w, b[i]));
-}
-
-type CatalogRow = { name: string; categories: string[] };
+type CatalogRow = { id: number; name: string; categories: string[] };
 
 /**
- * The whole catalog. It is a few dozen rows, so matching a name is done in memory against all of it
- * rather than asked of the database one name at a time — a query can only answer the question it was
- * given, which is what made an exact-match lookup the arbiter of whether an exercise exists.
+ * The catalog, whole. An exercise is named by its `id` and nothing else: no matching happens here or
+ * anywhere else, because there is no longer a question to answer — an id exists or it does not.
+ *
+ * There used to be a matcher, and its history is the argument against it. The name was the identity,
+ * so an exact comparison decided existence and a plural ("overhead tricep extensions") read as an
+ * unknown movement. Loosening the comparison only moved the risk: anything willing to accept a near
+ * miss is willing to write a set against the WRONG exercise, and every volume figure derives from
+ * that association.
  */
 async function loadCatalog(): Promise<CatalogRow[]> {
-  const { data } = await getClient().from('exercise_catalog').select('name, categories');
-  return (data ?? []).map((r) => ({ name: r.name as string, categories: (r.categories ?? []) as string[] }));
-}
-/** Exact (case-insensitive) wins over a tolerant match, so an exact name is never re-pointed. */
-function matchCatalog(rows: CatalogRow[], name: string): CatalogRow | null {
-  const nm = name.trim();
-  const lower = nm.toLowerCase();
-  return rows.find((r) => r.name.toLowerCase() === lower)
-      ?? rows.find((r) => namesMatch(nm, r.name))
-      ?? null;
-}
-async function lookupCatalog(name: string): Promise<CatalogRow | null> {
-  return matchCatalog(await loadCatalog(), name);
+  const { data } = await getClient().from('exercise_catalog').select('id, name, categories');
+  return (data ?? []).map((r) => ({ id: r.id as number, name: r.name as string, categories: (r.categories ?? []) as string[] }));
 }
 
-/** Create or replace a catalog entry (categories + fractional muscle map). Fixes mistakes too. */
+/** Resolve an id to its catalog row, or throw naming what is actually on offer. */
+async function requireExercise(id: unknown): Promise<CatalogRow> {
+  const n = Number(id);
+  if (!Number.isInteger(n)) throw new Error(`exercise_id must be an integer id from get_workout_catalog, got ${JSON.stringify(id)}`);
+  const rows = await loadCatalog();
+  const hit = rows.find((r) => r.id === n);
+  if (!hit) throw new Error(`No exercise with id ${n}. Call get_workout_catalog for the ids; add a genuinely new movement with upsert_catalog_exercise, which returns one.`);
+  return hit;
+}
+
+/**
+ * Create or replace a catalog entry (categories + fractional muscle map). Fixes mistakes too.
+ *
+ * This is the ONE place an exercise is named by a string, because naming is what it is for. Matching
+ * is exact and case-insensitive: near-miss matching here would silently overwrite the muscle map of a
+ * DIFFERENT movement. Returns the id, so a caller that has just registered something can log against
+ * it without a second lookup.
+ */
 export async function upsertCatalogExercise(name: string, categories: unknown, muscles: unknown): Promise<CatalogExercise> {
   const sb = getClient();
   const nm = String(name).trim();
   if (!nm) throw new Error('exercise name required');
   const cats = validateCategories(categories);
   const mus = validateMuscles(muscles);
-  const existing = await lookupCatalog(nm);
+  const existing = (await loadCatalog()).find((r) => r.name.toLowerCase() === nm.toLowerCase()) ?? null;
   const canonical = existing?.name ?? nm;
   if (existing) {
     await sb.from('exercise_catalog').update({ categories: cats }).eq('name', canonical);
@@ -165,9 +150,11 @@ export async function upsertCatalogExercise(name: string, categories: unknown, m
   } else {
     await sb.from('exercise_catalog').insert({ name: canonical, categories: cats });
   }
-  const rows = Object.entries(mus).map(([muscle, contribution]) => ({ name: canonical, muscle, contribution }));
+  const id = existing?.id
+    ?? (await loadCatalog()).find((r) => r.name.toLowerCase() === canonical.toLowerCase())!.id;
+  const rows = Object.entries(mus).map(([muscle, contribution]) => ({ name: canonical, exercise_id: id, muscle, contribution }));
   if (rows.length) await sb.from('exercise_muscles').insert(rows);
-  return { name: canonical, categories: cats, muscles: mus };
+  return { id, name: canonical, categories: cats, muscles: mus };
 }
 
 // ---- sets (the flat log) ----
@@ -206,40 +193,31 @@ function normalizeSetTime(value: string): string {
 }
 
 /**
- * Log one or more sets. Each set is its own timestamped row. Unknown exercises are rejected
- * unless they carry categories + a muscles map, in which case they're registered in the catalog.
+ * Log one or more sets. Each set is its own timestamped row.
+ * An exercise is named by its catalog id, never by a string — see loadCatalog for why.
  * Sets in a single call share the call's timestamp (logged together); log set-by-set for real rest gaps.
  * A set may override that with its own `occurred_at` — for a set being written down after the fact,
  * which is the only way to place one at a time that has already passed.
  */
-export async function logSets(items: { exercise: string; weight_lbs: number; reps: number; occurred_at?: string; categories?: string[]; muscles?: Record<string, number> }[]): Promise<SetRow[]> {
+export async function logSets(items: { exercise_id: number; weight_lbs: number; reps: number; occurred_at?: string }[]): Promise<SetRow[]> {
   const sb = getClient();
   // now() is voice-aware: for a voice-logged set it resolves to the audio CAPTURE START (when he spoke),
   // not the current instant — see helpers.ts. That's what makes rest gaps between sets read true.
   const ts = now();
-  // Read once for the whole call, not once per set. A movement registered below joins it in place, so
-  // logging two sets of a brand-new exercise together still resolves the second against the first.
+  // Read once for the whole call rather than per set.
   const catalog = await loadCatalog();
-  const rows: { occurred_at: string; exercise: string; weight_lbs: number; reps: number }[] = [];
+  const rows: { occurred_at: string; exercise_id: number; weight_lbs: number; reps: number }[] = [];
   for (const it of items) {
-    const nm = String(it.exercise || '').trim();
-    if (!nm) throw new Error('each set needs an exercise name');
-    const entry = matchCatalog(catalog, nm);
-    let canonical: string;
-    if (entry) {
-      canonical = entry.name;
-    } else if (it.muscles && Object.keys(it.muscles).length) {
-      const created = await upsertCatalogExercise(nm, it.categories, it.muscles);
-      canonical = created.name;
-      catalog.push({ name: created.name, categories: created.categories ?? [] });
-    } else {
-      throw new Error(`Unknown exercise '${nm}'. Call get_workout_catalog and reuse the EXACT existing name. If it is genuinely new, include categories and a muscles map (e.g. {"quads":1.0,"glutes":0.5}) so it is added to the catalog.`);
-    }
-    if (!Number.isFinite(it.weight_lbs) || it.weight_lbs < 0) throw new Error(`'${nm}': weight_lbs must be >= 0 (bodyweight = 0)`);
-    if (!Number.isInteger(it.reps) || it.reps <= 0) throw new Error(`'${nm}': reps must be a positive integer`);
+    const n = Number(it.exercise_id);
+    if (!Number.isInteger(n)) throw new Error(`each set needs an integer exercise_id from get_workout_catalog, got ${JSON.stringify(it.exercise_id)}`);
+    const entry = catalog.find((r) => r.id === n);
+    if (!entry) throw new Error(`No exercise with id ${n}. Call get_workout_catalog for the ids; a genuinely new movement is registered with upsert_catalog_exercise, which returns one.`);
+    if (!Number.isFinite(it.weight_lbs) || it.weight_lbs < 0) throw new Error(`'${entry.name}': weight_lbs must be >= 0 (bodyweight = 0)`);
+    if (!Number.isInteger(it.reps) || it.reps <= 0) throw new Error(`'${entry.name}': reps must be a positive integer`);
     // Only a set that states its own time departs from the call's shared stamp, so logging several
-    // sets together still records them as one moment.
-    rows.push({ occurred_at: it.occurred_at ? normalizeSetTime(it.occurred_at) : ts, exercise: canonical, weight_lbs: it.weight_lbs, reps: it.reps });
+    // sets together still records them as one moment. The `exercise` column is filled by the
+    // sets_resolve_exercise trigger (migration 00075) from this id — never written here.
+    rows.push({ occurred_at: it.occurred_at ? normalizeSetTime(it.occurred_at) : ts, exercise_id: n, weight_lbs: it.weight_lbs, reps: it.reps });
   }
   const { data } = await sb.from('sets').insert(rows).select();
   return (data ?? []) as SetRow[];
@@ -263,20 +241,15 @@ export async function removeSet(id: number): Promise<SetRow | null> {
  */
 export async function updateSet(
   id: number,
-  patch: { exercise?: string; weight_lbs?: number; reps?: number; occurred_at?: string },
+  patch: { exercise_id?: number; weight_lbs?: number; reps?: number; occurred_at?: string },
 ): Promise<SetRow | null> {
   const sb = getClient();
   const upd: Record<string, unknown> = {};
-  if (patch.exercise !== undefined) {
-    const nm = String(patch.exercise).trim();
-    if (!nm) throw new Error('exercise cannot be empty');
-    // Catalogued movements only. An edit must not be able to invent an exercise, because the muscle
-    // map attached to the name is what every volume figure is derived from — a set retitled to
-    // something uncatalogued would silently stop counting. A genuinely new movement gets added by
-    // log_set or upsert_catalog_exercise first, where the map is supplied deliberately.
-    const entry = await lookupCatalog(nm);
-    if (!entry) throw new Error(`Unknown exercise '${nm}'. Call get_workout_catalog and reuse the EXACT existing name; add a genuinely new movement with upsert_catalog_exercise first.`);
-    upd.exercise = entry.name;
+  if (patch.exercise_id !== undefined) {
+    // The id is written; the `exercise` column follows from it via the sets_resolve_exercise trigger
+    // (00075). Resolved here anyway so a bad id fails with a useful message instead of a raw
+    // constraint violation from the database.
+    upd.exercise_id = (await requireExercise(patch.exercise_id)).id;
   }
   if (patch.weight_lbs !== undefined) {
     if (!Number.isFinite(patch.weight_lbs) || patch.weight_lbs < 0) throw new Error('weight_lbs must be >= 0 (bodyweight = 0)');
@@ -287,7 +260,7 @@ export async function updateSet(
     upd.reps = patch.reps;
   }
   if (patch.occurred_at !== undefined) upd.occurred_at = normalizeSetTime(patch.occurred_at);
-  if (!Object.keys(upd).length) throw new Error('nothing to change — pass at least one of exercise, weight_lbs, reps, occurred_at');
+  if (!Object.keys(upd).length) throw new Error('nothing to change — pass at least one of exercise_id, weight_lbs, reps, occurred_at');
   const { data } = await sb.from('sets').update(upd).eq('id', id).select().maybeSingle();
   return (data ?? null) as SetRow | null;
 }
@@ -426,21 +399,17 @@ export function watcherArmed(w: SetWatcher): boolean {
  * BEFORE the sets arrive: a report landing unarmed is stored but never becomes
  * training data, so a forgotten arming loses the log rather than corrupting it.
  */
-export async function setWatcher(exercise: string, weight_lbs: number): Promise<SetWatcher> {
+export async function setWatcher(exercise_id: number, weight_lbs: number): Promise<SetWatcher> {
   const sb = getClient();
-  const nm = String(exercise || '').trim();
-  if (!nm) throw new Error('need an exercise name');
   if (!Number.isFinite(weight_lbs) || weight_lbs < 0) {
     throw new Error('weight_lbs must be >= 0 (bodyweight = 0)');
   }
-  // Canonicalise against the catalog, exactly as log_set does, so watch-logged sets
-  // are indistinguishable from hand-logged ones and inherit the same muscle map.
-  const entry = await lookupCatalog(nm);
-  if (!entry) {
-    throw new Error(`Unknown exercise '${nm}'. Call get_workout_catalog and reuse the EXACT existing name, or log one set by hand first with categories and muscles so it enters the catalog.`);
-  }
+  // Named by id exactly as log_set is, so a watch-logged set is indistinguishable from a hand-logged
+  // one and inherits the same muscle map. The catalog NAME is stored alongside because 00046's
+  // trigger reads it when it turns a watch report into a set.
+  const entry = await requireExercise(exercise_id);
   const { data } = await sb.from('set_watcher')
-    .update({ exercise: entry.name, weight_lbs, armed_at: new Date().toISOString(), last_set_at: null })
+    .update({ exercise: entry.name, exercise_id: entry.id, weight_lbs, armed_at: new Date().toISOString(), last_set_at: null })
     .eq('id', 1).select().maybeSingle();
   return data as SetWatcher;
 }

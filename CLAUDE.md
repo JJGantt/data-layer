@@ -1,6 +1,6 @@
 # Working in data-layer
 
-Six things that will bite you, none of them visible from the code you are about to edit.
+Seven things that will bite you, none of them visible from the code you are about to edit.
 
 ## It runs from `dist/`, not `src/`
 
@@ -23,6 +23,23 @@ one moment before that was caught, on 2026-09-01.
 **Always use `helpers.now()` and `helpers.today()`.** A module with its own clock helper skips the
 override and stamps voice-logged data late, which is exactly how nutrition disagreed with every other
 table until it was fixed.
+
+## An exercise is named by its id, never by a string
+
+`log_set`, `update_set` and `set_rep_watcher` take `exercise_id` from `get_workout_catalog`. There is
+no name matching anywhere and none should be added: the name WAS the identity until 00075, so an
+exact comparison decided whether an exercise existed and a plural read as an unknown movement. The
+fix for that is not a looser comparison — anything willing to accept a near miss will eventually
+write a set against the wrong exercise, and every volume figure derives from that association.
+
+`upsert_catalog_exercise` is the one place a string names an exercise, because naming is what it is
+for; it matches exactly, and returns the new id to log against.
+
+`sets.exercise` still exists and still holds the name, but it is DERIVED — the `sets_resolve_exercise`
+trigger fills it from `exercise_id` on every write, so it cannot disagree with the catalog. It is
+still there because the hub reads it; it goes away when the hub reads the id instead. A writer that
+passes only a name (the hub, 00046's watch-report trigger) still works and gets the right id, and an
+unknown name raises rather than writing an orphan row.
 
 ## `ensureEastern()` will shift a time the user stated
 
