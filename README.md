@@ -7,7 +7,7 @@ Two entry points over the same modules:
 
 | | what | who runs it |
 |---|---|---|
-| `dist/mcp.js` | 45 MCP tools | every Claude session, Mac and Pi, via `~/.claude.json` |
+| `dist/mcp.js` | 53 MCP tools | every Claude session, Mac and Pi, via `~/.claude.json` |
 | `dist/http.js` | JSON API on `:27186` | `data-http.service` on the Pi; the Mac calls it |
 
 Both run from `dist/`; `pull-repos` rebuilds after pulling, so a change made on one machine reaches
@@ -24,7 +24,9 @@ both call, which is why the MCP and the API can never disagree about what a writ
 | `nutrition.ts` | food logging, targets, staged meals, leftovers |
 | `workouts.ts` | sessions, sets, the exercise catalog, volume |
 | `health.ts` | profile, height, weight |
-| `recipes.ts` `notes.ts` `reviews.ts` | as named |
+| `recipes.ts` | saved recipes — see below |
+| `ingredients.ts` | the ingredient itself: validation, produce rules, rollup, scaling |
+| `notes.ts` `reviews.ts` | as named |
 | `desk.ts` | dispatching Claude sessions to a machine, and the follow-up pointer |
 | `reports.ts` | the HTML write-ups a dispatched session publishes |
 | `helpers.ts` | ids, validation, and the clock — read it before using `now()` |
@@ -38,6 +40,22 @@ named for one — `add_to_list` with a `due` is how you create one.
 
 `repeat_every` on an item makes it recur: when it fires, `due` advances and `scheduled_at` keeps the
 original anchor, which is what the overdue badge counts.
+
+## A recipe ingredient is a nutrition ingredient
+
+The same record, validated by the same code in `ingredients.ts`: `food`/`amount`/`unit`, its own
+macros, its own produce classification. That is not tidiness — logging a recipe EXPANDS into those
+rows scaled by servings, so anything a recipe ingredient cannot carry is something a meal loses the
+moment it is eaten from a recipe rather than typed out.
+
+So the totals on `recipes` (and on `nutrition_entries`) are a **cached rollup, never an input**. A
+save re-derives them from the ingredients; nothing else may set them. A caller that sends recipe-level
+macros is describing a recipe that cannot be logged correctly.
+
+`log_recipe` is the only tool that logs one, and it takes just a name and a serving count. It is
+separate from `log_nutrition` so that the voice router can allow it on the fast path — see
+`voice-pipeline/docs/ROUTING.md`. `save_recipe` also accepts `from_entry`, which builds the recipe
+from a meal already in the log.
 
 ## Migrations
 
