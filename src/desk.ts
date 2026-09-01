@@ -447,9 +447,12 @@ export async function renameSession(ref: string, name: string) {
  * so the setting is written and the page follows it. It applies only to the TV; the phone app serves
  * the same markup and must not be dragged along.
  */
-export async function setWall(mode: 'standard' | 'sessions') {
-  const { error } = await getClient().from('app_settings')
-    .upsert({ key: 'wall_mode', value: mode }, { onConflict: 'key' });
+export async function setWall(mode: 'standard' | 'sessions' | 'calendar', months?: number) {
+  // `calendar_months` rides along because voice sizes the calendar wall in the same utterance that
+  // picks it ("show the full year") — the hub's /api/calendar reads it back as the month count.
+  const rows: { key: string; value: string }[] = [{ key: 'wall_mode', value: mode }];
+  if (months) rows.push({ key: 'calendar_months', value: String(months) });
+  const { error } = await getClient().from('app_settings').upsert(rows, { onConflict: 'key' });
   return error ? { ok: false as const, error: error.message } : { ok: true as const, mode };
 }
 
