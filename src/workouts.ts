@@ -127,16 +127,27 @@ function namesMatch(query: string, candidate: string): boolean {
   return a.length > 0 && a.length === b.length && a.every((w, i) => sameWord(w, b[i]));
 }
 
-async function lookupCatalog(name: string): Promise<{ name: string; categories: string[] } | null> {
-  const sb = getClient();
+type CatalogRow = { name: string; categories: string[] };
+
+/**
+ * The whole catalog. It is a few dozen rows, so matching a name is done in memory against all of it
+ * rather than asked of the database one name at a time — a query can only answer the question it was
+ * given, which is what made an exact-match lookup the arbiter of whether an exercise exists.
+ */
+async function loadCatalog(): Promise<CatalogRow[]> {
+  const { data } = await getClient().from('exercise_catalog').select('name, categories');
+  return (data ?? []).map((r) => ({ name: r.name as string, categories: (r.categories ?? []) as string[] }));
+}
+/** Exact (case-insensitive) wins over a tolerant match, so an exact name is never re-pointed. */
+function matchCatalog(rows: CatalogRow[], name: string): CatalogRow | null {
   const nm = name.trim();
-  // Exact (case-insensitive) is the overwhelmingly common path, and one indexed lookup.
-  const { data } = await sb.from('exercise_catalog').select('name, categories').ilike('name', nm).maybeSingle();
-  if (data) return { name: data.name, categories: (data.categories ?? []) as string[] };
-  // Only on a miss is the catalog worth pulling whole — a few dozen rows — to retry tolerantly.
-  const { data: all } = await sb.from('exercise_catalog').select('name, categories');
-  const hit = (all ?? []).find((r) => namesMatch(nm, r.name as string));
-  return hit ? { name: hit.name as string, categories: (hit.categories ?? []) as string[] } : null;
+  const lower = nm.toLowerCase();
+  return rows.find((r) => r.name.toLowerCase() === lower)
+      ?? rows.find((r) => namesMatch(nm, r.name))
+      ?? null;
+}
+async function lookupCatalog(name: string): Promise<CatalogRow | null> {
+  return matchCatalog(await loadCatalog(), name);
 }
 
 /** Create or replace a catalog entry (categories + fractional muscle map). Fixes mistakes too. */
@@ -206,17 +217,21 @@ export async function logSets(items: { exercise: string; weight_lbs: number; rep
   // now() is voice-aware: for a voice-logged set it resolves to the audio CAPTURE START (when he spoke),
   // not the current instant — see helpers.ts. That's what makes rest gaps between sets read true.
   const ts = now();
+  // Read once for the whole call, not once per set. A movement registered below joins it in place, so
+  // logging two sets of a brand-new exercise together still resolves the second against the first.
+  const catalog = await loadCatalog();
   const rows: { occurred_at: string; exercise: string; weight_lbs: number; reps: number }[] = [];
   for (const it of items) {
     const nm = String(it.exercise || '').trim();
     if (!nm) throw new Error('each set needs an exercise name');
-    const entry = await lookupCatalog(nm);
+    const entry = matchCatalog(catalog, nm);
     let canonical: string;
     if (entry) {
       canonical = entry.name;
     } else if (it.muscles && Object.keys(it.muscles).length) {
       const created = await upsertCatalogExercise(nm, it.categories, it.muscles);
       canonical = created.name;
+      catalog.push({ name: created.name, categories: created.categories ?? [] });
     } else {
       throw new Error(`Unknown exercise '${nm}'. Call get_workout_catalog and reuse the EXACT existing name. If it is genuinely new, include categories and a muscles map (e.g. {"quads":1.0,"glutes":0.5}) so it is added to the catalog.`);
     }
