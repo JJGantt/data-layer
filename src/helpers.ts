@@ -1,20 +1,35 @@
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 
 // READ THIS BEFORE ASSUMING now() IS THE CURRENT TIME — IT OFTEN ISN'T.
 // Under the voice worker, now() returns THE MOMENT THE USER STARTED SPEAKING, not the current instant:
-// voice-pipeline's worker.py stamps the DATA_TS_OVERRIDE env var on this MCP subprocess with the
-// command's audio-recording start (voice_requests.capture_start), and now() honors it. Deliberate — a
+// voice-pipeline's worker.py writes the command's audio-recording start (voice_requests.capture_start)
+// to the file named by DATA_TS_FILE, and now() reads it per call. Deliberate — a
 // set logged by voice has to land at Jared's rest-clock reference, not ~30s later when the command
 // finishes traversing transcription + routing + the model. Every caller below inherits that: `today()`
 // is the day he spoke, and anything stamped with now() is voice-aware whether or not it says so.
-// No override (typed/web commands, direct API callers) → the real machine clock: pure wall clock, no
-// timezone concept at all, whatever this host reads right now.
+// No file, or an empty one (typed/web commands, direct API callers, no command in flight) → the real
+// machine clock: pure wall clock, no timezone concept at all, whatever this host reads right now.
+// The worker rewrites the file at the START of every command — the capture_start for audio, empty for
+// typed/web — so the value can never be a previous turn's. Nothing writes between turns: this MCP runs
+// only when the model calls a tool.
 // (Named toEastern/now for historical reasons — it used to force America/New_York regardless of where
 // the host actually was; that was the bug. nutrition.ts used to keep its own clock helper that skipped
 // the override, so voice-logged food stamped ~30s late; it now calls this, so every table agrees.)
 export function now(): string {
-  const o = process.env.DATA_TS_OVERRIDE;
-  if (o && !isNaN(new Date(o).getTime())) return ensureEastern(o);
+  // The per-command timestamp arrives in a FILE, and the env var names its path. It cannot be the
+  // value itself: the voice worker's fast path keeps MCP servers as warm stdio sessions started once
+  // per worker lifetime, so a value baked into this process's environment at spawn freezes there for
+  // as long as the worker runs — which stamped 29 hours of voice-logged writes with one moment before
+  // it was caught. A path is constant for the process while its contents are re-read every call, so
+  // the session stays warm and the timestamp stays current.
+  const f = process.env.DATA_TS_FILE;
+  if (f) {
+    try {
+      const v = readFileSync(f, 'utf8').trim();
+      if (v && !isNaN(new Date(v).getTime())) return ensureEastern(v);
+    } catch { /* no command in flight, or the file was cleared — fall through to the real clock */ }
+  }
   return toEastern(new Date());
 }
 
