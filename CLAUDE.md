@@ -73,6 +73,12 @@ recoverable.
 ## Conventions
 
 - Migrations are numbered and append-only. Never edit one that has been applied; add another.
+- **A migration that creates a table must also enable RLS on it.** Supabase defaults tables made
+  this way to RLS *off*, and the anon key is public — it ships inside the Workset watch app — so a
+  table without RLS is readable and writable by anyone holding it. `enable row level security` with
+  no policy is the right default: service_role bypasses RLS, so nothing internal notices. Add
+  policies only for a table a client genuinely reaches with the anon key, and grant only the verbs
+  that client uses.
 - Apply them with `./migrate.sh`, from whichever machine wrote them.
 - Transport files (`mcp.ts`, `http.ts`) hold no logic — put it in the domain module so the MCP and the
   HTTP API cannot disagree about what a write means.
