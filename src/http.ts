@@ -159,7 +159,7 @@ const server = http.createServer(async (req, res) => {
     const setMatch = path.match(/^\/data\/sets\/(\d+)$/);
     if (setMatch && method === 'PATCH') {
       const body = await parseBody(req);
-      const row = await workouts.updateSet(Number(setMatch[1]), body.weight_lbs, body.reps);
+      const row = await workouts.updateSet(Number(setMatch[1]), body);
       if (!row) return json(res, { error: 'not found' }, 404);
       return json(res, { set: row });
     }

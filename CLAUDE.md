@@ -1,6 +1,6 @@
 # Working in data-layer
 
-Four things that will bite you, none of them visible from the code you are about to edit.
+Five things that will bite you, none of them visible from the code you are about to edit.
 
 ## It runs from `dist/`, not `src/`
 
@@ -18,6 +18,18 @@ reference, not thirty seconds later once transcription and routing have finished
 **Always use `helpers.now()` and `helpers.today()`.** A module with its own clock helper skips the
 override and stamps voice-logged data late, which is exactly how nutrition disagreed with every other
 table until it was fixed.
+
+## `ensureEastern()` will shift a time the user stated
+
+Timestamp columns hold **naive local wall-clock** — `now()` writes `toEastern(new Date())`, with no
+zone on it. `ensureEastern()` is the obvious-looking helper for a caller-supplied time and is the
+wrong one: given a bare string it parses as **UTC** and converts, so a user's "1:51pm" is stored as
+09:51 and the set lands in a different part of the day, or a different day.
+
+It is named for what it does to a string that really is UTC (which is what Claude tends to emit for a
+`date` argument), not for normalizing something a person said. When the value is a wall-clock reading
+the user gave you, validate its shape and store it verbatim — `workouts.normalizeSetTime()` is the
+pattern: strict parse, round-trip through `Date` to reject `2026-02-30` and `25:00`, no conversion.
 
 ## Upserts null what they omit
 

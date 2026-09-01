@@ -129,11 +129,45 @@ export async function upsertCatalogExercise(name: string, categories: unknown, m
 export interface SetRow { id: number; occurred_at: string; exercise: string; weight_lbs: number; reps: number; }
 
 /**
+ * A caller-supplied set time, normalized for the `sets.occurred_at` column.
+ *
+ * That column is NAIVE LOCAL wall-clock — it is what `now()` writes — so this deliberately does NOT
+ * go through `ensureEastern`. That helper reads a bare timestamp as UTC and converts, which would
+ * silently move a stated "1:51pm" back four hours and file the set under the wrong day. What the
+ * clock read is what gets stored.
+ *
+ * Strict on purpose. A set written to the wrong day is invisible on the surfaces that would show it
+ * and only turns up later as a corrupted week of volume, so an unparseable stamp raises rather than
+ * being guessed at. A bare date lands at noon, the same convention nutrition's occurred_at uses, so
+ * it cannot spill into an adjacent day whichever way the boundary is read.
+ */
+function normalizeSetTime(value: string): string {
+  const raw = String(value ?? '').trim();
+  const m = raw.match(/^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2}))?)?$/);
+  if (!m) throw new Error(`occurred_at must be LOCAL wall-clock 'YYYY-MM-DDTHH:MM' (or 'YYYY-MM-DD'), got '${raw}'`);
+  const timed = m[4] !== undefined;
+  const [y, mo, d] = m.slice(1, 4).map(Number);
+  const h = timed ? Number(m[4]) : 12;
+  const mi = timed ? Number(m[5]) : 0;
+  const s = timed && m[6] !== undefined ? Number(m[6]) : 0;
+  // The regex admits 2026-02-30 and 25:00; round-tripping through Date is what rejects them.
+  const dt = new Date(y, mo - 1, d, h, mi, s);
+  if (dt.getFullYear() !== y || dt.getMonth() !== mo - 1 || dt.getDate() !== d
+      || dt.getHours() !== h || dt.getMinutes() !== mi || dt.getSeconds() !== s) {
+    throw new Error(`occurred_at is not a real date/time: '${raw}'`);
+  }
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${y}-${p(mo)}-${p(d)}T${p(h)}:${p(mi)}:${p(s)}`;
+}
+
+/**
  * Log one or more sets. Each set is its own timestamped row. Unknown exercises are rejected
  * unless they carry categories + a muscles map, in which case they're registered in the catalog.
  * Sets in a single call share the call's timestamp (logged together); log set-by-set for real rest gaps.
+ * A set may override that with its own `occurred_at` — for a set being written down after the fact,
+ * which is the only way to place one at a time that has already passed.
  */
-export async function logSets(items: { exercise: string; weight_lbs: number; reps: number; categories?: string[]; muscles?: Record<string, number> }[]): Promise<SetRow[]> {
+export async function logSets(items: { exercise: string; weight_lbs: number; reps: number; occurred_at?: string; categories?: string[]; muscles?: Record<string, number> }[]): Promise<SetRow[]> {
   const sb = getClient();
   // now() is voice-aware: for a voice-logged set it resolves to the audio CAPTURE START (when he spoke),
   // not the current instant — see helpers.ts. That's what makes rest gaps between sets read true.
@@ -154,7 +188,9 @@ export async function logSets(items: { exercise: string; weight_lbs: number; rep
     }
     if (!Number.isFinite(it.weight_lbs) || it.weight_lbs < 0) throw new Error(`'${nm}': weight_lbs must be >= 0 (bodyweight = 0)`);
     if (!Number.isInteger(it.reps) || it.reps <= 0) throw new Error(`'${nm}': reps must be a positive integer`);
-    rows.push({ occurred_at: ts, exercise: canonical, weight_lbs: it.weight_lbs, reps: it.reps });
+    // Only a set that states its own time departs from the call's shared stamp, so logging several
+    // sets together still records them as one moment.
+    rows.push({ occurred_at: it.occurred_at ? normalizeSetTime(it.occurred_at) : ts, exercise: canonical, weight_lbs: it.weight_lbs, reps: it.reps });
   }
   const { data } = await sb.from('sets').insert(rows).select();
   return (data ?? []) as SetRow[];
@@ -168,9 +204,42 @@ export async function removeSet(id: number): Promise<SetRow | null> {
   return row as SetRow;
 }
 
-export async function updateSet(id: number, weight_lbs: number, reps: number): Promise<SetRow | null> {
+/**
+ * Edit a logged set in place. Every field is optional and only what is passed is written, so a set's
+ * movement, load, reps or time can each be corrected without restating — or disturbing — the others.
+ *
+ * Changing the exercise is why this takes a patch rather than a fixed triple: the alternative was
+ * delete-and-relog, which restamps `occurred_at` and so destroys the rest gap that the timestamp
+ * exists to record.
+ */
+export async function updateSet(
+  id: number,
+  patch: { exercise?: string; weight_lbs?: number; reps?: number; occurred_at?: string },
+): Promise<SetRow | null> {
   const sb = getClient();
-  const { data } = await sb.from('sets').update({ weight_lbs, reps }).eq('id', id).select().maybeSingle();
+  const upd: Record<string, unknown> = {};
+  if (patch.exercise !== undefined) {
+    const nm = String(patch.exercise).trim();
+    if (!nm) throw new Error('exercise cannot be empty');
+    // Catalogued movements only. An edit must not be able to invent an exercise, because the muscle
+    // map attached to the name is what every volume figure is derived from — a set retitled to
+    // something uncatalogued would silently stop counting. A genuinely new movement gets added by
+    // log_set or upsert_catalog_exercise first, where the map is supplied deliberately.
+    const entry = await lookupCatalog(nm);
+    if (!entry) throw new Error(`Unknown exercise '${nm}'. Call get_workout_catalog and reuse the EXACT existing name; add a genuinely new movement with upsert_catalog_exercise first.`);
+    upd.exercise = entry.name;
+  }
+  if (patch.weight_lbs !== undefined) {
+    if (!Number.isFinite(patch.weight_lbs) || patch.weight_lbs < 0) throw new Error('weight_lbs must be >= 0 (bodyweight = 0)');
+    upd.weight_lbs = patch.weight_lbs;
+  }
+  if (patch.reps !== undefined) {
+    if (!Number.isInteger(patch.reps) || patch.reps <= 0) throw new Error('reps must be a positive integer');
+    upd.reps = patch.reps;
+  }
+  if (patch.occurred_at !== undefined) upd.occurred_at = normalizeSetTime(patch.occurred_at);
+  if (!Object.keys(upd).length) throw new Error('nothing to change — pass at least one of exercise, weight_lbs, reps, occurred_at');
+  const { data } = await sb.from('sets').update(upd).eq('id', id).select().maybeSingle();
   return (data ?? null) as SetRow | null;
 }
 
