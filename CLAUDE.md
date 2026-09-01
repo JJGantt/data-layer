@@ -11,9 +11,14 @@ effect, check that first.
 ## `now()` is not the current time
 
 Under the voice worker it returns **the moment Jared started speaking** — `voice-pipeline`'s
-`worker.py` sets `DATA_TS_OVERRIDE` on this subprocess from `voice_requests.capture_start`, and
-`helpers.now()` honours it. That is deliberate: a set logged by voice belongs at his rest-clock
-reference, not thirty seconds later once transcription and routing have finished.
+`worker.py` writes `voice_requests.capture_start` to the file named by `DATA_TS_FILE` at the start of
+every command, and `helpers.now()` re-reads it per call. That is deliberate: a set logged by voice
+belongs at his rest-clock reference, not thirty seconds later once transcription and routing have
+finished.
+
+It is a file rather than an env value because the worker's MCP session is warm (below). Passing the
+timestamp in the environment froze it at the first command's value and stamped 29 hours of writes with
+one moment before that was caught, on 2026-09-01.
 
 **Always use `helpers.now()` and `helpers.today()`.** A module with its own clock helper skips the
 override and stamps voice-logged data late, which is exactly how nutrition disagreed with every other
