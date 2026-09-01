@@ -1,6 +1,6 @@
 # Working in data-layer
 
-Five things that will bite you, none of them visible from the code you are about to edit.
+Six things that will bite you, none of them visible from the code you are about to edit.
 
 ## It runs from `dist/`, not `src/`
 
@@ -35,6 +35,18 @@ pattern: strict parse, round-trip through `Date` to reject `2026-02-30` and `25:
 
 `Prefer: resolution=merge-duplicates` overwrites every column in the payload — and a column left out
 is set to null, not left alone. Send the columns you want preserved, even unchanged ones.
+
+## The voice worker holds this MCP warm — a rebuild alone does nothing
+
+The worker's fast path (`SdkRunner`, primary since 2026-08-30) is one long-lived process holding the
+data MCP as a **warm stdio session**, started once per worker lifetime. So `npm run build` gives voice
+nothing: new tools stay invisible and changed schemas stay stale until the worker reconnects. Restart
+it — `launchctl kickstart -k gui/$(id -u)/com.jaredgantt.voice-worker` on the Mac, `sudo systemctl
+restart voice-worker` on the Pi. Both machines' `pull-repos` now do this on a data-layer change; a
+build you run by hand still needs it.
+
+The same process lifetime is why nothing per-command may live in that subprocess's **environment** —
+it freezes there. See `helpers.now()`, which reads its timestamp from a file for exactly this reason.
 
 ## A new tool is invisible to voice until it is allow-listed
 
