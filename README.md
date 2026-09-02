@@ -73,7 +73,12 @@ Supabase is the only copy of every life table, so `./backup.sh` writes a second 
 
 One `.jsonl` per table plus a `_manifest.txt` row count, driven off the PostgREST OpenAPI root so a
 new table is picked up without touching this script. A daily launchd agent
-(`com.jaredgantt.supabase-backup`, 04:15) runs it on the Mac.
+(`com.jaredgantt.supabase-backup`, 04:15) runs it on the Mac, which then rsyncs the whole directory
+to `pi:~/supabase-backups`. Three copies: Supabase, Mac, Pi.
+
+The mirror is best-effort and says so in the log — the Mac cannot always reach the Pi, and a backup
+that succeeded locally must not report failure because the mirror did not run. Mirroring the
+directory rather than the day's file means the Pi inherits the same retention automatically.
 
 **Data only — no schema.** That is not an omission: the schema is `supabase/migrations/`, which is
 in git and better protected than a tarball. A restore is `./migrate.sh` to rebuild the schema, then
