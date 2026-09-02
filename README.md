@@ -87,6 +87,12 @@ anything, because a truncated backup nobody opens until they need it is worse th
 `pg_dump` is not on either machine and `supabase db dump` hangs against the pooler here, which is why
 this goes through PostgREST with the service key that is already on disk.
 
+`backup.sh` widens `PATH` before calling node. launchd starts jobs with only
+`/usr/bin:/bin:/usr/sbin:/sbin`, and node lives in `/usr/local/bin` — the agent failed every run with
+`exec: node: not found` while the same script worked by hand. Check `~/supabase-backups/backup.log`
+rather than assuming the agent is fine; a failed run leaves yesterday's tarball sitting there looking
+current.
+
 ## The Supabase key
 
 `client.ts` reads `SUPABASE_KEY` from the environment, falling back to a gitignored `.env` beside the
