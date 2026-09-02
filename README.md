@@ -65,6 +65,28 @@ another.
 
     ./migrate.sh            # push, then list what is applied
 
+## Backups
+
+Supabase is the only copy of every life table, so `./backup.sh` writes a second one to the Mac:
+
+    ./backup.sh                 # -> ~/supabase-backups/supabase-YYYY-MM-DD.tar.gz  (~2.6MB)
+
+One `.jsonl` per table plus a `_manifest.txt` row count, driven off the PostgREST OpenAPI root so a
+new table is picked up without touching this script. A daily launchd agent
+(`com.jaredgantt.supabase-backup`, 04:15) runs it on the Mac.
+
+**Data only — no schema.** That is not an omission: the schema is `supabase/migrations/`, which is
+in git and better protected than a tarball. A restore is `./migrate.sh` to rebuild the schema, then
+load the rows. The gap to know about is anything created in the Supabase dashboard and never written
+as a migration — that exists in no backup at all.
+
+Retention keeps every 1st-of-month dump forever plus the last 14 of anything else, so the archive
+grows about 50MB a year rather than 1GB. The tarball is listed with `tar tzf` before it replaces
+anything, because a truncated backup nobody opens until they need it is worse than none.
+
+`pg_dump` is not on either machine and `supabase db dump` hangs against the pooler here, which is why
+this goes through PostgREST with the service key that is already on disk.
+
 ## The Supabase key
 
 `client.ts` reads `SUPABASE_KEY` from the environment, falling back to a gitignored `.env` beside the
