@@ -32,9 +32,10 @@ both call, which is why the MCP and the API can never disagree about what a writ
 out of those ids; Amazon cannot, and the row only saves the search. See the Walmart section of
 `~/.claude/CLAUDE.md` for the URL shape.
 
-`cart.mjs` is deliberately NOT an MCP tool. A tool's schema sits in every session's context forever,
-and this is used for the occasional shopping errand; the script costs nothing until it runs. It also
-does the part a rows-only tool would leave undone — turning names and quantities into the URL:
+`cart.mjs` is a script rather than an MCP tool because it does the whole job — ids and quantities in,
+finished cart URL out — where a tool returning rows would leave the URL to be assembled by hand.
+Not because of context cost: MCP tools are deferred, so an unused one costs its name in a list, not
+its schema. Either surface would work; this is not a rule, and adding it to the MCP is Jared's call:
 
     node cart.mjs list [walmart|amazon]
     node cart.mjs url 13893738=2 44390948=7
