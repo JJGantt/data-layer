@@ -27,18 +27,13 @@ both call, which is why the MCP and the API can never disagree about what a writ
 | `recipes.ts` | saved recipes — see below |
 | `ingredients.ts` | the ingredient itself: validation, produce rules, rollup, scaling |
 
-`shopping_items` (read it with `cart.mjs`, not an MCP tool — see below) is the saved retailer catalogue:
-`retailer, item_id, name, default_qty, last_verified`. Walmart fills a whole cart from one URL built
-out of those ids; Amazon cannot, and the row only saves the search. See the Walmart section of
-`~/.claude/CLAUDE.md` for the URL shape.
+`shopping_items` is the saved retailer catalogue: `retailer, item_id, name, default_qty,
+last_verified`. Three MCP tools cover it — `get_shopping_items` (read it whole; it is small and has
+no search), `build_walmart_cart_url` (ids + quantities -> one URL that fills the cart in a single
+navigation), and `save_shopping_item`. Quantities ADD to the cart, so pass deltas.
 
-`cart.mjs` is a script for no principled reason — it is simply what was written first. An MCP tool
-could do the same job, would reuse `client.ts` instead of re-parsing `.env`, and would work on the
-Pi without assuming a checkout path. If it should move into the MCP, that is Jared's call:
-
-    node cart.mjs list [walmart|amazon]
-    node cart.mjs url 13893738=2 44390948=7
-    node cart.mjs add walmart <item_id> "<name>" [category]
+Amazon has no cart URL — its documented `/gp/aws/cart/add.html` was tested and adds nothing — so an
+Amazon row saves the search, not the session.
 
 `url` takes ids because reading `list` and choosing one is the step that picks the right product.
 An earlier version matched on names and had to reject "milk" as ambiguous against a milkshake

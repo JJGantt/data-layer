@@ -13,6 +13,7 @@ import * as lists from './lists.js';
 import * as desk from './desk.js';
 import * as notes from './notes.js';
 import * as reports from './reports.js';
+import * as shopping from './shopping.js';
 
 const server = new Server({ name: 'data', version: '2.0.0' }, { capabilities: { tools: {} } });
 
@@ -32,6 +33,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     { name: 'list_workouts', description: 'List recent workout days (grouped from sets), newest first — date, derived category label, set count, and exercises.', inputSchema: { type: 'object' as const, properties: { limit: { type: 'integer', description: 'Max days to return. Defaults to 10.' } } } },
     { name: 'get_workout', description: "Get a day's full workout — all sets grouped by exercise. Defaults to today. Returns a pre-formatted table — pass it to the user exactly as-is.", inputSchema: { type: 'object' as const, properties: { date: { type: 'string', description: 'Date YYYY-MM-DD. Defaults to today.' } } } },
     { name: 'get_exercise_history', description: 'Get progression history for a single exercise across all days (most recent first).', inputSchema: { type: 'object' as const, properties: { name: { type: 'string', description: 'Exercise name (case-insensitive).' }, limit: { type: 'integer', description: 'Max days to return. Defaults to 60.' } }, required: ['name'] } },
+    { name: 'get_shopping_items', description: "Jared's saved Walmart/Amazon items with their retailer item ids. Read this FIRST for any cart request — the id is what fills a cart, and choosing it off this list is what picks the right product. Small enough to read whole; there is no search.", inputSchema: { type: 'object' as const, properties: { retailer: { type: 'string', enum: ['walmart','amazon'], description: 'Optional filter.' } } } },
+    { name: 'build_walmart_cart_url', description: 'Turn saved item ids + quantities into ONE URL that fills the Walmart cart in a single navigation — no clicking, no per-item pages. Quantities ADD to what is already in the cart, so pass the DELTA, not the target. Navigate to the returned URL in the signed-in browser, then confirm against /cart. There is no Amazon equivalent.', inputSchema: { type: 'object' as const, properties: { items: { type: 'array', description: 'Items to add.', items: { type: 'object', properties: { item_id: { type: 'string', description: 'Walmart item id from get_shopping_items.' }, qty: { type: 'integer', description: "How many to ADD. Defaults to the item's default_qty." } }, required: ['item_id'] } } }, required: ['items'] } },
+    { name: 'save_shopping_item', description: 'Add or update an item in the saved catalogue, so the id never has to be looked up again. Walmart item ids are the trailing number of /ip/<slug>/<id>; Amazon ids are the ASIN.', inputSchema: { type: 'object' as const, properties: { retailer: { type: 'string', enum: ['walmart','amazon'] }, item_id: { type: 'string' }, name: { type: 'string' }, default_qty: { type: 'integer' }, category: { type: 'string' } }, required: ['retailer','item_id','name'] } },
     { name: 'get_weekly_volume', description: 'Weekly hypertrophy volume per muscle (trailing N days, default 7), as fractional sets (primary mover = 1.0, secondary = 0.5) summed across all logged sets. Shows all muscle regions grouped by legs/push/pull/core against the ~10–20 sets/week target, so gaps (e.g. untrained hamstrings) are visible. Returns a pre-formatted report — pass it to the user exactly as-is.', inputSchema: { type: 'object' as const, properties: { days: { type: 'integer', description: 'Trailing window in days. Defaults to 7.' } } } },
     { name: 'update_set', description: "Correct a logged set by its set id (shown in get_workout) — its exercise, weight, reps, or the time it happened. Everything except `id` is optional and ONLY the fields you pass are changed, so fixing the weight leaves the reps and the timestamp exactly as they were; pass at least one. Use this to change which MOVEMENT a set was ('that last set was incline press, not chest press') rather than deleting and re-logging, because re-logging restamps the time and destroys the rest gap. The movement is named by `exercise_id` from get_workout_catalog, never by a name. `occurred_at` moves the set to a different time or day. Returns the day's table — pass it to the user exactly as-is.", inputSchema: { type: 'object' as const, properties: { id: { type: 'integer', description: 'Set id from get_workout.' }, exercise_id: { type: 'integer', description: 'Optional. Change which movement this set was, by its numeric id from get_workout_catalog.' }, weight_lbs: { type: 'number', description: 'Optional. Total weight in lbs; bodyweight = 0.' }, reps: { type: 'integer', description: 'Optional.' }, occurred_at: { type: 'string', description: "Optional. Move the set to another time, as LOCAL wall-clock 'YYYY-MM-DDTHH:MM' (or 'YYYY-MM-DD' for a bare day, which lands at noon). This is the clock reading where he was, never UTC." } }, required: ['id'] } },
     { name: 'remove_set', description: 'Delete a logged set by its set id (shown in get_workout).', inputSchema: { type: 'object' as const, properties: { id: { type: 'integer', description: 'Set id from get_workout.' } }, required: ['id'] } },
@@ -128,6 +132,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         `Valid muscles: ${catalog.muscles.join(', ')}\n` +
         `Exercises (${catalog.exercises.length}) — pass the id, never the name:\n` +
         (catalog.exercises.map(e => `  id=${e.id}  ${e.name} [${e.categories.join(', ')}] → ${fmtMuscles(e.muscles) || '(no map)'}`).join('\n') || '  none yet'));
+    }
+    if (name === 'get_shopping_items') {
+      return text(shopping.formatItems(await shopping.listItems(a.retailer as string | undefined)));
+    }
+    if (name === 'build_walmart_cart_url') {
+      return text(await shopping.walmartCartUrl(a.items as any[]));
+    }
+    if (name === 'save_shopping_item') {
+      return text(await shopping.saveItem(a as any));
     }
     if (name === 'get_weekly_volume') {
       const result = await workouts.getWeeklyVolume((a.days as number) || 7);
