@@ -37,8 +37,12 @@ and this is used for the occasional shopping errand; the script costs nothing un
 does the part a rows-only tool would leave undone — turning names and quantities into the URL:
 
     node cart.mjs list [walmart|amazon]
-    node cart.mjs url spinach=2 milk=2 banana=7
+    node cart.mjs url 13893738=2 44390948=7
     node cart.mjs add walmart <item_id> "<name>" [category]
+
+`url` takes ids because reading `list` and choosing one is the step that picks the right product.
+An earlier version matched on names and had to reject "milk" as ambiguous against a milkshake
+cereal — a failure mode that only existed because of the matcher.
 | `notes.ts` `reviews.ts` | as named |
 | `desk.ts` | dispatching Claude sessions to a machine, and the follow-up pointer |
 | `reports.ts` | the HTML write-ups a dispatched session publishes |

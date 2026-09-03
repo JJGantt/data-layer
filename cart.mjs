@@ -5,12 +5,14 @@
 // table" — it is "turn a shopping list into a cart URL", which a tool exposing rows would still
 // leave the model to do by hand.
 //
-//   node cart.mjs list [walmart|amazon]        # the whole catalogue — it is small, just read it
-//   node cart.mjs url spinach=2 milk=2 banana=7   # -> one URL that fills the Walmart cart
+//   node cart.mjs list [walmart|amazon]              # the whole catalogue — it is small, just read it
+//   node cart.mjs url 13893738=2 44390948=7          # -> one URL that fills the Walmart cart
 //   node cart.mjs add walmart <item_id> "<name>" [category]
 //
-// `url` matches each term against the name, case-insensitively. An ambiguous term is an ERROR that
-// prints the candidates rather than a guess — putting the wrong food in a cart is worse than asking.
+// `url` takes ITEM IDS, not names. Reading `list` and picking the id is the step where the right
+// product gets chosen, and it is not a step to automate away — a name matcher only re-introduces
+// the chance of quietly picking the wrong food. All `url` does is check each id is really in the
+// catalogue (a typo'd id fails SILENTLY inside the URL) and encode the pipes.
 
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -40,21 +42,16 @@ if (cmd === 'list') {
   console.log(`\n${all.length} items`);
 
 } else if (cmd === 'url') {
-  if (!args.length) { console.error('usage: node cart.mjs url <term>=<qty> ...'); process.exit(1); }
+  if (!args.length) { console.error('usage: node cart.mjs url <item_id>=<qty> ...   (ids come from `list`)'); process.exit(1); }
   const all = await rows(`select=item_id,name,default_qty&retailer=eq.walmart`);
+  const by = new Map(all.map((x) => [x.item_id, x]));
   const parts = [];
   let bad = false;
   for (const a of args) {
-    const [term, qtyRaw] = a.split('=');
-    const hits = all.filter((x) => x.name.toLowerCase().includes(term.toLowerCase().replace(/_/g, ' ')));
-    if (hits.length === 0) { console.error(`no match: ${term}`); bad = true; continue; }
-    if (hits.length > 1) {
-      console.error(`ambiguous: ${term}`);
-      for (const h of hits) console.error(`    ${h.item_id}  ${h.name}`);
-      bad = true; continue;
-    }
-    const qty = Number(qtyRaw ?? hits[0].default_qty) || 1;
-    parts.push({ ...hits[0], qty });
+    const [id, qtyRaw] = a.split('=');
+    const hit = by.get(id);
+    if (!hit) { console.error(`not in the catalogue: ${id}   (run \`list\`, or \`add\` it first)`); bad = true; continue; }
+    parts.push({ ...hit, qty: Number(qtyRaw ?? hit.default_qty) || 1 });
   }
   if (bad) process.exit(1);
   for (const p of parts) console.log(`# ${p.qty} x ${p.name}`);
