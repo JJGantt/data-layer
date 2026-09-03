@@ -26,6 +26,11 @@ both call, which is why the MCP and the API can never disagree about what a writ
 | `health.ts` | profile, height, weight |
 | `recipes.ts` | saved recipes — see below |
 | `ingredients.ts` | the ingredient itself: validation, produce rules, rollup, scaling |
+
+`shopping_items` (no module yet — read it with plain REST) is the saved retailer catalogue:
+`retailer, item_id, name, default_qty, last_verified`. Walmart fills a whole cart from one URL built
+out of those ids; Amazon cannot, and the row only saves the search. See the Walmart section of
+`~/.claude/CLAUDE.md` for the URL shape.
 | `notes.ts` `reviews.ts` | as named |
 | `desk.ts` | dispatching Claude sessions to a machine, and the follow-up pointer |
 | `reports.ts` | the HTML write-ups a dispatched session publishes |
