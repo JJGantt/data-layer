@@ -27,10 +27,18 @@ both call, which is why the MCP and the API can never disagree about what a writ
 | `recipes.ts` | saved recipes — see below |
 | `ingredients.ts` | the ingredient itself: validation, produce rules, rollup, scaling |
 
-`shopping_items` (no module yet — read it with plain REST) is the saved retailer catalogue:
+`shopping_items` (read it with `cart.mjs`, not an MCP tool — see below) is the saved retailer catalogue:
 `retailer, item_id, name, default_qty, last_verified`. Walmart fills a whole cart from one URL built
 out of those ids; Amazon cannot, and the row only saves the search. See the Walmart section of
 `~/.claude/CLAUDE.md` for the URL shape.
+
+`cart.mjs` is deliberately NOT an MCP tool. A tool's schema sits in every session's context forever,
+and this is used for the occasional shopping errand; the script costs nothing until it runs. It also
+does the part a rows-only tool would leave undone — turning names and quantities into the URL:
+
+    node cart.mjs list [walmart|amazon]
+    node cart.mjs url spinach=2 milk=2 banana=7
+    node cart.mjs add walmart <item_id> "<name>" [category]
 | `notes.ts` `reviews.ts` | as named |
 | `desk.ts` | dispatching Claude sessions to a machine, and the follow-up pointer |
 | `reports.ts` | the HTML write-ups a dispatched session publishes |
