@@ -59,7 +59,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (listItemsMatch && method === 'POST') {
       const body = await parseBody(req);
-      const item = await lists.addItem(listItemsMatch[1], body.text, { title: body.title, due: body.due, repeat_every: body.repeat_every });
+      const item = (await lists.addItem(listItemsMatch[1], body.text, { title: body.title, due: body.due, priority: body.priority, repeat_every: body.repeat_every, repeat_until: body.repeat_until }))[0];
       return json(res, { item });
     }
     const listItemDeleteMatch = path.match(/^\/data\/lists\/([^/]+)\/items\/([^/]+)$/);
@@ -76,9 +76,8 @@ const server = http.createServer(async (req, res) => {
     const setDueMatch = path.match(/^\/data\/due\/([^/]+)$/);
     if (setDueMatch && (method === 'PATCH' || method === 'PUT')) {
       const body = await parseBody(req);
-      const patch: { due?: string | null; repeat_every?: string | null } = {};
+      const patch: { due?: string | null } = {};
       if ('due' in body) patch.due = body.due ?? null;
-      if ('repeat_every' in body) patch.repeat_every = body.repeat_every ?? null;
       const item = await lists.setDue(body.list ?? null, setDueMatch[1], patch);
       if (!item) return json(res, { error: 'not found' }, 404);
       return json(res, { item });

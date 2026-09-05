@@ -1,5 +1,5 @@
 import { getClient } from './client.js';
-import { now, uuid } from './helpers.js';
+import { now, toEastern, uuid } from './helpers.js';
 
 // Lists hold every kind of item, dated or not. There is no separate reminders table any more (see
 // migration 00056): a "reminder" is just an item with a `due`, and the scheduler fires anything dated
@@ -10,14 +10,25 @@ import { now, uuid } from './helpers.js';
 // something off and getting rid of it are the same act, and modelling them apart only produced two
 // flags to keep in sync and two surfaces that disagreed about what a tick meant. `deleted` is soft:
 // the row stays for a recovery window, then is purged.
+//
+// That one act now also SCORES (migration 00085): removing a dated item writes a `task_events` row
+// by trigger, and the hub turns those into the gold band on the health bar. What the removal MEANS
+// is decided by the clock, not by the caller — an item removed before it goes live is worth
+// nothing, one removed after is scored on how late it was. That is why there is still no second
+// verb here for cancelling: "remove", "delete", "clear", "check off" and "done" are not separable
+// in how a request actually arrives, so a caller choosing between two tools would mis-route them
+// indefinitely, silently awarding or withholding points. Timing carries the meaning instead, and
+// nothing has to be disambiguated. Do not add a cancel verb without solving that first.
 export interface ListItem {
   id: string; list_name: string; text: string;
   title: string | null;      // short label for narrow surfaces; falls back to `text`
   due: string | null;        // local-naive 'YYYY-MM-DD' or 'YYYY-MM-DDTHH:MM' — dated ⇒ it fires
-  repeat_every: string | null;   // '1 day', '2 hours', … — null ⇒ one-shot. Null IS the boolean.
-  // When it was FIRST due. Never moves. `due` is the NEXT firing time and marches forward on a
-  // repeater, so only this can answer "has its moment been and gone?" — see migration 00060.
+  // When it was scheduled for. Equal to `due` now that nothing moves a due date (00085 materialised
+  // recurrence, so there is no next-occurrence to march to); kept because every surface reads it and
+  // because it is the occurrence key the score ledger joins on.
   scheduled_at: string | null;
+  priority: number;          // 0 normal, 1 important. Score multiplier is (1 + priority).
+  series_id: string | null;  // set on every occurrence one scheduling request produced
   deleted: boolean; created: string; updated: string;
 }
 
@@ -25,14 +36,26 @@ export interface ListItem {
 export const DEFAULT_LIST = 'todo';
 
 /**
- * Repeating is OPT-IN. Dating something used to default it to a daily repeat, on the reasoning that a
- * one-shot notification missed while asleep is gone for good — but that safety net is better served
- * by the expired state: an item whose scheduled moment has passed stays visible and flagged until it
- * is cleared. That is a persistent signal; a daily re-fire is a transient one that can be missed just
- * as easily as the first, while adding noise to every appointment that has simply been and gone.
+ * Recurrence is MATERIALISED, not stored. "Every day for the next month" is executed once, here, and
+ * produces thirty independent dated items sharing a `series_id`; there is no repeating row and no
+ * `repeat_every` column any more (migration 00085).
  *
- * Repeats remain a real feature for things that genuinely recur ("vitamins every evening").
+ * The old shape could not be scored. A repeating row's `due` marched into the future the instant it
+ * fired, so nothing could say which occurrence had just been checked off, and its anchor sat
+ * permanently in the past, so a drain derived from it would bleed forever from an item that was
+ * working correctly. Materialised occurrences have neither problem, because there is no longer a
+ * category of item that behaves differently: everything is a one-shot.
+ *
+ * The consequences are deliberate. Checking off today's does not touch tomorrow's, and a skipped
+ * week is seven separate misses rather than one — which is what it actually was. The horizon is
+ * finite and comes from the request, because "every day" has no stopping point and a background job
+ * quietly topping the list up forever is the kind of thing that breaks silently; running out is a
+ * prompt to re-up, not a failure.
  */
+export const SERIES_DEFAULT_HORIZON_DAYS = 30;
+/** How far ahead the dated view reaches when a caller doesn't say. Overdue is never bounded away. */
+export const DUE_DEFAULT_DAYS = 2;
+const SERIES_MAX_OCCURRENCES = 366;      // a hard stop, so a bad interval cannot flood a list
 
 export async function availableLists(): Promise<string[]> {
   const { data } = await getClient().from('lists').select('name').order('name');
@@ -63,17 +86,27 @@ export async function listItems(listName: string): Promise<ListItem[]> {
 }
 
 /**
- * Everything dated, across every list, ordered by when it was FIRST scheduled — so the longest
- * outstanding sits at the top and upcoming items follow. Ordering by `due` instead would shuffle a
- * repeating item to the back the moment it fired, which is precisely when it most needs attention.
+ * Everything dated, across every list, ordered by when it was scheduled — longest outstanding first,
+ * upcoming after.
+ *
+ * `withinDays` bounds the far end and matters more than it looks: materialised series mean a list
+ * can hold a month of identical-looking occurrences, and handing a model thirty rows that differ
+ * only by date is how "check off the teeth brushing" stops having one obvious answer. Scoped to the
+ * near horizon there is exactly one, and it can be named by id with no matching involved. Overdue
+ * items are never bounded away — they are the ones that need attention.
  */
-export async function dueItems(): Promise<ListItem[]> {
+export async function dueItems(withinDays?: number): Promise<ListItem[]> {
   const { data } = await getClient().from('list_items').select('*')
     .eq('deleted', false).not('due', 'is', null).order('scheduled_at');
-  return (data ?? []) as ListItem[];
+  const all = (data ?? []) as ListItem[];
+  if (withinDays == null) return all;
+  const cutoff = new Date(now().slice(0, 10) + 'T00:00:00');
+  cutoff.setDate(cutoff.getDate() + withinDays + 1);
+  const limit = toEastern(cutoff).slice(0, 10);
+  return all.filter(i => (i.scheduled_at ?? i.due ?? '').slice(0, 10) < limit);
 }
 
-/** Its originally-scheduled moment has passed and it has not been cleared. Independent of repeating. */
+/** Its scheduled moment has passed and it has not been cleared. A date-only item fires at 9am. */
 export function isExpired(i: ListItem, nowLocal: string): boolean {
   if (!i.scheduled_at) return false;
   const m = /T\d/.test(i.scheduled_at) ? i.scheduled_at : `${i.scheduled_at.slice(0, 10)}T09:00:00`;
@@ -91,33 +124,99 @@ export async function resolveListName(name: string): Promise<string> {
   return hit ? String(hit.name) : want;
 }
 
-export async function addItem(
-  listName: string,
-  text: string,
-  opts: { title?: string; due?: string; repeat_every?: string } = {},
-): Promise<ListItem> {
+export interface AddOpts {
+  title?: string;
+  due?: string;
+  priority?: number;
+  /** '<n> <unit>' — makes this a series. Requires `due`, which is the first occurrence. */
+  repeat_every?: string;
+  /** Last date a series occurrence may fall on. Defaults to SERIES_DEFAULT_HORIZON_DAYS out. */
+  repeat_until?: string;
+}
+
+/**
+ * Add one item, or — with `repeat_every` — the whole series in one call. Returns every row created,
+ * first occurrence first, so a caller can report what it actually committed to rather than the
+ * instruction it was given.
+ */
+export async function addItem(listName: string, text: string, opts: AddOpts = {}): Promise<ListItem[]> {
   const sb = getClient();
   const list = await resolveListName(listName || DEFAULT_LIST);
   await sb.from('lists').upsert({ name: list }, { onConflict: 'name', ignoreDuplicates: true });
-  const n = now(); const id = uuid();
-  const { data } = await sb.from('list_items')
-    .insert({
-      id, list_name: list, text,
-      title: opts.title?.trim() || null,
-      due: opts.due || null,
-      scheduled_at: opts.due || null,
-      // Only meaningful alongside a due — a recurrence with no first occurrence has nothing to recur
-      // from. Explicit '' (as opposed to absent) is how a caller asks for a genuine one-shot.
-      // Only meaningful alongside a due — a recurrence with no first occurrence has nothing to
-      // recur from.
-      repeat_every: opts.due ? (opts.repeat_every?.trim() || null) : null,
-      deleted: false, created: n, updated: n,
-    })
-    .select().single();
-  return data as ListItem;
+  const n = now();
+  const priority = Math.max(0, Math.min(1, Math.round(Number(opts.priority) || 0)));
+  const title = opts.title?.trim() || null;
+
+  // A recurrence with no first occurrence has nothing to recur from, so it is only read alongside a
+  // due — anything else is a one-off however it was asked for.
+  const every = opts.due ? (opts.repeat_every?.trim() || '') : '';
+  const occurrences = every
+    ? seriesOccurrences(opts.due as string, every, opts.repeat_until)
+    : [opts.due || null];
+  const seriesId = every ? uuid() : null;
+
+  const rows = occurrences.map(due => ({
+    id: uuid(), list_name: list, text, title,
+    due, scheduled_at: due, priority, series_id: seriesId,
+    deleted: false, created: n, updated: n,
+  }));
+  const { data } = await sb.from('list_items').insert(rows).select();
+  const made = (data ?? []) as ListItem[];
+  return made.sort((a, b) => String(a.due ?? '').localeCompare(String(b.due ?? '')));
 }
 
-/** Clear an item — checking it off and removing it are the same thing. Soft, so it's recoverable. */
+/**
+ * The occurrences one scheduling request expands to, first included.
+ *
+ * Each is computed from the ANCHOR rather than from the previous result. Month arithmetic clamps
+ * (Jan 31 + 1 month = Feb 28) and stepping from the last result makes the clamp stick, so a monthly
+ * item anchored on the 31st would degrade to the 28th permanently — the wart migration 00060 was
+ * written to retire. Stepping k intervals from the anchor keeps the intended day of month forever.
+ */
+export function seriesOccurrences(firstDue: string, every: string, until?: string): string[] {
+  const spec = /^(\d+)\s*(minute|hour|day|week|month|year)s?$/.exec(String(every).trim().toLowerCase());
+  if (!spec) return [firstDue];
+  const step = Number(spec[1]); const unit = spec[2];
+  if (!(step > 0)) return [firstDue];
+
+  const timed = /T\d/.test(firstDue);
+  const [datePart, timePart = '00:00'] = firstDue.split('T');
+  const [y, mo, d] = datePart.split('-').map(Number);
+  const [hh, mi] = timePart.split(':').map(Number);
+
+  const horizon = new Date(`${datePart}T00:00:00`);
+  if (until) { const u = new Date(`${until.slice(0, 10)}T00:00:00`); if (!isNaN(u.getTime())) horizon.setTime(u.getTime()); }
+  else horizon.setDate(horizon.getDate() + SERIES_DEFAULT_HORIZON_DAYS);
+  const lastDay = toEastern(horizon).slice(0, 10);
+
+  const fmt = (dt: Date) => (timed ? toEastern(dt).slice(0, 16) : toEastern(dt).slice(0, 10));
+  const out: string[] = [];
+  for (let k = 0; out.length < SERIES_MAX_OCCURRENCES; k++) {
+    let dt: Date;
+    if (unit === 'month' || unit === 'year') {
+      const months = (unit === 'year' ? 12 : 1) * step * k;
+      const target = new Date(y, (mo - 1) + months, 1, hh, mi, 0);
+      // Clamp to the month's length rather than rolling into the next one.
+      const daysIn = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate();
+      dt = new Date(target.getFullYear(), target.getMonth(), Math.min(d, daysIn), hh, mi, 0);
+    } else {
+      const ms = { minute: 60000, hour: 3600000, day: 86400000, week: 604800000 }[unit] as number;
+      dt = new Date(new Date(y, mo - 1, d, hh, mi, 0).getTime() + step * k * ms);
+    }
+    const s = fmt(dt);
+    if (s.slice(0, 10) > lastDay) break;
+    out.push(s);
+  }
+  return out.length ? out : [firstDue];
+}
+
+/**
+ * Clear an item — checking it off and removing it are the same thing. Soft, so it's recoverable.
+ *
+ * On a DATED item this is also the scoring event: the `list_items_task_event` trigger records it,
+ * and the hub reads how late it was. Nothing to pass here — what the removal meant is read off the
+ * clock, not off the call.
+ */
 export async function removeItem(listName: string | null, idPrefix: string): Promise<ListItem | null> {
   const id = await resolveListItemId(listName, idPrefix);
   if (!id) return null;
@@ -128,31 +227,65 @@ export async function removeItem(listName: string | null, idPrefix: string): Pro
 }
 
 /**
- * Set, change or clear an item's due date and/or its repeat period. Passing due=null un-dates it,
- * which stops it firing; repeat_every=null makes a recurring item one-shot without un-dating it.
- * Fields are only touched when present, so re-dating something doesn't silently cancel its repeat.
+ * Set, change or clear an item's due date. Passing due=null un-dates it, which stops it firing and
+ * takes it out of scoring entirely — an item with no deadline cannot be early or late.
+ *
+ * Rescheduling MOVES the anchor, which is new since 00085. It used to be pinned at first dating so a
+ * repeating item's marching `due` could not erase the fact that its moment had passed; nothing
+ * marches any more, and a deliberately postponed item should genuinely not read as overdue until its
+ * new moment. Snoozing is the same operation and gets the same treatment.
  */
 export async function setDue(
   listName: string | null,
   idPrefix: string,
-  patch: { due?: string | null; repeat_every?: string | null },
+  patch: { due?: string | null },
 ): Promise<ListItem | null> {
   const id = await resolveListItemId(listName, idPrefix);
   if (!id) return null;
   const update: Record<string, unknown> = { updated: now() };
-  if ('due' in patch) update.due = patch.due || null;
-  // Anchor the first time something becomes dated, and only then — re-dating an already-dated item
-  // must not move it, or the item would stop reading as expired just because it was rescheduled.
-  if (patch.due) {
-    const { data: cur } = await getClient().from('list_items').select('scheduled_at').eq('id', id).maybeSingle();
-    if (!cur?.scheduled_at) update.scheduled_at = patch.due;
-  }
-  if (!update.due && 'due' in patch) update.scheduled_at = null;   // un-dated ⇒ no moment to have passed
-  if ('repeat_every' in patch) update.repeat_every = patch.repeat_every || null;
-  if (!update.due && 'due' in patch) update.repeat_every = null;   // un-dated ⇒ nothing left to repeat
+  if ('due' in patch) { update.due = patch.due || null; update.scheduled_at = patch.due || null; }
   await getClient().from('list_items').update(update).eq('id', id);
   const { data } = await getClient().from('list_items').select('*').eq('id', id).single();
   return data as ListItem;
+}
+
+/**
+ * How much an item counts, in both directions: an important one earns more for being done on time
+ * and drains more for being ignored. It changes nothing else — not when it fires, not how it
+ * notifies.
+ */
+export async function setPriority(
+  listName: string | null,
+  idPrefix: string,
+  priority: number,
+): Promise<ListItem | null> {
+  const id = await resolveListItemId(listName, idPrefix);
+  if (!id) return null;
+  const p = Math.max(0, Math.min(1, Math.round(Number(priority) || 0)));
+  await getClient().from('list_items').update({ priority: p, updated: now() }).eq('id', id);
+  const { data } = await getClient().from('list_items').select('*').eq('id', id).single();
+  return data as ListItem;
+}
+
+/**
+ * Clear every remaining occurrence of a series in one go.
+ *
+ * This is the operation materialised recurrence owes you: without it, stopping a daily item means
+ * removing thirty rows by hand. The occurrences that have NOT come due yet score nothing when they
+ * go, so calling off a series costs nothing — only the ones already overdue when you call it off
+ * count, which is exactly the set you actually let slip.
+ */
+export async function removeSeries(seriesId: string): Promise<ListItem[]> {
+  const sb = getClient();
+  const { data: open } = await sb.from('list_items').select('*')
+    .eq('series_id', seriesId).eq('deleted', false).order('scheduled_at');
+  const rows = (open ?? []) as ListItem[];
+  if (!rows.length) return [];
+  // One at a time: the trigger is per-row, and a bulk update would still fire it per row but gives
+  // no way to report which occurrences were affected.
+  const n = now();
+  for (const r of rows) await sb.from('list_items').update({ deleted: true, updated: n }).eq('id', r.id);
+  return rows;
 }
 
 export async function createList(listName: string): Promise<boolean> {
@@ -198,8 +331,10 @@ export function itemLabel(i: ListItem): string {
 
 function line(i: ListItem, withList = false): string {
   const where = withList ? ` [${i.list_name}]` : '';
-  const due = i.due ? ` (due: ${i.due}${i.repeat_every ? `, repeats every ${i.repeat_every}` : ''})` : '';
-  return `- ${itemLabel(i)}${where}${due}  [id: ${i.id.slice(0, 8)}]`;
+  const due = i.due ? ` (due: ${i.due})` : '';
+  const flag = i.priority > 0 ? ' [important]' : '';
+  const series = i.series_id ? ` [series: ${i.series_id.slice(0, 8)}]` : '';
+  return `- ${itemLabel(i)}${where}${due}${flag}${series}  [id: ${i.id.slice(0, 8)}]`;
 }
 
 export function formatListItems(items: ListItem[], listName: string): string {

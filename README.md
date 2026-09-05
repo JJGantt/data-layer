@@ -50,8 +50,16 @@ A reminder is a list item with a `due` date. Any item on any list, dated, fires 
 identically; nothing distinguishes a "reminder" from a dated grocery item, and there is no tool
 named for one — `add_to_list` with a `due` is how you create one.
 
-`repeat_every` on an item makes it recur: when it fires, `due` advances and `scheduled_at` keeps the
-original anchor, which is what the overdue badge counts.
+Recurrence is materialised rather than stored (migration 00085). `repeat_every` on `add_to_list` is
+an instruction executed once: it writes one dated row per occurrence out to `repeat_until`, all
+sharing a `series_id`. There is no repeating item — checking one off leaves the rest alone, and a
+skipped week is seven separate misses. `remove_from_list` with `series` clears what is left of one.
+
+Clearing a dated item is also the SCORING event. The `list_items_task_event` trigger records it in
+`task_events`, and the hub turns those into the gold band on its health bar: on time earns, late
+earns less and eventually costs, and anything left sitting overdue drains for as long as it sits.
+What a removal MEANS is read off the clock — an item cleared before it goes live is worth nothing —
+which is why there is still exactly one way to take something off a list.
 
 ## A recipe ingredient is a nutrition ingredient
 
