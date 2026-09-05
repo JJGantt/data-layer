@@ -83,6 +83,28 @@ export async function availableLists(): Promise<string[]> {
   return (data ?? []).map(r => r.name);
 }
 
+/** What new items on this list start as. Lists that predate the column read 0. */
+export async function listDefaultPriority(listName: string): Promise<number> {
+  const { data } = await getClient().from('lists').select('default_priority').eq('name', listName).maybeSingle();
+  return clampPriority(data?.default_priority);
+}
+
+/**
+ * Set what new items on a list inherit — 'everything on work is exempt'.
+ *
+ * It does NOT touch items already there. Their priority was copied onto them when they were made and
+ * they have scores attached to it; changing a default should not quietly rewrite what the past was
+ * worth. Returns the stored list name, or null if none matched.
+ */
+export async function setListDefaultPriority(listName: string, priority: number): Promise<string | null> {
+  const want = String(listName || '').trim();
+  const names = await availableLists();
+  const hit = names.find(n => n.toLowerCase() === want.toLowerCase());
+  if (!hit) return null;
+  await getClient().from('lists').update({ default_priority: clampPriority(priority) }).eq('name', hit);
+  return hit;
+}
+
 /** A list's emoji, or null. Lives on the list, not on its items — it describes the list. */
 export async function listEmoji(listName: string): Promise<string | null> {
   const name = await resolveListName(listName);
@@ -157,6 +179,7 @@ export async function resolveListName(name: string): Promise<string> {
 export interface AddOpts {
   title?: string;
   due?: string;
+  /** Omit to inherit the list's default. A number here is an explicit override, 0 included. */
   priority?: number;
   /** '<n> <unit>' — makes this a series. Requires `due`, which is the first occurrence. */
   repeat_every?: string;
@@ -174,7 +197,10 @@ export async function addItem(listName: string, text: string, opts: AddOpts = {}
   const list = await resolveListName(listName || DEFAULT_LIST);
   await sb.from('lists').upsert({ name: list }, { onConflict: 'name', ignoreDuplicates: true });
   const n = now();
-  const priority = clampPriority(opts.priority);
+  // Omitted means INHERIT the list's default; a number means he said so, and 0 is a real answer.
+  // The distinction has to survive all the way from the tool call, which is why this reads `== null`
+  // rather than falsy — `priority: 0` from a caller must override an exempt list, not be ignored.
+  const priority = opts.priority == null ? await listDefaultPriority(list) : clampPriority(opts.priority);
   const title = opts.title?.trim() || null;
 
   // A recurrence with no first occurrence has nothing to recur from, so it is only read alongside a
@@ -411,9 +437,13 @@ function line(i: ListItem, withList = false): string {
   return `- ${itemLabel(i)}${where}${due}${flag}${done}${series}  [id: ${i.id.slice(0, 8)}]`;
 }
 
-export function formatListItems(items: ListItem[], listName: string): string {
-  if (!items.length) return `'${listName}' is empty.`;
-  return `**${listName}** (${items.length} items):\n${items.map(i => line(i)).join('\n')}`;
+export function formatListItems(items: ListItem[], listName: string, defaultPriority = 0): string {
+  // The default is stated on the header because it silently shapes everything added here — without
+  // it, a caller cannot tell why a new item on `work` came out exempt.
+  const def = defaultPriority > 0 ? ', new items default to important'
+            : defaultPriority < 0 ? ', new items default to exempt' : '';
+  if (!items.length) return `'${listName}' is empty${def}.`;
+  return `**${listName}** (${items.length} items${def}):\n${items.map(i => line(i)).join('\n')}`;
 }
 
 /** The cross-list dated view. Says which list each item is on, since they come from all of them. */
