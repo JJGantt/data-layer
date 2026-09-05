@@ -30,7 +30,10 @@ export interface ListItem {
   // recurrence, so there is no next-occurrence to march to); kept because every surface reads it and
   // because it is the occurrence key the score ledger joins on.
   scheduled_at: string | null;
-  priority: number;          // 0 normal, 1 important. Score multiplier is (1 + priority).
+  // 1 important (counts double), 0 normal, -1 EXEMPT — scheduled and notified like anything else,
+  // but scored in neither direction and checked off automatically once its moment passes. A work
+  // shift or an appointment is not a task: nothing is owed, so there is nothing to earn or lose.
+  priority: number;
   series_id: string | null;  // set on every occurrence one scheduling request produced
   // When it was DONE. Null means outstanding. A timestamp rather than a flag because the score needs
   // to know how late it was, and a boolean beside the time is a field that can contradict it.
@@ -43,6 +46,11 @@ export const ACTIVE = 'deleted=false,completed_at=null';
 
 /** Where an item goes when the caller didn't name a list. */
 export const DEFAULT_LIST = 'todo';
+
+/** Nothing is owed on an exempt item, so it scores nothing and closes itself when its moment goes. */
+export const PRIORITY_EXEMPT = -1;
+export const isExempt = (i: Pick<ListItem, 'priority'>) => (Number(i.priority) || 0) < 0;
+const clampPriority = (p: unknown) => Math.max(-1, Math.min(1, Math.round(Number(p) || 0)));
 
 /**
  * Recurrence is MATERIALISED, not stored. "Every day for the next month" is executed once, here, and
@@ -162,7 +170,7 @@ export async function addItem(listName: string, text: string, opts: AddOpts = {}
   const list = await resolveListName(listName || DEFAULT_LIST);
   await sb.from('lists').upsert({ name: list }, { onConflict: 'name', ignoreDuplicates: true });
   const n = now();
-  const priority = Math.max(0, Math.min(1, Math.round(Number(opts.priority) || 0)));
+  const priority = clampPriority(opts.priority);
   const title = opts.title?.trim() || null;
 
   // A recurrence with no first occurrence has nothing to recur from, so it is only read alongside a
@@ -301,7 +309,7 @@ export async function setPriority(
 ): Promise<ListItem | null> {
   const id = await resolveListItemId(listName, idPrefix);
   if (!id) return null;
-  const p = Math.max(0, Math.min(1, Math.round(Number(priority) || 0)));
+  const p = clampPriority(priority);
   await getClient().from('list_items').update({ priority: p, updated: now() }).eq('id', id);
   const { data } = await getClient().from('list_items').select('*').eq('id', id).single();
   return data as ListItem;
@@ -393,7 +401,7 @@ export function itemLabel(i: ListItem): string {
 function line(i: ListItem, withList = false): string {
   const where = withList ? ` [${i.list_name}]` : '';
   const due = i.due ? ` (due: ${i.due})` : '';
-  const flag = i.priority > 0 ? ' [important]' : '';
+  const flag = i.priority > 0 ? ' [important]' : i.priority < 0 ? ' [not scored]' : '';
   const done = i.completed_at ? ` [done ${i.completed_at.slice(0, 16).replace('T', ' ')}]` : '';
   const series = i.series_id ? ` [series: ${i.series_id.slice(0, 8)}]` : '';
   return `- ${itemLabel(i)}${where}${due}${flag}${done}${series}  [id: ${i.id.slice(0, 8)}]`;
