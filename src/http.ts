@@ -62,6 +62,13 @@ const server = http.createServer(async (req, res) => {
       const item = (await lists.addItem(listItemsMatch[1], body.text, { title: body.title, due: body.due, priority: body.priority, repeat_every: body.repeat_every, repeat_until: body.repeat_until }))[0];
       return json(res, { item });
     }
+    const completeMatch = path.match(/^\/data\/lists\/([^/]+)\/items\/([^/]+)\/complete$/);
+    if (completeMatch && method === 'POST') {
+      const body = await parseBody(req).catch(() => ({} as any));
+      const item = await lists.completeItem(completeMatch[1] || null, completeMatch[2], { undo: !!body.undo, at: body.at });
+      if (!item) return json(res, { error: 'not found' }, 404);
+      return json(res, { item });
+    }
     const listItemDeleteMatch = path.match(/^\/data\/lists\/([^/]+)\/items\/([^/]+)$/);
     if (listItemDeleteMatch && method === 'DELETE') {
       const item = await lists.removeItem(listItemDeleteMatch[1] || null, listItemDeleteMatch[2]);

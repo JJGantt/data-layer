@@ -11,14 +11,17 @@ import { now, toEastern, uuid } from './helpers.js';
 // flags to keep in sync and two surfaces that disagreed about what a tick meant. `deleted` is soft:
 // the row stays for a recovery window, then is purged.
 //
-// That one act now also SCORES (migration 00085): removing a dated item writes a `task_events` row
-// by trigger, and the hub turns those into the gold band on the health bar. What the removal MEANS
-// is decided by the clock, not by the caller — an item removed before it goes live is worth
-// nothing, one removed after is scored on how late it was. That is why there is still no second
-// verb here for cancelling: "remove", "delete", "clear", "check off" and "done" are not separable
-// in how a request actually arrives, so a caller choosing between two tools would mis-route them
-// indefinitely, silently awarding or withholding points. Timing carries the meaning instead, and
-// nothing has to be disambiguated. Do not add a cancel verb without solving that first.
+// There is, separately, one way for an item to be DONE: `completed_at` (migration 00088). The two
+// are not variants of each other and the difference is visible, not bookkeeping:
+//
+//   completeItem   it happened. Leaves the active lists, stays on the calendar, scores the gold band.
+//   removeItem     it is gone. No credit, no record, purged after the recovery window.
+//
+// This was tried the other way round first — one verb, with the clock deciding what a removal meant.
+// It failed on contact: with no completion verb to land on, "take the shirt off the list and put it
+// back up at 1 for the dryer" routed to `setDue` and moved the item, collapsing two instructions
+// into one reschedule. Distinct outcomes need distinct verbs, and these two are distinct in speech
+// as well — "done", "finished", "checked off" against "delete", "get rid of", "I'm not doing it".
 export interface ListItem {
   id: string; list_name: string; text: string;
   title: string | null;      // short label for narrow surfaces; falls back to `text`
@@ -29,8 +32,14 @@ export interface ListItem {
   scheduled_at: string | null;
   priority: number;          // 0 normal, 1 important. Score multiplier is (1 + priority).
   series_id: string | null;  // set on every occurrence one scheduling request produced
+  // When it was DONE. Null means outstanding. A timestamp rather than a flag because the score needs
+  // to know how late it was, and a boolean beside the time is a field that can contradict it.
+  completed_at: string | null;
   deleted: boolean; created: string; updated: string;
 }
+
+/** Outstanding: not done, not deleted. What every active surface means by "on the list". */
+export const ACTIVE = 'deleted=false,completed_at=null';
 
 /** Where an item goes when the caller didn't name a list. */
 export const DEFAULT_LIST = 'todo';
@@ -81,7 +90,16 @@ export async function setListEmoji(listName: string, emoji: string | null): Prom
 
 export async function listItems(listName: string): Promise<ListItem[]> {
   const { data } = await getClient().from('list_items').select('*')
-    .eq('list_name', listName).eq('deleted', false).order('created');
+    .eq('list_name', listName).eq('deleted', false).is('completed_at', null).order('created');
+  return (data ?? []) as ListItem[];
+}
+
+/** What has been DONE, newest first. The calendar draws these; nothing else does. */
+export async function completedItems(sinceDate?: string): Promise<ListItem[]> {
+  let q = getClient().from('list_items').select('*')
+    .eq('deleted', false).not('completed_at', 'is', null);
+  if (sinceDate) q = q.gte('completed_at', sinceDate);
+  const { data } = await q.order('completed_at', { ascending: false });
   return (data ?? []) as ListItem[];
 }
 
@@ -97,7 +115,7 @@ export async function listItems(listName: string): Promise<ListItem[]> {
  */
 export async function dueItems(withinDays?: number): Promise<ListItem[]> {
   const { data } = await getClient().from('list_items').select('*')
-    .eq('deleted', false).not('due', 'is', null).order('scheduled_at');
+    .eq('deleted', false).is('completed_at', null).not('due', 'is', null).order('scheduled_at');
   const all = (data ?? []) as ListItem[];
   if (withinDays == null) return all;
   const cutoff = new Date(now().slice(0, 10) + 'T00:00:00');
@@ -211,11 +229,33 @@ export function seriesOccurrences(firstDue: string, every: string, until?: strin
 }
 
 /**
- * Clear an item — checking it off and removing it are the same thing. Soft, so it's recoverable.
+ * Mark an item DONE. It leaves the active lists, stays on the calendar, and — if it was dated —
+ * scores the health bar's gold band according to how late it was.
  *
- * On a DATED item this is also the scoring event: the `list_items_task_event` trigger records it,
- * and the hub reads how late it was. Nothing to pass here — what the removal meant is read off the
- * clock, not off the call.
+ * `at` exists because the completion time is the whole input to the score and the caller sometimes
+ * knows it better than the clock does: under the voice worker `now()` is the moment he started
+ * speaking, which is the right reference for "I just did it".
+ */
+export async function completeItem(
+  listName: string | null,
+  idPrefix: string,
+  opts: { undo?: boolean; at?: string } = {},
+): Promise<ListItem | null> {
+  const id = await resolveListItemId(listName, idPrefix, { includeCompleted: !!opts.undo });
+  if (!id) return null;
+  const n = now();
+  await getClient().from('list_items')
+    .update({ completed_at: opts.undo ? null : (opts.at || n), updated: n }).eq('id', id);
+  const { data } = await getClient().from('list_items').select('*').eq('id', id).single();
+  return data as ListItem;
+}
+
+/**
+ * Delete an item. It is GONE — no credit, no record, and it does not appear on the calendar as
+ * something that happened. Soft, so a mistake is recoverable until the hub purges it.
+ *
+ * This is not how something gets checked off; that is `completeItem`. The two were briefly one call
+ * with the clock deciding between them, which is exactly how a completion became a reschedule.
  */
 export async function removeItem(listName: string | null, idPrefix: string): Promise<ListItem | null> {
   const id = await resolveListItemId(listName, idPrefix);
@@ -271,14 +311,13 @@ export async function setPriority(
  * Clear every remaining occurrence of a series in one go.
  *
  * This is the operation materialised recurrence owes you: without it, stopping a daily item means
- * removing thirty rows by hand. The occurrences that have NOT come due yet score nothing when they
- * go, so calling off a series costs nothing — only the ones already overdue when you call it off
- * count, which is exactly the set you actually let slip.
+ * removing thirty rows by hand. Deleting scores nothing at all, so calling off a series is free —
+ * and the occurrences already completed are untouched, since they are not outstanding.
  */
 export async function removeSeries(seriesId: string): Promise<ListItem[]> {
   const sb = getClient();
   const { data: open } = await sb.from('list_items').select('*')
-    .eq('series_id', seriesId).eq('deleted', false).order('scheduled_at');
+    .eq('series_id', seriesId).eq('deleted', false).is('completed_at', null).order('scheduled_at');
   const rows = (open ?? []) as ListItem[];
   if (!rows.length) return [];
   // One at a time: the trigger is per-row, and a bulk update would still fire it per row but gives
@@ -308,20 +347,42 @@ export async function removeList(listName: string): Promise<string | null> {
 
 // `listName` is optional: with reminders folded in, a caller often holds an id that came from the
 // cross-list dated view and has no idea which list the item sits on. Omitting it searches all lists.
-async function resolveListItemId(listName: string | null, prefix: string): Promise<string | null> {
+async function resolveListItemId(
+  listName: string | null,
+  prefix: string,
+  opts: { includeCompleted?: boolean } = {},
+): Promise<string | null> {
   const sb = getClient();
   const list = listName ? await resolveListName(listName) : null;   // case-insensitive: 'Grocery' → 'grocery'
+  // Completed items are invisible to every caller but undo, which by definition names one.
+  const scope = (q: any) => (opts.includeCompleted ? q : q.is('completed_at', null));
 
-  let exactQ = sb.from('list_items').select('id').eq('id', prefix).eq('deleted', false);
+  let exactQ = scope(sb.from('list_items').select('id').eq('id', prefix).eq('deleted', false));
   if (list) exactQ = exactQ.eq('list_name', list);
   const { data: exact } = await exactQ.maybeSingle();
   if (exact) return exact.id;
 
-  let likeQ = sb.from('list_items').select('id').eq('deleted', false).like('id', `${prefix}%`);
+  let likeQ = scope(sb.from('list_items').select('id').eq('deleted', false).like('id', `${prefix}%`));
   if (list) likeQ = likeQ.eq('list_name', list);
   const { data: matches } = await likeQ;
   if (matches?.length === 1) return matches[0].id;
   return null;
+}
+
+/**
+ * How a completion landed relative to its deadline, in his terms — so the spoken reply can say it.
+ * Untimed items are due by the end of their day, timed ones at their moment.
+ */
+export function lateness(i: ListItem): string | null {
+  if (!i.completed_at || !i.due) return null;
+  const timed = /T\d/.test(i.due);
+  const at = (s: string) => new Date(s.length === 10 ? `${s}T00:00:00` : s).getTime();
+  const deadline = timed ? at(i.due) : at(i.due.slice(0, 10)) + 28 * 3600000;   // next day's 4am
+  const mins = Math.round((at(i.completed_at) - deadline) / 60000);
+  if (mins <= 30) return 'on time';
+  if (mins < 120) return `${mins} min late`;
+  const hrs = mins / 60;
+  return hrs < 48 ? `${Math.round(hrs)}h late` : `${Math.round(hrs / 24)}d late`;
 }
 
 /** What a row calls itself on a narrow surface. */
@@ -333,8 +394,9 @@ function line(i: ListItem, withList = false): string {
   const where = withList ? ` [${i.list_name}]` : '';
   const due = i.due ? ` (due: ${i.due})` : '';
   const flag = i.priority > 0 ? ' [important]' : '';
+  const done = i.completed_at ? ` [done ${i.completed_at.slice(0, 16).replace('T', ' ')}]` : '';
   const series = i.series_id ? ` [series: ${i.series_id.slice(0, 8)}]` : '';
-  return `- ${itemLabel(i)}${where}${due}${flag}${series}  [id: ${i.id.slice(0, 8)}]`;
+  return `- ${itemLabel(i)}${where}${due}${flag}${done}${series}  [id: ${i.id.slice(0, 8)}]`;
 }
 
 export function formatListItems(items: ListItem[], listName: string): string {
