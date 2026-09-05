@@ -31,8 +31,12 @@ export interface ListItem {
   // because it is the occurrence key the score ledger joins on.
   scheduled_at: string | null;
   // 1 important (counts double), 0 normal, -1 EXEMPT — scheduled and notified like anything else,
-  // but scored in neither direction and checked off automatically once its moment passes. A work
-  // shift or an appointment is not a task: nothing is owed, so there is nothing to earn or lose.
+  // but scored in neither direction and checked off automatically once its moment passes.
+  //
+  // ONLY EVER SET FROM WHAT HE ACTUALLY SAID. The tool descriptions deliberately refuse to infer it
+  // from what an item is, even though a work shift is obviously not a chore: a guess here silently
+  // changes what his score does, and nothing on any surface says a guess was made. He asked for the
+  // words to be the trigger — "important", "exempt" — and for everything else to stay 0.
   priority: number;
   series_id: string | null;  // set on every occurrence one scheduling request produced
   // When it was DONE. Null means outstanding. A timestamp rather than a flag because the score needs
@@ -401,7 +405,7 @@ export function itemLabel(i: ListItem): string {
 function line(i: ListItem, withList = false): string {
   const where = withList ? ` [${i.list_name}]` : '';
   const due = i.due ? ` (due: ${i.due})` : '';
-  const flag = i.priority > 0 ? ' [important]' : i.priority < 0 ? ' [not scored]' : '';
+  const flag = i.priority > 0 ? ' [important]' : i.priority < 0 ? ' [exempt]' : '';
   const done = i.completed_at ? ` [done ${i.completed_at.slice(0, 16).replace('T', ' ')}]` : '';
   const series = i.series_id ? ` [series: ${i.series_id.slice(0, 8)}]` : '';
   return `- ${itemLabel(i)}${where}${due}${flag}${done}${series}  [id: ${i.id.slice(0, 8)}]`;
