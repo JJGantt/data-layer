@@ -447,7 +447,7 @@ export async function renameSession(ref: string, name: string) {
  * so the setting is written and the page follows it. It applies only to the TV; the phone app serves
  * the same markup and must not be dragged along.
  */
-export async function setWall(mode: 'standard' | 'sessions' | 'calendar', months?: number) {
+export async function setWall(mode: 'standard' | 'sessions' | 'calendar' | 'home', months?: number) {
   // `calendar_months` rides along because voice sizes the calendar wall in the same utterance that
   // picks it ("show the full year") — the hub's /api/calendar reads it back as the month count.
   const rows: { key: string; value: string }[] = [{ key: 'wall_mode', value: mode }];
