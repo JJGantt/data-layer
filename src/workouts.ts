@@ -326,13 +326,25 @@ export async function getWeeklyVolume(days = 7): Promise<{ days: number; volumes
   return { days, volumes };
 }
 
+// Weekly effective-set target per muscle, mirroring the hub's `server/lib/volume.js` (TARGET_DEFAULT
+// plus its TARGETS overrides). Duplicated rather than shared because the two repos ship separately;
+// if a target moves there it has to move here too, or this report calls a muscle short of a goal the
+// wall says it has met.
+const TARGET_DEFAULT = 14;
+const TARGETS: Record<string, number> = { abs: 8, obliques: 8, erectors: 8, hip_flexors: 8 };
+const targetFor = (slug: string) => TARGETS[slug] ?? TARGET_DEFAULT;
+
 export function formatWeeklyVolume(result: { days: number; volumes: MuscleVolume[] }): string {
-  const status = (s: number) => s === 0 ? '▫️ none' : s < 10 ? '⚠️ below' : s <= 20 ? '✅' : '🔺 high';
-  const lines = [`**Weekly volume** — trailing ${result.days} days, fractional sets (target ~10–20 / muscle)`];
+  // The old fixed 10–20 band, re-expressed as a fraction of the target so it tracks a lowered one:
+  // 10/14 and 20/14 reproduce it exactly for a muscle still on the default.
+  const status = (s: number, t: number) => s === 0 ? '▫️ none'
+    : s < t * (10 / 14) ? '⚠️ below' : s <= t * (20 / 14) ? '✅' : '🔺 high';
+  const lines = [`**Weekly volume** — trailing ${result.days} days, fractional sets / weekly target`];
   let lastGroup = '';
   for (const v of result.volumes) {
     if (v.group !== lastGroup) { lines.push('', `_${v.group}_`); lastGroup = v.group; }
-    lines.push(`  ${v.label.padEnd(20)} ${String(v.sets).padStart(4)}  ${status(v.sets)}`);
+    const t = targetFor(v.muscle);
+    lines.push(`  ${v.label.padEnd(20)} ${String(v.sets).padStart(4)} / ${t}  ${status(v.sets, t)}`);
   }
   lines.push('', '_Smaller muscles (calves, arms, delts) tolerate the upper end; legs/back the middle._');
   return lines.join('\n');
