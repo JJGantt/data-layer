@@ -50,8 +50,15 @@ wrong one: given a bare string it parses as **UTC** and converts, so a user's "1
 
 It is named for what it does to a string that really is UTC (which is what Claude tends to emit for a
 `date` argument), not for normalizing something a person said. When the value is a wall-clock reading
-the user gave you, validate its shape and store it verbatim — `workouts.normalizeSetTime()` is the
-pattern: strict parse, round-trip through `Date` to reject `2026-02-30` and `25:00`, no conversion.
+the user gave you, validate its shape and store it verbatim — `workouts.normalizeSetTime()` and
+`lists.checkCompletedAt()` are the pattern: strict parse, round-trip through `Date` to reject
+`2026-02-30` and `25:00`, no conversion.
+
+Both exist because a time the user states is usually a time that has already PASSED — a set written
+down afterwards, a task finished at 10:15 and mentioned at two. That is the whole reason those
+overrides are there, so they are also where a shifted value does the most damage: the stated time is
+being compared against something (a rest gap, a deadline), and an offset silently moves the answer
+rather than breaking anything visibly.
 
 ## Upserts null what they omit
 

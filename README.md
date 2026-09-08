@@ -55,11 +55,18 @@ an instruction executed once: it writes one dated row per occurrence out to `rep
 sharing a `series_id`. There is no repeating item — checking one off leaves the rest alone, and a
 skipped week is seven separate misses. `remove_from_list` with `series` clears what is left of one.
 
-Clearing a dated item is also the SCORING event. The `list_items_task_event` trigger records it in
-`task_events`, and the hub turns those into the gold band on its health bar: on time earns, late
-earns less and eventually costs, and anything left sitting overdue drains for as long as it sits.
-What a removal MEANS is read off the clock — an item cleared before it goes live is worth nothing —
-which is why there is still exactly one way to take something off a list.
+COMPLETING a dated item is the scoring event, and deleting one is not. `complete_item` stamps
+`completed_at` and the row stays as a record of something that happened; `remove_from_list` takes it
+away and is worth nothing in either direction. The hub reads `completed_at` off the row to draw the
+gold band on its health bar: on time earns, late earns less and eventually costs, and anything left
+sitting overdue drains for as long as it sits. Nothing mediates that — `task_events` and its trigger
+were dropped in `00089` once a completed row became its own record.
+
+Because the completion TIME is the whole input to it, `complete_item` takes `at` for one being
+reported after the fact — "I finished that at 10:15", or a 10am thing finished a quarter of an hour
+in. Leaving it out stamps `now()`, which is what nearly every completion is. It takes a bare local
+wall-clock reading, refuses one carrying a zone, and refuses one in the future, which the band's
+replay would skip and so silently score at nothing. `lists.checkCompletedAt` decides that.
 
 ## A recipe ingredient is a nutrition ingredient
 
