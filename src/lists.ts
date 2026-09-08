@@ -1,5 +1,5 @@
 import { getClient } from './client.js';
-import { now, toEastern, uuid } from './helpers.js';
+import { now, toEastern, uuid, ValidationError } from './helpers.js';
 
 // Lists hold every kind of item, dated or not. There is no separate reminders table any more (see
 // migration 00056): a "reminder" is just an item with a `due`, and the scheduler fires anything dated
@@ -266,24 +266,80 @@ export function seriesOccurrences(firstDue: string, every: string, until?: strin
   return out.length ? out : [firstDue];
 }
 
+// How far ahead of this host's clock a completion stamp is still accepted. The hub and this layer
+// write `completed_at` from different machines with different clocks; without a tolerance an
+// ordinary "done, now" from a host running a minute fast would be refused as time travel. Far below
+// the 30-minute scoring grace, so it can never change what a completion is worth.
+const STAMP_SKEW_MS = 2 * 60000;
+
+/**
+ * Check a caller-supplied completion time before it reaches the column.
+ *
+ * The hub's `lib/score.js` holds the same rule (`completionStamp`) because the hub's own endpoint
+ * writes this column too, while this layer writes to Supabase directly rather than through it. Two
+ * doors into one column, so each one checks. Keep them saying the same thing.
+ *
+ * TIMEZONE: `completed_at` is scored against `due` as naive wall-clock arithmetic, so a stamp
+ * carrying a Z or a +HH:MM is refused rather than converted — converting means guessing an offset,
+ * and a guessed offset is how a completion lands an hour from the deadline it is measured against.
+ * Deliberately NOT ensureEastern, which reads a bare stamp as UTC: right where a model is naming a
+ * date, catastrophic here, where the same reading would shift every retroactive completion by the
+ * whole offset and quietly turn an on-time one into four hours late.
+ *
+ * FUTURE: refused. The band replays completions up to now and skips anything past it, so a future
+ * stamp would take the item off every active list and score nothing — which reads as a broken score
+ * rather than a bad input. The distant past is fine: it earns nothing once it is older than the
+ * decay window, but that is the decay working on a true record of something that happened.
+ */
+export function checkCompletedAt(
+  at: string,
+  reference: string = now(),
+): { ok: true; value: string } | { ok: false; reason: string } {
+  const raw = String(at ?? '').trim();
+  if (!raw) return { ok: false, reason: 'a completion time is required' };
+  const m = /^(\d{4}-\d{2}-\d{2})(?:[T ](\d{2}):(\d{2})(?::(\d{2}))?)?$/.exec(raw);
+  if (!m) return { ok: false, reason: 'expected local wall clock YYYY-MM-DDTHH:MM (or YYYY-MM-DD), with no timezone' };
+  const value = m[2] == null ? m[1] : `${m[1]}T${m[2]}:${m[3]}:${m[4] || '00'}`;
+  const ms = (s: string) => Date.parse(`${s.length === 10 ? `${s}T00:00:00` : s.slice(0, 19)}Z`);
+  const t = ms(value);
+  // Date.parse ROLLS OVER out-of-range components, so month 13 and day 45 each yield a real instant
+  // in the wrong place rather than an error. Only the round trip catches that.
+  if (isNaN(t) || new Date(t).toISOString().slice(0, 19) !== (m[2] == null ? `${value}T00:00:00` : value)) {
+    return { ok: false, reason: 'not a real date' };
+  }
+  const ref = ms(reference);
+  if (!isNaN(ref) && t > ref + STAMP_SKEW_MS) return { ok: false, reason: 'is in the future' };
+  return { ok: true, value };
+}
+
 /**
  * Mark an item DONE. It leaves the active lists, stays on the calendar, and — if it was dated —
  * scores the health bar's gold band according to how late it was.
  *
  * `at` exists because the completion time is the whole input to the score and the caller sometimes
- * knows it better than the clock does: under the voice worker `now()` is the moment he started
- * speaking, which is the right reference for "I just did it".
+ * knows it better than the clock does. Two different cases: under the voice worker `now()` is
+ * already the moment he started speaking, which is the right reference for "I just did it"; `at` is
+ * for a completion that is not now at all — "I finished that at 10:15", or finishing a 10am thing a
+ * quarter of an hour into it. It takes a local wall-clock reading in the same shape `due` is stored
+ * in, and THROWS on one this layer cannot honour rather than storing a stamp the band would then
+ * ignore. Checked before the item is even resolved, so a bad time changes nothing.
  */
 export async function completeItem(
   listName: string | null,
   idPrefix: string,
   opts: { undo?: boolean; at?: string } = {},
 ): Promise<ListItem | null> {
+  const n = now();
+  let stamp = n;
+  if (!opts.undo && opts.at != null && String(opts.at).trim() !== '') {
+    const c = checkCompletedAt(String(opts.at), n);
+    if (!c.ok) throw new ValidationError(`completion time ${c.reason}`);
+    stamp = c.value;
+  }
   const id = await resolveListItemId(listName, idPrefix, { includeCompleted: !!opts.undo });
   if (!id) return null;
-  const n = now();
   await getClient().from('list_items')
-    .update({ completed_at: opts.undo ? null : (opts.at || n), updated: n }).eq('id', id);
+    .update({ completed_at: opts.undo ? null : stamp, updated: n }).eq('id', id);
   const { data } = await getClient().from('list_items').select('*').eq('id', id).single();
   return data as ListItem;
 }
@@ -414,7 +470,11 @@ async function resolveListItemId(
 export function lateness(i: ListItem): string | null {
   if (!i.completed_at || !i.due) return null;
   const timed = /T\d/.test(i.due);
-  const at = (s: string) => new Date(s.length === 10 ? `${s}T00:00:00` : s).getTime();
+  // Parsed as UTC, so the subtraction is exact wall-clock arithmetic with no DST step in it — the
+  // same reading the hub's band takes (lib/score.js `naive`). Read as LOCAL instead and a completion
+  // spanning a clock change comes out an hour off, which matters most on exactly the completions
+  // this function now describes: the ones reported after the fact, for a time that already passed.
+  const at = (s: string) => Date.parse(`${s.length === 10 ? `${s}T00:00:00` : s.slice(0, 19)}Z`);
   const deadline = timed ? at(i.due) : at(i.due.slice(0, 10)) + 28 * 3600000;   // next day's 4am
   const mins = Math.round((at(i.completed_at) - deadline) / 60000);
   if (mins <= 30) return 'on time';
