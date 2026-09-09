@@ -38,17 +38,23 @@ Amazon row saves the search, not the session.
 `url` takes ids because reading `list` and choosing one is the step that picks the right product.
 An earlier version matched on names and had to reject "milk" as ambiguous against a milkshake
 cereal — a failure mode that only existed because of the matcher.
-| `notes.ts` `reviews.ts` | as named |
+| `reviews.ts` | as named |
 | `desk.ts` | dispatching Claude sessions to a machine, and the follow-up pointer |
 | `reports.ts` | the HTML write-ups a dispatched session publishes |
 | `helpers.ts` | ids, validation, and the clock — read it before using `now()` |
 | `client.ts` | the Supabase client and where its key comes from |
 
-## There is no reminders table
+## There is no reminders table, and no notes table
 
 A reminder is a list item with a `due` date. Any item on any list, dated, fires and badges
 identically; nothing distinguishes a "reminder" from a dated grocery item, and there is no tool
 named for one — `add_to_list` with a `due` is how you create one.
+
+A note is a list item with a BODY: an undated row on the `notes` list, its short name in `title` and
+its full text in `text` (migration 00092). It has no tools of its own either. `get_lists` prints an
+item's `text` indented under the label whenever the two differ, so reading a note back is just
+reading the list — and any other item carrying a body, like an Amazon row with a part number, stopped
+hiding it at the same time.
 
 Recurrence is materialised rather than stored (migration 00085). `repeat_every` on `add_to_list` is
 an instruction executed once: it writes one dated row per occurrence out to `repeat_until`, all
