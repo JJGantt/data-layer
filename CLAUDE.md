@@ -1,6 +1,6 @@
 # Working in data-layer
 
-Seven things that will bite you, none of them visible from the code you are about to edit.
+Eight things that will bite you, none of them visible from the code you are about to edit.
 
 ## It runs from `dist/`, not `src/`
 
@@ -76,6 +76,14 @@ build you run by hand still needs it.
 
 The same process lifetime is why nothing per-command may live in that subprocess's **environment** —
 it freezes there. See `helpers.now()`, which reads its timestamp from a file for exactly this reason.
+
+It also pins DATA, not just code. `tools/list` builds the `list` parameter descriptions from the
+lists that exist at connect time (`listRoster` in `mcp.ts`), so a list created after the worker
+started is absent from the schema that worker is holding. That needs no deploy to happen: the hub's
+`POST /api/todos/add` creates a list on an unrecognised name, and so does any session on the other
+machine. The server sends `notifications/tools/list_changed`
+whenever `add_to_list` creates a list or `delete_list` removes one; whether a client re-fetches on it
+is the client's business, so treat a restart as the reliable path.
 
 ## A new tool is invisible to voice until it is allow-listed
 
