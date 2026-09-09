@@ -23,7 +23,13 @@ import { now, toEastern, uuid, ValidationError } from './helpers.js';
 // into one reschedule. Distinct outcomes need distinct verbs, and these two are distinct in speech
 // as well — "done", "finished", "checked off" against "delete", "get rid of", "I'm not doing it".
 export interface ListItem {
-  id: string; list_name: string; text: string;
+  id: string;
+  // WHICH LIST, and the identity of it. `list_name` beside this is a DERIVED copy maintained by the
+  // list_items_resolve_list trigger (00094) for the hub's sake — read it, never write it, and never
+  // treat it as the key: it changes when a list is renamed and `list_id` does not.
+  list_id: string;
+  list_name: string;
+  text: string;
   title: string | null;      // short label for narrow surfaces; falls back to `text`
   due: string | null;        // local-naive 'YYYY-MM-DD' or 'YYYY-MM-DDTHH:MM' — dated ⇒ it fires
   // When it was scheduled for. Equal to `due` now that nothing moves a due date (00085 materialised
@@ -48,8 +54,8 @@ export interface ListItem {
 /** Outstanding: not done, not deleted. What every active surface means by "on the list". */
 export const ACTIVE = 'deleted=false,completed_at=null';
 
-/** Where an item goes when the caller didn't name a list. */
-export const DEFAULT_LIST = 'todo';
+/** Where an item goes when the caller didn't name a list. An ID, like every other list reference. */
+export const DEFAULT_LIST_ID = 'l_todo';
 
 /** Nothing is owed on an exempt item, so it scores nothing and closes itself when its moment goes. */
 export const PRIORITY_EXEMPT = -1;
@@ -78,14 +84,68 @@ export const SERIES_DEFAULT_HORIZON_DAYS = 30;
 export const DUE_DEFAULT_DAYS = 2;
 const SERIES_MAX_OCCURRENCES = 366;      // a hard stop, so a bad interval cannot flood a list
 
-export async function availableLists(): Promise<string[]> {
-  const { data } = await getClient().from('lists').select('name').order('name');
-  return (data ?? []).map(r => r.name);
+/** A list. `id` is the identity and never changes; `name` is a label and can be edited freely. */
+export interface List {
+  id: string; name: string; emoji: string | null; default_priority: number; created: string;
+}
+
+export async function allLists(): Promise<List[]> {
+  const { data } = await getClient().from('lists').select('*').order('name');
+  return (data ?? []) as List[];
+}
+
+export async function getList(listId: string): Promise<List | null> {
+  const { data } = await getClient().from('lists').select('*').eq('id', String(listId || '').trim()).maybeSingle();
+  return (data as List | null) ?? null;
+}
+
+/**
+ * The list, or a thrown error naming every id that would have worked.
+ *
+ * This is the whole point of the id: an unknown one is REJECTED here rather than created. When the
+ * name was the key there was nothing to reject against — "a name not in the table" was how a new
+ * list got made, so a typo and an intention were the same request (00094).
+ */
+export async function requireList(listId: string): Promise<List> {
+  const want = String(listId || '').trim();
+  const list = want ? await getList(want) : null;
+  if (list) return list;
+  const known = (await allLists()).map(l => `${l.id} (${l.name})`).join(', ');
+  throw new ValidationError(
+    `no list with id '${want}'. Existing lists: ${known || 'none'}. `
+    + `To start a new list use create_list; add_to_list only adds to one that exists.`);
+}
+
+/** Create a list and mint its id. The ONLY way a list comes into existence. */
+export async function createList(
+  name: string,
+  opts: { emoji?: string | null; default_priority?: number } = {},
+): Promise<List> {
+  const clean = String(name || '').trim();
+  if (!clean) throw new ValidationError('a list needs a name');
+  const existing = (await allLists()).find(l => l.name.toLowerCase() === clean.toLowerCase());
+  if (existing) throw new ValidationError(`'${existing.name}' already exists (id ${existing.id})`);
+
+  // Readable, because these ids go in an `enum` a model picks from and an opaque key would make that
+  // choice unverifiable. Derived from the name ONCE and never recomputed — a rename leaves it alone,
+  // which is what makes it an id rather than a second copy of the name.
+  const base = 'l_' + (clean.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'list');
+  const taken = new Set((await allLists()).map(l => l.id));
+  let id = base;
+  for (let n = 2; taken.has(id); n++) id = `${base}-${n}`;
+
+  const row = {
+    id, name: clean, emoji: opts.emoji || null,
+    default_priority: clampPriority(opts.default_priority ?? 0), created: now(),
+  };
+  const { data, error } = await getClient().from('lists').insert(row).select().single();
+  if (error) throw new ValidationError(error.message);
+  return data as List;
 }
 
 /** What new items on this list start as. Lists that predate the column read 0. */
-export async function listDefaultPriority(listName: string): Promise<number> {
-  const { data } = await getClient().from('lists').select('default_priority').eq('name', listName).maybeSingle();
+export async function listDefaultPriority(listId: string): Promise<number> {
+  const { data } = await getClient().from('lists').select('default_priority').eq('id', listId).maybeSingle();
   return clampPriority(data?.default_priority);
 }
 
@@ -96,35 +156,30 @@ export async function listDefaultPriority(listName: string): Promise<number> {
  * they have scores attached to it; changing a default should not quietly rewrite what the past was
  * worth. Returns the stored list name, or null if none matched.
  */
-export async function setListDefaultPriority(listName: string, priority: number): Promise<string | null> {
-  const want = String(listName || '').trim();
-  const names = await availableLists();
-  const hit = names.find(n => n.toLowerCase() === want.toLowerCase());
-  if (!hit) return null;
-  await getClient().from('lists').update({ default_priority: clampPriority(priority) }).eq('name', hit);
-  return hit;
+export async function setListDefaultPriority(listId: string, priority: number): Promise<List> {
+  const list = await requireList(listId);
+  const { data } = await getClient().from('lists')
+    .update({ default_priority: clampPriority(priority) }).eq('id', list.id).select().single();
+  return data as List;
 }
 
 /** A list's emoji, or null. Lives on the list, not on its items — it describes the list. */
-export async function listEmoji(listName: string): Promise<string | null> {
-  const name = await resolveListName(listName);
-  const { data } = await getClient().from('lists').select('emoji').eq('name', name).maybeSingle();
+export async function listEmoji(listId: string): Promise<string | null> {
+  const { data } = await getClient().from('lists').select('emoji').eq('id', listId).maybeSingle();
   return (data?.emoji as string | null) ?? null;
 }
 
-/** Set (or clear, with null) a list's emoji. Returns the stored list name, or null if none matched. */
-export async function setListEmoji(listName: string, emoji: string | null): Promise<string | null> {
-  const want = String(listName || '').trim();
-  const names = await availableLists();
-  const hit = names.find(n => n.toLowerCase() === want.toLowerCase());
-  if (!hit) return null;
-  await getClient().from('lists').update({ emoji: emoji || null }).eq('name', hit);
-  return hit;
+/** Set (or clear, with null) a list's emoji. */
+export async function setListEmoji(listId: string, emoji: string | null): Promise<List> {
+  const list = await requireList(listId);
+  const { data } = await getClient().from('lists')
+    .update({ emoji: emoji || null }).eq('id', list.id).select().single();
+  return data as List;
 }
 
-export async function listItems(listName: string): Promise<ListItem[]> {
+export async function listItems(listId: string): Promise<ListItem[]> {
   const { data } = await getClient().from('list_items').select('*')
-    .eq('list_name', listName).eq('deleted', false).is('completed_at', null).order('created');
+    .eq('list_id', listId).eq('deleted', false).is('completed_at', null).order('created');
   return (data ?? []) as ListItem[];
 }
 
@@ -165,24 +220,6 @@ export function isExpired(i: ListItem, nowLocal: string): boolean {
   return m <= nowLocal;
 }
 
-// Resolve a requested list name to an EXISTING one case-insensitively (so 'Grocery'/'GROCERY' hit the
-// stored 'grocery'); falls back to the trimmed input for a genuinely new list. Without this, a caller's
-// casing differing from what's stored (models default to Title Case) read back as a false "empty" and
-// spawned case-variant duplicate lists.
-export async function resolveListName(name: string): Promise<string> {
-  const want = String(name || '').trim();
-  const { data } = await getClient().from('lists').select('name');
-  const hit = (data ?? []).find(r => String(r.name).toLowerCase() === want.toLowerCase());
-  return hit ? String(hit.name) : want;
-}
-
-/** Whether a list already exists, case-insensitively — i.e. whether `addItem` would CREATE one. */
-export async function listExists(name: string): Promise<boolean> {
-  const want = String(name || '').trim().toLowerCase();
-  if (!want) return false;
-  return (await availableLists()).some(n => n.toLowerCase() === want);
-}
-
 export interface AddOpts {
   title?: string;
   due?: string;
@@ -199,15 +236,16 @@ export interface AddOpts {
  * first occurrence first, so a caller can report what it actually committed to rather than the
  * instruction it was given.
  */
-export async function addItem(listName: string, text: string, opts: AddOpts = {}): Promise<ListItem[]> {
+export async function addItem(listId: string, text: string, opts: AddOpts = {}): Promise<ListItem[]> {
   const sb = getClient();
-  const list = await resolveListName(listName || DEFAULT_LIST);
-  await sb.from('lists').upsert({ name: list }, { onConflict: 'name', ignoreDuplicates: true });
+  // Throws when the id is unknown. It does NOT create the list: creating one is `createList`, and
+  // keeping the two apart is what makes a wrong id a rejectable value rather than a new list (00094).
+  const list = await requireList(listId || DEFAULT_LIST_ID);
   const n = now();
   // Omitted means INHERIT the list's default; a number means he said so, and 0 is a real answer.
   // The distinction has to survive all the way from the tool call, which is why this reads `== null`
   // rather than falsy — `priority: 0` from a caller must override an exempt list, not be ignored.
-  const priority = opts.priority == null ? await listDefaultPriority(list) : clampPriority(opts.priority);
+  const priority = opts.priority == null ? clampPriority(list.default_priority) : clampPriority(opts.priority);
   const title = opts.title?.trim() || null;
 
   // A recurrence with no first occurrence has nothing to recur from, so it is only read alongside a
@@ -218,8 +256,10 @@ export async function addItem(listName: string, text: string, opts: AddOpts = {}
     : [opts.due || null];
   const seriesId = every ? uuid() : null;
 
+  // `list_name` is left to the trigger: it is derived from `list_id`, and sending both is how the two
+  // get a chance to disagree.
   const rows = occurrences.map(due => ({
-    id: uuid(), list_name: list, text, title,
+    id: uuid(), list_id: list.id, text, title,
     due, scheduled_at: due, priority, series_id: seriesId,
     deleted: false, created: n, updated: n,
   }));
@@ -332,7 +372,7 @@ export function checkCompletedAt(
  * ignore. Checked before the item is even resolved, so a bad time changes nothing.
  */
 export async function completeItem(
-  listName: string | null,
+  listId: string | null,
   idPrefix: string,
   opts: { undo?: boolean; at?: string } = {},
 ): Promise<ListItem | null> {
@@ -343,7 +383,7 @@ export async function completeItem(
     if (!c.ok) throw new ValidationError(`completion time ${c.reason}`);
     stamp = c.value;
   }
-  const id = await resolveListItemId(listName, idPrefix, { includeCompleted: !!opts.undo });
+  const id = await resolveListItemId(listId, idPrefix, { includeCompleted: !!opts.undo });
   if (!id) return null;
   await getClient().from('list_items')
     .update({ completed_at: opts.undo ? null : stamp, updated: n }).eq('id', id);
@@ -358,8 +398,8 @@ export async function completeItem(
  * This is not how something gets checked off; that is `completeItem`. The two were briefly one call
  * with the clock deciding between them, which is exactly how a completion became a reschedule.
  */
-export async function removeItem(listName: string | null, idPrefix: string): Promise<ListItem | null> {
-  const id = await resolveListItemId(listName, idPrefix);
+export async function removeItem(listId: string | null, idPrefix: string): Promise<ListItem | null> {
+  const id = await resolveListItemId(listId, idPrefix);
   if (!id) return null;
   const n = now();
   await getClient().from('list_items').update({ deleted: true, updated: n }).eq('id', id);
@@ -377,11 +417,11 @@ export async function removeItem(listName: string | null, idPrefix: string): Pro
  * new moment. Snoozing is the same operation and gets the same treatment.
  */
 export async function setDue(
-  listName: string | null,
+  listId: string | null,
   idPrefix: string,
   patch: { due?: string | null },
 ): Promise<ListItem | null> {
-  const id = await resolveListItemId(listName, idPrefix);
+  const id = await resolveListItemId(listId, idPrefix);
   if (!id) return null;
   const update: Record<string, unknown> = { updated: now() };
   if ('due' in patch) { update.due = patch.due || null; update.scheduled_at = patch.due || null; }
@@ -396,11 +436,11 @@ export async function setDue(
  * notifies.
  */
 export async function setPriority(
-  listName: string | null,
+  listId: string | null,
   idPrefix: string,
   priority: number,
 ): Promise<ListItem | null> {
-  const id = await resolveListItemId(listName, idPrefix);
+  const id = await resolveListItemId(listId, idPrefix);
   if (!id) return null;
   const p = clampPriority(priority);
   await getClient().from('list_items').update({ priority: p, updated: now() }).eq('id', id);
@@ -428,43 +468,33 @@ export async function removeSeries(seriesId: string): Promise<ListItem[]> {
   return rows;
 }
 
-export async function createList(listName: string): Promise<boolean> {
-  const { data } = await getClient().from('lists').select('name').eq('name', listName).maybeSingle();
-  if (data) return false;
-  await getClient().from('lists').insert({ name: listName });
-  return true;
-}
-
-// Delete a whole list (case-insensitive) plus all its items. Returns the stored name, or null if none matched.
-export async function removeList(listName: string): Promise<string | null> {
-  const want = String(listName || '').trim();
-  const names = await availableLists();
-  const hit = names.find(n => n.toLowerCase() === want.toLowerCase());
-  if (!hit) return null;
-  await getClient().from('list_items').delete().eq('list_name', hit);
-  await getClient().from('lists').delete().eq('name', hit);
-  return hit;
+/** Delete a whole list plus all its items. Returns the list as it was. */
+export async function removeList(listId: string): Promise<List> {
+  const list = await requireList(listId);
+  await getClient().from('list_items').delete().eq('list_id', list.id);
+  await getClient().from('lists').delete().eq('id', list.id);
+  return list;
 }
 
 // `listName` is optional: with reminders folded in, a caller often holds an id that came from the
 // cross-list dated view and has no idea which list the item sits on. Omitting it searches all lists.
 async function resolveListItemId(
-  listName: string | null,
+  listId: string | null,
   prefix: string,
   opts: { includeCompleted?: boolean } = {},
 ): Promise<string | null> {
   const sb = getClient();
-  const list = listName ? await resolveListName(listName) : null;   // case-insensitive: 'Grocery' → 'grocery'
+  const list = listId ? String(listId).trim() || null : null;
   // Completed items are invisible to every caller but undo, which by definition names one.
   const scope = (q: any) => (opts.includeCompleted ? q : q.is('completed_at', null));
 
   let exactQ = scope(sb.from('list_items').select('id').eq('id', prefix).eq('deleted', false));
-  if (list) exactQ = exactQ.eq('list_name', list);
+  if (list) exactQ = exactQ.eq('list_id', list);
   const { data: exact } = await exactQ.maybeSingle();
   if (exact) return exact.id;
 
   let likeQ = scope(sb.from('list_items').select('id').eq('deleted', false).like('id', `${prefix}%`));
-  if (list) likeQ = likeQ.eq('list_name', list);
+  if (list) likeQ = likeQ.eq('list_id', list);
   const { data: matches } = await likeQ;
   if (matches?.length === 1) return matches[0].id;
   return null;
@@ -510,13 +540,15 @@ function line(i: ListItem, withList = false): string {
   return body && body !== itemLabel(i) ? `${head}\n${body.split('\n').map(l => '    ' + l).join('\n')}` : head;
 }
 
-export function formatListItems(items: ListItem[], listName: string, defaultPriority = 0): string {
+export function formatListItems(items: ListItem[], list: List): string {
   // The default is stated on the header because it silently shapes everything added here — without
-  // it, a caller cannot tell why a new item on `work` came out exempt.
-  const def = defaultPriority > 0 ? ', new items default to important'
-            : defaultPriority < 0 ? ', new items default to exempt' : '';
-  if (!items.length) return `'${listName}' is empty${def}.`;
-  return `**${listName}** (${items.length} items${def}):\n${items.map(i => line(i)).join('\n')}`;
+  // it, a caller cannot tell why a new item on `work` came out exempt. The id is stated because it is
+  // what every write takes, and a reader who only ever sees the name will pass the name.
+  const p = clampPriority(list.default_priority);
+  const def = p > 0 ? ', new items default to important' : p < 0 ? ', new items default to exempt' : '';
+  const head = `${list.name} [${list.id}]`;
+  if (!items.length) return `${head} is empty${def}.`;
+  return `**${head}** (${items.length} items${def}):\n${items.map(i => line(i)).join('\n')}`;
 }
 
 /** The cross-list dated view. Says which list each item is on, since they come from all of them. */

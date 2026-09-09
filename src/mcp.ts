@@ -24,27 +24,43 @@ const server = new Server({ name: 'data', version: '2.0.0' }, { capabilities: { 
 // same move get_shopping_items makes for cart ids, for the same reason: the set is small, the caller
 // can be handed all of it, and matching a string against it is a step that only invents failures.
 //
-// Fetched per tools/list rather than cached — the handler is called once per session, and a name that
-// is wrong here is wrong for the whole session.
-async function listRoster(): Promise<{ names: string; adding: string }> {
+// The enum is the enforcement; the prose only says which id is which.
+//
+// A list is addressed by `list_id`, never by its name (00094). That is what lets the schema CONSTRAIN
+// the value: with the name as the key, "a name not in the table" was how a new list got created, so
+// every string had to be accepted and a typo was indistinguishable from an intention. Creating is now
+// `create_list` alone, which leaves the id field with a closed set — expressible as an `enum`, which a
+// validating client rejects before the call is even sent, and which `requireList` rejects again
+// server-side for clients that do not validate.
+//
+// Fetched per tools/list rather than cached: the handler runs once per session, and the ids are the
+// whole vocabulary for that session.
+async function listRoster(): Promise<{ ids: string[]; desc: string }> {
   try {
-    const names = await lists.availableLists();
-    if (!names.length) return { names: `No lists exist yet.`, adding: `No lists exist yet.` };
-    const quoted = `The lists that exist are: ${names.map(n => `'${n}'`).join(', ')} — use one of these EXACTLY as written.`;
-    // add_to_list is the ONLY tool that can create a list; the others resolve against existing names
-    // and fail cleanly on a miss, so only this one needs to say what a miss costs.
-    return { names: quoted, adding: `${quoted} An unrecognised name does NOT fail — it CREATES a list, `
-      + `so 'groceries' when the list is 'grocery' forks it and the items go somewhere he will not look. `
-      + `Only pass a name that is not on this list when he is deliberately starting a new one.` };
+    const all = await lists.allLists();
+    if (!all.length) return { ids: [], desc: `No lists exist yet — create_list makes the first one.` };
+    return {
+      ids: all.map(l => l.id),
+      desc: `Which list, BY ID: ${all.map(l => `${l.id} = "${l.name}"`).join(', ')}.`,
+    };
   } catch {
-    // A roster that cannot be read must not take the tools down with it.
-    const fallback = `Call get_lists first to see which lists exist; an unrecognised name creates a new list.`;
-    return { names: fallback, adding: fallback };
+    // A roster that cannot be read must not take the tools down with it. No enum in that case, so the
+    // server-side check in requireList is the only guard — which is why it exists.
+    return { ids: [], desc: `Call get_lists for the list ids.` };
   }
 }
 
+/** A `list_id` property: the prose, plus the enum that actually enforces it. */
+function listIdProp(roster: { ids: string[]; desc: string }, lead: string) {
+  return {
+    type: 'string' as const,
+    description: `${lead} ${roster.desc}`,
+    ...(roster.ids.length ? { enum: roster.ids } : {}),
+  };
+}
+
 server.setRequestHandler(ListToolsRequestSchema, async () => {
-  const { names: roster, adding: rosterAdd } = await listRoster();
+  const roster = await listRoster();
   return {
   tools: [
     { name: 'get_health_profile', description: 'Returns height, recent weight log entries, and current nutrition targets (calories, protein, carbs, fat).', inputSchema: { type: 'object' as const, properties: {} } },
@@ -83,14 +99,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     { name: 'remove_staged', description: 'Remove/delete a staged meal by ID or 8-char prefix. Does not affect committed entries.', inputSchema: { type: 'object' as const, properties: { id: { type: 'string', description: 'Staged meal ID or 8-char prefix.' } }, required: ['id'] } },
     { name: 'reload_wall', description: 'Reload the TV wall display (the Pi kiosk browser). Use when the wall is frozen, blank, stale, or showing a crashed/"Aw Snap" page. Kills the kiosk chromium; the Pi automatically relaunches it fresh within a few seconds.', inputSchema: { type: 'object' as const, properties: {} } },
     { name: 'get_due', description: "Everything with a due date, across all lists, soonest first — this is what his reminders are, since a reminder is just a dated item. Defaults to overdue plus the next couple of days, which is what makes a request like 'check off the teeth brushing' resolvable: a repeating thing is stored as one item per day, so a wide window returns many rows that differ only by date. Widen with `days` only when he asks about further ahead.", inputSchema: { type: 'object' as const, properties: { days: { type: 'number', description: 'How many days ahead to include. Default 2. Overdue items are always included whatever this is.' } } } },
-    { name: 'get_lists', description: "Show Jared's lists. Omit `list` to see every list with its items; pass `list` to see just that one. Use when he asks what is on a list, and to read his notes — they are items on the `notes` list, whose full body is printed under each one.", inputSchema: { type: 'object' as const, properties: { list: { type: 'string', description: `Optional list name to show only that list. Omit to show all lists. ${roster}` } } } },
-    { name: 'add_to_list', description: "Add an item to a list, which covers reminders AND notes too — a reminder is only an item with a `due` date, and anything dated fires a notification whichever list it is on; a note is only an item with a body, so 'make a note', 'jot this down', 'save this' is an undated item on the `notes` list with the short name as `title` and the full body as `text`. Omit `list` for the default todo list; an unknown list is created, so reuse an existing name when the intent is the same list.", inputSchema: { type: 'object' as const, properties: { list: { type: 'string', description: `List name. Omit for the default '${lists.DEFAULT_LIST}' list. ${rosterAdd}` }, text: { type: 'string', description: 'The item itself, e.g. "milk" or "call the dentist". Do NOT bake date words into this — put times in `due`.' }, title: { type: 'string', description: "SHORT label — this is what every display actually shows. Two or three words, and prefer fewer: on the wall's day timeline several items share one line side by side, so a long title squeezes its neighbours and gets truncated. 'Shirt in dryer', not 'Put the white shirt in the dryer'. Set it whenever `text` runs longer than that, and keep the full detail in `text`." }, due: { type: 'string', description: 'Optional due date/time, ISO 8601 local (YYYY-MM-DD or YYYY-MM-DDTHH:MM). Setting it makes the item fire a notification then. Omit if no time was given.' }, priority: { type: 'number', description: "How it scores. OMIT THIS FIELD ENTIRELY unless he says one of the words below — leaving it out makes the item inherit its list's default, which is how lists like 'work' stay exempt without him repeating himself. Do not send 0 to mean 'nothing special'; 0 is an explicit override that would cancel the list's default. Never infer this from what the item is: a shift, an appointment, a flight and a chore are all left alone unless he says otherwise, because a wrong guess changes his score and nothing tells him a guess was made. Send 1 only when he says important, urgent, high priority, or a priority. Send -1 only when he says exempt, excluded, don't score it, don't count it, or don't hold me to it. Send 0 only when he explicitly says something is a normal task ON a list whose default is not normal." }, repeat_every: { type: 'string', description: "Optional recurrence, as '<n> <unit>' — e.g. '1 day', '2 hours', '30 minutes', '1 week', '1 month', '1 year'. Use for 'every morning', 'every Monday', 'twice a day' (that is '12 hours'). Requires `due`, which sets the FIRST occurrence. This SCHEDULES EVERY OCCURRENCE AS ITS OWN ITEM in one call — checking one off leaves the rest alone — so it is cheap to use and never needs calling repeatedly. Omit for a one-shot, which is the default." }, repeat_until: { type: 'string', description: "Last date the recurrence runs to (YYYY-MM-DD). Use whatever end he gave — 'for the next two weeks', 'until the 30th'. Defaults to a month out when he gave no end; there is no such thing as forever here, and it can be extended later." } }, required: ['text'] } },
-    { name: 'set_due', description: "Move an existing item to a different time, or clear its due date — 'push the dentist one to Friday', 'snooze that', 'make it 3 instead'. ONLY when the task itself is unchanged and just needs to happen later. If he names a DIFFERENT thing to do, that is a new item (add_to_list), not a move — 'take the shirt off and put it back up at 1 to go in the dryer' is completing one item and adding another, not rescheduling one. Identify the item by id from get_due or get_lists.", inputSchema: { type: 'object' as const, properties: { id: { type: 'string', description: 'Item id or its leading characters.' }, list: { type: 'string', description: `Optional list to search; omit to search every list. ${roster}` }, due: { type: 'string', description: 'New due date/time, ISO 8601 local (YYYY-MM-DD or YYYY-MM-DDTHH:MM). Pass empty to REMOVE the due date, which stops it firing and takes it off his score. Omit entirely to leave the date alone.' } }, required: ['id'] } },
-    { name: 'set_priority', description: "Change how an existing item scores, when he says to — 'make that one important', 'that one's urgent', 'make that exempt', 'don't score that one', 'it's not a priority any more'. Important items count for more on his score in both directions. Identify the item by id from get_due or get_lists.", inputSchema: { type: 'object' as const, properties: { id: { type: 'string', description: 'Item id or its leading characters.' }, list: { type: 'string', description: `Optional list to search; omit to search every list. ${roster}` }, priority: { type: 'number', description: "1 important, 0 normal, -1 exempt. Set only what he actually asked for — 'make it important' is 1, 'make it exempt' or 'stop scoring that' is -1, 'back to normal' is 0. Do not infer it from what the item is." } }, required: ['id', 'priority'] } },
-    { name: 'complete_item', description: "Mark something DONE — he did it. 'I cleaned the shirt', 'check that off', 'completed', 'finished', 'took care of it', 'done with that one', 'took the trash out'. This is what he means almost every time something leaves his list, so reach for it first. It earns him points on his score, more the sooner it is done, and the item stays on his calendar as something that happened rather than disappearing. Use remove_from_list ONLY when he wants a thing gone that he did NOT do. Identify by id from get_due or get_lists. When he says WHEN he finished — 'at 10:15', 'fifteen minutes after it started', 'an hour ago', 'this morning' — pass `at`; the completion time is what decides the points, so a completion he is reporting after the fact scores wrongly without it.", inputSchema: { type: 'object' as const, properties: { list: { type: 'string', description: `Optional list the item is on; omit to search every list. ${roster}` }, id: { type: 'string', description: 'Item id or its leading characters (from get_lists or get_due).' }, at: { type: 'string', description: "When he finished it, if that is not right now: local wall clock 'YYYY-MM-DDTHH:MM', the same form as the due date get_due shows. Omit for the ordinary case — leaving it out stamps the moment he spoke, which is what 'done' means unqualified. Work the time out yourself and pass the exact value: get_due gives you the item's own due time, so 'fifteen minutes after it started' on something due 10:00 is 10:15, and 'an hour ago' is the current time minus an hour. No timezone, no Z, no offset — a bare local reading, or the score is measured against the wrong deadline. It cannot be in the future." }, undo: { type: 'boolean', description: 'True to un-complete something marked done by mistake — "no, I haven\'t done that yet". Puts it back on the list and takes the points back.' } }, required: ['id'] } },
-    { name: 'remove_from_list', description: "DELETE an item he is not going to do — 'get rid of that', 'delete it', 'take that off, I'm not doing it', 'never mind that one'. It is gone: no points, and no record that it ever happened. If he DID the thing, use complete_item instead; that is the far more common case, and deleting a finished task loses him the credit for it. Identify by id from get_lists or get_due. To drop a whole repeating thing rather than one occurrence, pass `series` — 'stop the teeth brushing', 'cancel the whole daily thing'.", inputSchema: { type: 'object' as const, properties: { list: { type: 'string', description: `Optional list the item is on; omit to search every list. ${roster}` }, id: { type: 'string', description: 'Item id or its leading characters (from get_lists or get_due).' }, series: { type: 'boolean', description: 'True to delete every remaining occurrence of the series this item belongs to, not just this one. Only when he means the whole recurring thing.' } }, required: ['id'] } },
-    { name: 'set_list_priority', description: "Set what NEW items on a list score as by default, so he does not have to say it every time — 'everything on my work list is exempt', 'default the work list to exempt', 'make my todo list normal again'. Items already on the list keep whatever they have; this only changes what gets added from now on. An individual item can still override it when he says so.", inputSchema: { type: 'object' as const, properties: { list: { type: 'string', description: `List name. ${roster}` }, priority: { type: 'number', description: '1 important, 0 normal, -1 exempt.' } }, required: ['list', 'priority'] } },
-    { name: 'set_list_emoji', description: "Give a list an emoji, which leads the notification when a dated item on it comes due; empty removes it.", inputSchema: { type: 'object' as const, properties: { list: { type: 'string', description: `List name. ${roster}` }, emoji: { type: 'string', description: 'A single emoji, e.g. "🛒". Empty removes it.' } }, required: ['list'] } },
+    { name: 'get_lists', description: "Show Jared's lists. Omit `list` to see every list with its items; pass `list` to see just that one. Use when he asks what is on a list, and to read his notes — they are items on the `notes` list, whose full body is printed under each one.", inputSchema: { type: 'object' as const, properties: { list_id: listIdProp(roster, 'Optional — show only this list. Omit to show all of them.') } } },
+    { name: 'add_to_list', description: "Add an item to a list, which covers reminders AND notes too — a reminder is only an item with a `due` date, and anything dated fires a notification whichever list it is on; a note is only an item with a body, so 'make a note', 'jot this down', 'save this' is an undated item on the `notes` list with the short name as `title` and the full body as `text`. Omit `list` for the default todo list; an unknown list is created, so reuse an existing name when the intent is the same list.", inputSchema: { type: 'object' as const, properties: { list_id: listIdProp(roster, `Which list to add to. Omit for the default '${lists.DEFAULT_LIST_ID}' list. It must ALREADY EXIST — this tool never creates one; use create_list for that.`), text: { type: 'string', description: 'The item itself, e.g. "milk" or "call the dentist". Do NOT bake date words into this — put times in `due`.' }, title: { type: 'string', description: "SHORT label — this is what every display actually shows. Two or three words, and prefer fewer: on the wall's day timeline several items share one line side by side, so a long title squeezes its neighbours and gets truncated. 'Shirt in dryer', not 'Put the white shirt in the dryer'. Set it whenever `text` runs longer than that, and keep the full detail in `text`." }, due: { type: 'string', description: 'Optional due date/time, ISO 8601 local (YYYY-MM-DD or YYYY-MM-DDTHH:MM). Setting it makes the item fire a notification then. Omit if no time was given.' }, priority: { type: 'number', description: "How it scores. OMIT THIS FIELD ENTIRELY unless he says one of the words below — leaving it out makes the item inherit its list's default, which is how lists like 'work' stay exempt without him repeating himself. Do not send 0 to mean 'nothing special'; 0 is an explicit override that would cancel the list's default. Never infer this from what the item is: a shift, an appointment, a flight and a chore are all left alone unless he says otherwise, because a wrong guess changes his score and nothing tells him a guess was made. Send 1 only when he says important, urgent, high priority, or a priority. Send -1 only when he says exempt, excluded, don't score it, don't count it, or don't hold me to it. Send 0 only when he explicitly says something is a normal task ON a list whose default is not normal." }, repeat_every: { type: 'string', description: "Optional recurrence, as '<n> <unit>' — e.g. '1 day', '2 hours', '30 minutes', '1 week', '1 month', '1 year'. Use for 'every morning', 'every Monday', 'twice a day' (that is '12 hours'). Requires `due`, which sets the FIRST occurrence. This SCHEDULES EVERY OCCURRENCE AS ITS OWN ITEM in one call — checking one off leaves the rest alone — so it is cheap to use and never needs calling repeatedly. Omit for a one-shot, which is the default." }, repeat_until: { type: 'string', description: "Last date the recurrence runs to (YYYY-MM-DD). Use whatever end he gave — 'for the next two weeks', 'until the 30th'. Defaults to a month out when he gave no end; there is no such thing as forever here, and it can be extended later." } }, required: ['text'] } },
+    { name: 'set_due', description: "Move an existing item to a different time, or clear its due date — 'push the dentist one to Friday', 'snooze that', 'make it 3 instead'. ONLY when the task itself is unchanged and just needs to happen later. If he names a DIFFERENT thing to do, that is a new item (add_to_list), not a move — 'take the shirt off and put it back up at 1 to go in the dryer' is completing one item and adding another, not rescheduling one. Identify the item by id from get_due or get_lists.", inputSchema: { type: 'object' as const, properties: { id: { type: 'string', description: 'Item id or its leading characters.' }, list_id: listIdProp(roster, 'Optional — narrow the id search to one list. Omit to search every list.'), due: { type: 'string', description: 'New due date/time, ISO 8601 local (YYYY-MM-DD or YYYY-MM-DDTHH:MM). Pass empty to REMOVE the due date, which stops it firing and takes it off his score. Omit entirely to leave the date alone.' } }, required: ['id'] } },
+    { name: 'set_priority', description: "Change how an existing item scores, when he says to — 'make that one important', 'that one's urgent', 'make that exempt', 'don't score that one', 'it's not a priority any more'. Important items count for more on his score in both directions. Identify the item by id from get_due or get_lists.", inputSchema: { type: 'object' as const, properties: { id: { type: 'string', description: 'Item id or its leading characters.' }, list_id: listIdProp(roster, 'Optional — narrow the id search to one list. Omit to search every list.'), priority: { type: 'number', description: "1 important, 0 normal, -1 exempt. Set only what he actually asked for — 'make it important' is 1, 'make it exempt' or 'stop scoring that' is -1, 'back to normal' is 0. Do not infer it from what the item is." } }, required: ['id', 'priority'] } },
+    { name: 'complete_item', description: "Mark something DONE — he did it. 'I cleaned the shirt', 'check that off', 'completed', 'finished', 'took care of it', 'done with that one', 'took the trash out'. This is what he means almost every time something leaves his list, so reach for it first. It earns him points on his score, more the sooner it is done, and the item stays on his calendar as something that happened rather than disappearing. Use remove_from_list ONLY when he wants a thing gone that he did NOT do. Identify by id from get_due or get_lists. When he says WHEN he finished — 'at 10:15', 'fifteen minutes after it started', 'an hour ago', 'this morning' — pass `at`; the completion time is what decides the points, so a completion he is reporting after the fact scores wrongly without it.", inputSchema: { type: 'object' as const, properties: { list_id: listIdProp(roster, 'Optional — the list the item is on. Omit to search every list.'), id: { type: 'string', description: 'Item id or its leading characters (from get_lists or get_due).' }, at: { type: 'string', description: "When he finished it, if that is not right now: local wall clock 'YYYY-MM-DDTHH:MM', the same form as the due date get_due shows. Omit for the ordinary case — leaving it out stamps the moment he spoke, which is what 'done' means unqualified. Work the time out yourself and pass the exact value: get_due gives you the item's own due time, so 'fifteen minutes after it started' on something due 10:00 is 10:15, and 'an hour ago' is the current time minus an hour. No timezone, no Z, no offset — a bare local reading, or the score is measured against the wrong deadline. It cannot be in the future." }, undo: { type: 'boolean', description: 'True to un-complete something marked done by mistake — "no, I haven\'t done that yet". Puts it back on the list and takes the points back.' } }, required: ['id'] } },
+    { name: 'remove_from_list', description: "DELETE an item he is not going to do — 'get rid of that', 'delete it', 'take that off, I'm not doing it', 'never mind that one'. It is gone: no points, and no record that it ever happened. If he DID the thing, use complete_item instead; that is the far more common case, and deleting a finished task loses him the credit for it. Identify by id from get_lists or get_due. To drop a whole repeating thing rather than one occurrence, pass `series` — 'stop the teeth brushing', 'cancel the whole daily thing'.", inputSchema: { type: 'object' as const, properties: { list_id: listIdProp(roster, 'Optional — the list the item is on. Omit to search every list.'), id: { type: 'string', description: 'Item id or its leading characters (from get_lists or get_due).' }, series: { type: 'boolean', description: 'True to delete every remaining occurrence of the series this item belongs to, not just this one. Only when he means the whole recurring thing.' } }, required: ['id'] } },
+    { name: 'set_list_priority', description: "Set what NEW items on a list score as by default, so he does not have to say it every time — 'everything on my work list is exempt', 'default the work list to exempt', 'make my todo list normal again'. Items already on the list keep whatever they have; this only changes what gets added from now on. An individual item can still override it when he says so.", inputSchema: { type: 'object' as const, properties: { list_id: listIdProp(roster, 'The list to change.'), priority: { type: 'number', description: '1 important, 0 normal, -1 exempt.' } }, required: ['list_id', 'priority'] } },
+    { name: 'set_list_emoji', description: "Give a list an emoji, which leads the notification when a dated item on it comes due; empty removes it.", inputSchema: { type: 'object' as const, properties: { list_id: listIdProp(roster, 'The list to change.'), emoji: { type: 'string', description: 'A single emoji, e.g. "🛒". Empty removes it.' } }, required: ['list_id'] } },
     { name: 'list_repos', description: "Jared's projects, most recently worked on first. Call this when he names a project you are not sure of before using start_session — matching against the real list beats guessing at a name.", inputSchema: { type: 'object' as const, properties: {} } },
     { name: 'start_session', description: "Start a Claude session on one of Jared's machines to do the work he just described. This is also how ANYTHING involving a website gets done: a session has a real browser, signed in to his accounts, so looking something up on a site (Metacritic, Reddit, a store, a score, a listing) or acting on one (his Amazon cart, an order, a form) is a session — start one and pass the request through. Do not answer a site question from memory and do not say you cannot browse. Pass his words through verbatim, minus the addressing ('in my X repo', 'send this to the Mac') — never summarise them.", inputSchema: { type: 'object' as const, properties: { repo: { type: 'string', description: "The project, if he named one. Omit when he did not or it is unclear — it then opens in his home directory, which is the right fallback rather than asking." }, prompt: { type: 'string', description: "What to do, word for word as he said it — rambling and self-corrections included, addressing stripped. Never summarise or tidy it; the session can read past disfluency, and rewriting loses what he actually said." }, label: { type: 'string', description: "A short name for the work — three to six words, always provided, naming the job rather than the repo." }, report: { type: 'boolean', description: "True only when he asks for a written write-up ('send me a report', 'write it up'). Otherwise omit." }, machine: { type: 'string', enum: ['pi', 'mac'], description: "Where to run it. Defaults to 'pi', which is almost always right; 'mac' only when he says so or for iOS work." } }, required: ['prompt'] } },
     { name: 'follow_up', description: "Send his words to the focused session, verbatim. ONLY when he hands them over — 'tell it to', 'send a follow-up', 'let it know' — or when this same utterance focused that session; the mic hears the whole room, so anything else he says is not for it.", inputSchema: { type: 'object' as const, properties: { prompt: { type: 'string', description: 'His words, verbatim.' } }, required: ['prompt'] } },
@@ -102,7 +118,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     { name: 'resume_session', description: "Bring a parked session back with its full context.", inputSchema: { type: 'object' as const, properties: { session: { type: 'string', description: "The NUMBER from get_sessions, or the repo name if only one session is in that repo." }, prompt: { type: 'string', description: 'Optional follow-up to send once it is back.' } }, required: ['session'] } },
     { name: 'end_session', description: 'Close a running session for good. Use when he says he is done with one.', inputSchema: { type: 'object' as const, properties: { session: { type: 'string', description: "The NUMBER from get_sessions, or the repo name if only one session is in that repo." } }, required: ['session'] } },
     { name: 'publish_report', description: "Publish an HTML write-up of work just finished, as well as replying normally — Jared reads it on his phone. Send a body fragment with RAW tags (no <html>/<head>/<body>, and never escaped entities, which render as visible source). Design for a 390px portrait column: short paragraphs, 2-3 column tables, every <svg> given a viewBox and width=\"100%\" rather than fixed pixels. A Content-Security-Policy blocks all JavaScript and external stylesheets, so charts must be inline <svg>; inline <style> and data:/https: images do work.", inputSchema: { type: 'object' as const, properties: { title: { type: 'string', description: "Short page title, e.g. \"Widget freshness fix\". Shown as the notification title." }, summary: { type: 'string', description: "One sentence saying what you did. This becomes the notification body, so it must stand alone on a lock screen." }, html: { type: 'string', description: "The report body as HTML. Inline SVG for visuals; no scripts." } }, required: ['title', 'summary', 'html'] } },
-    { name: 'delete_list', description: "Delete an ENTIRE list and everything on it ('delete my books list', 'get rid of that list'). Removes the list and all its items. Matches the list name case-insensitively.", inputSchema: { type: 'object' as const, properties: { list: { type: 'string', description: `List name to delete. ${roster}` } }, required: ['list'] } },
+    { name: 'create_list', description: "Start a NEW list — 'start a packing list', 'make me a list for the trip'. This is the ONLY way a list comes into existence: add_to_list will not create one, so a name he has not asked to be a new list is a mistake rather than a new list. Check get_lists first when it is unclear whether he means an existing one — 'put it on my book list' means the list that is already there. Returns the new list's id, which is what every later call uses.", inputSchema: { type: 'object' as const, properties: { name: { type: 'string', description: 'What to call it, in his words — the label only, no id.' }, emoji: { type: 'string', description: 'Optional single emoji for the list; it leads the notification when a dated item on it comes due.' }, priority: { type: 'number', description: 'Optional default for NEW items on this list: 1 important, 0 normal, -1 exempt. Omit for 0.' } }, required: ['name'] } },
+    { name: 'delete_list', description: "Delete an ENTIRE list and everything on it ('delete my books list', 'get rid of that list'). Removes the list and all its items, permanently.", inputSchema: { type: 'object' as const, properties: { list_id: listIdProp(roster, 'Which list to delete.') }, required: ['list_id'] } },
   ],
   };
 });
@@ -325,29 +342,34 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return text(lists.formatDueItems(await lists.dueItems(days)));
     }
     if (name === 'get_lists') {
-      const names = await lists.availableLists();
-      if (!names.length) return text('No lists yet.');
-      if (a.list) {
-        const want = String(a.list).trim().toLowerCase();
-        const match = names.find((n) => n.toLowerCase() === want);   // case-insensitive: 'Grocery' → 'grocery'
-        if (match) return text(lists.formatListItems(await lists.listItems(match), match, await lists.listDefaultPriority(match)));
-        // Requested list doesn't exist in any casing — show the real lists so a name mismatch never
-        // reads back as a false "empty".
-        const blocks: string[] = [];
-        for (const n of names) blocks.push(lists.formatListItems(await lists.listItems(n), n, await lists.listDefaultPriority(n)));
-        return text(`No list named "${a.list}". Your lists:\n\n` + blocks.join('\n\n'));
+      const all = await lists.allLists();
+      if (!all.length) return text('No lists yet.');
+      const block = async (l: lists.List) => lists.formatListItems(await lists.listItems(l.id), l);
+      if (a.list_id) {
+        const want = String(a.list_id).trim();
+        const match = all.find((l) => l.id === want);
+        if (match) return text(await block(match));
+        // An unknown id shows the real lists rather than an empty one — a mismatch must never read
+        // back as "that list is empty", which is the failure this whole id scheme exists to stop.
+        const blocks = await Promise.all(all.map(block));
+        return text(`No list with id "${a.list_id}". Your lists:\n\n` + blocks.join('\n\n'));
       }
-      const blocks: string[] = [];
-      for (const n of names) blocks.push(lists.formatListItems(await lists.listItems(n), n, await lists.listDefaultPriority(n)));
-      return text(blocks.join('\n\n'));
+      return text((await Promise.all(all.map(block))).join('\n\n'));
+    }
+    if (name === 'create_list') {
+      const made = await lists.createList(String(a.name), {
+        emoji: a.emoji ? String(a.emoji) : null,
+        default_priority: a.priority != null ? Number(a.priority) : undefined,
+      });
+      // A new list changes the enum on every list tool, so the schema the client is holding is now
+      // wrong. This is the notification that says so.
+      await server.sendToolListChanged().catch(() => {});
+      return text(`Created **${made.name}** — its id is \`${made.id}\`, which is what add_to_list takes.`);
     }
     if (name === 'add_to_list') {
-      const list = String(a.list || lists.DEFAULT_LIST);
-      // A name that matches nothing does not error — `addItem` creates the list. That is correct when
-      // he is starting one and a silent fork when the model reached for 'groceries' and the list is
-      // 'grocery'. Checked BEFORE the write so the answer says which of the two just happened.
-      const isNew = !(await lists.listExists(list));
-      const made = await lists.addItem(list, String(a.text), {
+      // An unknown id throws out of `requireList` with the valid ones named. It cannot create a list:
+      // that is `create_list`, and the separation is what makes a wrong id rejectable (00094).
+      const made = await lists.addItem(String(a.list_id || lists.DEFAULT_LIST_ID), String(a.text), {
         title: a.title ? String(a.title) : undefined,
         due: a.due ? String(a.due) : undefined,
         priority: a.priority != null ? Number(a.priority) : undefined,
@@ -361,15 +383,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const when = made.length > 1
         ? ` — ${made.length} occurrences, ${first.due} through ${made[made.length - 1].due}`
         : (first.due ? ` — due ${first.due}` : '');
-      // The roster is baked into every `list` description, so a new list makes those descriptions
-      // wrong for the rest of the session unless the client is told to re-read them.
-      if (isNew) await server.sendToolListChanged().catch(() => {});
-      const born = isNew ? ` — this CREATED a new list named '${first.list_name}'; say so, in case an existing list was meant` : '';
-      return text(`Added to **${first.list_name}**: ${lists.itemLabel(first)}${when}${flag}${born}\n\n`
-        + lists.formatListItems(await lists.listItems(first.list_name), first.list_name, await lists.listDefaultPriority(first.list_name)));
+      const list = await lists.requireList(first.list_id);
+      return text(`Added to **${list.name}**: ${lists.itemLabel(first)}${when}${flag}\n\n`
+        + lists.formatListItems(await lists.listItems(list.id), list));
     }
     if (name === 'set_due') {
-      const where = a.list ? String(a.list) : null;
+      const where = a.list_id ? String(a.list_id) : null;
       const patch: { due?: string | null } = {};
       if ('due' in a) patch.due = a.due ? String(a.due) : null;
       const it = await lists.setDue(where, String(a.id), patch);
@@ -378,24 +397,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return text(`**${lists.itemLabel(it)}** (${it.list_name}) is now due ${it.due}.`);
     }
     if (name === 'set_priority') {
-      const where = a.list ? String(a.list) : null;
+      const where = a.list_id ? String(a.list_id) : null;
       const it = await lists.setPriority(where, String(a.id), Number(a.priority));
       if (!it) return text(`No item matched id '${a.id}'${where ? ` on '${where}'` : ''}.`);
       const how = it.priority > 0 ? 'important' : it.priority < 0 ? 'exempt — it will not be scored, and closes itself when the time passes' : 'normal priority';
       return text(`**${lists.itemLabel(it)}** (${it.list_name}) is ${how}.`);
     }
     if (name === 'complete_item') {
-      const where = a.list ? String(a.list) : null;
+      const where = a.list_id ? String(a.list_id) : null;
       const it = await lists.completeItem(where, String(a.id), { undo: !!a.undo, at: a.at ? String(a.at) : undefined });
       if (!it) return text(`No matching item for id '${a.id}'${where ? ` in '${where}'` : ''}.`);
       if (a.undo) return text(`Back on **${it.list_name}**: ${lists.itemLabel(it)}\n\n`
-        + lists.formatListItems(await lists.listItems(it.list_name), it.list_name, await lists.listDefaultPriority(it.list_name)));
+        + lists.formatListItems(await lists.listItems(it.list_id), await lists.requireList(it.list_id)));
       const late = it.due ? lists.lateness(it) : null;
       return text(`Done: ${lists.itemLabel(it)}${late ? ` (${late})` : ''}\n\n`
-        + lists.formatListItems(await lists.listItems(it.list_name), it.list_name, await lists.listDefaultPriority(it.list_name)));
+        + lists.formatListItems(await lists.listItems(it.list_id), await lists.requireList(it.list_id)));
     }
     if (name === 'remove_from_list') {
-      const where = a.list ? String(a.list) : null;
+      const where = a.list_id ? String(a.list_id) : null;
       const it = await lists.removeItem(where, String(a.id));
       if (!it) return text(`No matching item for id '${a.id}'${where ? ` in '${where}'` : ''}.`);
       let extra = '';
@@ -404,19 +423,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         extra = ` and ${rest.length} further occurrence${rest.length === 1 ? '' : 's'}`;
       }
       return text(`Removed from **${it.list_name}**: ${lists.itemLabel(it)}${extra}\n\n`
-        + lists.formatListItems(await lists.listItems(it.list_name), it.list_name, await lists.listDefaultPriority(it.list_name)));
+        + lists.formatListItems(await lists.listItems(it.list_id), await lists.requireList(it.list_id)));
     }
     if (name === 'set_list_priority') {
-      const hit = await lists.setListDefaultPriority(String(a.list), Number(a.priority));
-      if (!hit) return text(`No list named '${a.list}'.`);
+      const hit = (await lists.setListDefaultPriority(String(a.list_id), Number(a.priority))).name;
       const p = Math.max(-1, Math.min(1, Math.round(Number(a.priority) || 0)));
       const how = p > 0 ? 'important' : p < 0 ? 'exempt' : 'normal';
       return text(`New items on **${hit}** now default to ${how}. Items already on it are unchanged.`);
     }
     if (name === 'set_list_emoji') {
-      const hit = await lists.setListEmoji(String(a.list), a.emoji ? String(a.emoji) : null);
-      if (!hit) return text(`No list named '${a.list}'.`);
-      return text(a.emoji ? `**${hit}** is now ${a.emoji}.` : `Removed the emoji from **${hit}**.`);
+      const hit = await lists.setListEmoji(String(a.list_id), a.emoji ? String(a.emoji) : null);
+      return text(a.emoji ? `**${hit.name}** is now ${a.emoji}.` : `Removed the emoji from **${hit.name}**.`);
     }
     if (name === 'list_repos') {
       const rows = await desk.listRepos();
@@ -480,10 +497,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return text(r.ok ? 'Closing that session.' : r.error);
     }
     if (name === 'delete_list') {
-      const deleted = await lists.removeList(String(a.list));
-      if (!deleted) return text(`No list named '${a.list}'.`);
+      const deleted = await lists.removeList(String(a.list_id));
+      // Removing a list changes the enum on every list tool, same as creating one.
       await server.sendToolListChanged().catch(() => {});
-      return text(`Deleted the '${deleted}' list and all its items.`);
+      return text(`Deleted the '${deleted.name}' list and all its items.`);
     }
 
     return text(`Unknown tool: ${name}`);

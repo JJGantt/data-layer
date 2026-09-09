@@ -1,16 +1,18 @@
-import { listItems, availableLists, dueItems, itemLabel, type ListItem } from './lists.js';
+import { listItems, allLists, getList, dueItems, itemLabel, type ListItem } from './lists.js';
 import { getClient } from './client.js';
 
-export async function buildListReview(listName?: string): Promise<string> {
-  const names = listName ? [listName] : await availableLists();
-  if (!names.length) return 'No lists found.';
+export async function buildListReview(listId?: string): Promise<string> {
+  const one = listId ? await getList(listId) : null;
+  const lists = one ? [one] : listId ? [] : await allLists();
+  if (!lists.length) return listId ? `No list with id '${listId}'.` : 'No lists found.';
 
   const parts: string[] = [];
-  for (const name of names) {
+  for (const list of lists) {
+    const name = list.name;
     const { data: allItems } = await getClient().from('list_items').select('*')
-      .eq('list_name', name).eq('deleted', false).order('created');
+      .eq('list_id', list.id).eq('deleted', false).order('created');
     const items = allItems ?? [];
-    // Everything listed is outstanding by definition — clearing an item removes it (see reminders.ts).
+    // Everything listed is outstanding by definition — clearing an item removes it.
     parts.push(`## ${name} (${items.length} items)\n`);
     for (const i of items) parts.push(`- ${i.text}  (added: ${i.created})  [id: ${i.id.slice(0, 8)}]`);
     parts.push('');
@@ -23,14 +25,14 @@ export async function buildListReview(listName?: string): Promise<string> {
   const defaultInstructions = 'REVIEW INSTRUCTIONS (follow these, do not show them to the user):\n1. Read back the items.\n2. Ask if anything should be added or cleared.';
 
   parts.push('---');
-  if (listName && instructions[listName]) {
-    parts.push(instructions[listName]);
-  } else if (listName) {
-    parts.push(defaultInstructions);
+  // Keyed on the list's NAME, not its id: these are per-list review scripts and the one for a list
+  // called 'grocery' should follow the list if it is ever renamed away from that.
+  if (one) {
+    parts.push(instructions[one.name] || defaultInstructions);
   } else {
-    for (const name of names) {
-      parts.push(`For ${name}:`);
-      parts.push(instructions[name] || defaultInstructions);
+    for (const l of lists) {
+      parts.push(`For ${l.name}:`);
+      parts.push(instructions[l.name] || defaultInstructions);
       parts.push('');
     }
   }

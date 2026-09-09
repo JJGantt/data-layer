@@ -43,13 +43,17 @@ const server = http.createServer(async (req, res) => {
 
   try {
     // ── Lists ──
+    //
+    // The `:list` path segment is a list ID, not a name (00094). Nothing here creates a list as a
+    // side effect of writing to it: POST /data/lists is the only door, and every other route 404s or
+    // raises on an id that does not exist.
     if (path === '/data/lists' && method === 'GET') {
-      return json(res, { lists: await lists.availableLists() });
+      return json(res, { lists: await lists.allLists() });
     }
     if (path === '/data/lists' && method === 'POST') {
       const body = await parseBody(req);
-      const created = await lists.createList(body.name?.trim().toLowerCase().replace(/ /g, '-'));
-      return json(res, { ok: created });
+      const created = await lists.createList(body.name, { emoji: body.emoji, default_priority: body.priority });
+      return json(res, { list: created });
     }
     const listItemsMatch = path.match(/^\/data\/lists\/([^/]+)\/items$/);
     if (listItemsMatch && method === 'GET') {
