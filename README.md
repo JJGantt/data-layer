@@ -50,6 +50,28 @@ A reminder is a list item with a `due` date. Any item on any list, dated, fires 
 identically; nothing distinguishes a "reminder" from a dated grocery item, and there is no tool
 named for one — `add_to_list` with a `due` is how you create one.
 
+## The list names are in the tool schema, not guessed
+
+`list` is free text and `add_to_list` CREATES an unknown name rather than erroring, so a near miss
+does not fail — it forks. 'groceries' against a stored 'grocery' makes a second list, and the items
+land somewhere nobody looks. `resolveListName` only catches CASING ('Grocery' → 'grocery'); plurals,
+synonyms and hyphens all miss.
+
+So `tools/list` reads the lists live and interpolates the real names into every `list` description
+(`listRoster` in `mcp.ts`). Same reasoning as `get_shopping_items` for cart ids: the set is small, the
+caller can be handed all of it, and matching a free string against it only invents failure modes.
+
+Two consequences worth knowing:
+
+- The schema is built once per session, so creating or deleting a list makes it stale. Both paths
+  send `notifications/tools/list_changed`, and the server advertises `tools.listChanged`.
+- `add_to_list` says so when it created a list rather than added to one. The roster makes a fork
+  unlikely; this makes one VISIBLE, which is what was missing — a fork was previously indistinguishable
+  from a successful add.
+
+`add_to_list` carries the fork warning; the other list tools carry the names alone, because they
+resolve against what exists and fail cleanly on a miss. It is the only tool that can create one.
+
 A note is a list item with a BODY: an undated row on the `notes` list, its short name in `title` and
 its full text in `text` (migration 00092). It has no tools of its own either. `get_lists` prints an
 item's `text` indented under the label whenever the two differ, so reading a note back is just

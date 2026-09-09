@@ -176,6 +176,13 @@ export async function resolveListName(name: string): Promise<string> {
   return hit ? String(hit.name) : want;
 }
 
+/** Whether a list already exists, case-insensitively — i.e. whether `addItem` would CREATE one. */
+export async function listExists(name: string): Promise<boolean> {
+  const want = String(name || '').trim().toLowerCase();
+  if (!want) return false;
+  return (await availableLists()).some(n => n.toLowerCase() === want);
+}
+
 export interface AddOpts {
   title?: string;
   due?: string;
