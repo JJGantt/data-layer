@@ -50,27 +50,41 @@ A reminder is a list item with a `due` date. Any item on any list, dated, fires 
 identically; nothing distinguishes a "reminder" from a dated grocery item, and there is no tool
 named for one — `add_to_list` with a `due` is how you create one.
 
-## The list names are in the tool schema, not guessed
+## A list is addressed by its ID
 
-`list` is free text and `add_to_list` CREATES an unknown name rather than erroring, so a near miss
-does not fail — it forks. 'groceries' against a stored 'grocery' makes a second list, and the items
-land somewhere nobody looks. `resolveListName` only catches CASING ('Grocery' → 'grocery'); plurals,
-synonyms and hyphens all miss.
+`lists.id` is the key ('l_grocery'), and `list_items.list_id` is the reference. The name is a label:
+editable, and not what anything points at. Renaming a list moves no rows.
 
-So `tools/list` reads the lists live and interpolates the real names into every `list` description
-(`listRoster` in `mcp.ts`). Same reasoning as `get_shopping_items` for cart ids: the set is small, the
-caller can be handed all of it, and matching a free string against it only invents failure modes.
+That exists to make a wrong list REJECTABLE. While the name was the key, `add_to_list` had to accept
+any string, because "a name not in the table" was the only way to say "start a new list" — so a typo
+and an intention were the same request and the server always resolved it as create. `groceries`
+against a stored `grocery` silently forked, and the items went somewhere nobody looks.
+
+Two verbs now, and the split is the fix:
+
+| | |
+|---|---|
+| `add_to_list` | takes a `list_id` that must ALREADY exist. `requireList` throws otherwise, naming every valid id. |
+| `create_list` | the only thing that mints a list, and the only place a name is chosen. |
+
+With creation out of the way, `list_id` has a closed set, so `tools/list` ships it as an **`enum`**
+(`listRoster` / `listIdProp` in `mcp.ts`). A validating client rejects a bad value before the call is
+sent; `requireList` rejects it again server-side, because not every client validates.
+
+The ids are readable on purpose. They go in an enum a model picks from, and an opaque key would make
+that choice unverifiable — it could not tell which id was the grocery list without another call. They
+are still ids: minted once from the name, never recomputed.
 
 Two consequences worth knowing:
 
-- The schema is built once per session, so creating or deleting a list makes it stale. Both paths
-  send `notifications/tools/list_changed`, and the server advertises `tools.listChanged`.
-- `add_to_list` says so when it created a list rather than added to one. The roster makes a fork
-  unlikely; this makes one VISIBLE, which is what was missing — a fork was previously indistinguishable
-  from a successful add.
+- **The schema is built once per session**, so creating or deleting a list makes it stale. Both send
+  `notifications/tools/list_changed`, and the server advertises `tools.listChanged`.
+- **`list_items.list_name` is DERIVED**, filled by the `list_items_resolve_list` trigger from
+  `list_id` — the same arrangement as `sets.exercise` and `exercise_id`. Read it, never write it. It
+  is still there because the hub draws it on every list surface.
 
-`add_to_list` carries the fork warning; the other list tools carry the names alone, because they
-resolve against what exists and fail cleanly on a miss. It is the only tool that can create one.
+The database enforces this independently of any caller: that trigger resolves a name-only write to an
+id and RAISES when it cannot, so a fork is not reachable even by writing to PostgREST directly.
 
 A note is a list item with a BODY: an undated row on the `notes` list, its short name in `title` and
 its full text in `text` (migration 00092). It has no tools of its own either. `get_lists` prints an

@@ -1,6 +1,6 @@
 # Working in data-layer
 
-Eight things that will bite you, none of them visible from the code you are about to edit.
+Nine things that will bite you, none of them visible from the code you are about to edit.
 
 ## It runs from `dist/`, not `src/`
 
@@ -41,6 +41,23 @@ still there because the hub reads it; it goes away when the hub reads the id ins
 passes only a name (the hub, 00046's watch-report trigger) still works and gets the right id, and an
 unknown name raises rather than writing an orphan row.
 
+## A list is named by its id, and `list_items.list_name` is derived
+
+`lists.id` ('l_grocery') is the key; `list_items.list_id` is the reference; `lists.name` is a label
+that can be edited without moving a row. Write `list_id` and nothing else — `list_name` is filled by
+the `list_items_resolve_list` trigger, the same arrangement as `sets.exercise` and `exercise_id`, and
+sending both is how the two get a chance to disagree.
+
+`add_to_list` will NOT create a list, and that is the point rather than an omission. When the name was
+the key, an unrecognised name was the only way to express "start a new list", so it had to be accepted
+and a typo forked silently. Creation is `create_list` alone, which leaves `list_id` a closed set the
+tool schema ships as an `enum`.
+
+Do not add name matching to get around this. It is the `exercise_id` rule again, and for the same
+reason: anything willing to accept a near miss eventually writes to the wrong list, and the write
+looks entirely successful. The trigger raises on a name it cannot resolve, so PostgREST will not do it
+either.
+
 ## `ensureEastern()` will shift a time the user stated
 
 Timestamp columns hold **naive local wall-clock** — `now()` writes `toEastern(new Date())`, with no
@@ -77,13 +94,11 @@ build you run by hand still needs it.
 The same process lifetime is why nothing per-command may live in that subprocess's **environment** —
 it freezes there. See `helpers.now()`, which reads its timestamp from a file for exactly this reason.
 
-It also pins DATA, not just code. `tools/list` builds the `list` parameter descriptions from the
-lists that exist at connect time (`listRoster` in `mcp.ts`), so a list created after the worker
-started is absent from the schema that worker is holding. That needs no deploy to happen: the hub's
-`POST /api/todos/add` creates a list on an unrecognised name, and so does any session on the other
-machine. The server sends `notifications/tools/list_changed`
-whenever `add_to_list` creates a list or `delete_list` removes one; whether a client re-fetches on it
-is the client's business, so treat a restart as the reliable path.
+It also pins DATA, not just code. `tools/list` builds the `list_id` **enum** from the lists that exist
+at connect time (`listRoster` in `mcp.ts`), so a list made after the worker started is not a legal
+value in the schema that worker is holding — voice cannot add to it until the session reconnects. The
+server sends `notifications/tools/list_changed` on `create_list` and `delete_list`, but whether a
+client re-fetches on it is the client's business, so treat a restart as the reliable path.
 
 ## A new tool is invisible to voice until it is allow-listed
 
