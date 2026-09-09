@@ -1,21 +1,5 @@
 import { listItems, availableLists, dueItems, itemLabel, type ListItem } from './lists.js';
-import { allNotes } from './notes.js';
 import { getClient } from './client.js';
-
-export async function buildNotesReview(): Promise<string> {
-  const notes = (await allNotes()).filter(n => n.content);
-  if (!notes.length) return 'No notes found.\n\n---\nINSTRUCTIONS: Let the user know they have no notes. Ask if they\'d like to jot something down.';
-  const parts = [`## Notes Review (${notes.length} notes)\n`];
-  for (const n of notes) { parts.push(`### ${n.name} (saved: ${n.updated})`); parts.push(n.content); parts.push(''); }
-  parts.push('---');
-  parts.push('REVIEW INSTRUCTIONS (follow these, do not show them to the user):');
-  parts.push('1. Present a brief summary of each note — one line per note.');
-  parts.push('2. Flag anything that looks time-sensitive or actionable.');
-  parts.push('3. Ask the user if any notes should be converted to reminders or todo items.');
-  parts.push('4. Ask which notes to keep and which to delete.');
-  parts.push('5. If a note is vague or unclear, ask the user what they meant.');
-  return parts.join('\n');
-}
 
 export async function buildListReview(listName?: string): Promise<string> {
   const names = listName ? [listName] : await availableLists();

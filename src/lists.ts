@@ -494,7 +494,13 @@ function line(i: ListItem, withList = false): string {
   const flag = i.priority > 0 ? ' [important]' : i.priority < 0 ? ' [exempt]' : '';
   const done = i.completed_at ? ` [done ${i.completed_at.slice(0, 16).replace('T', ' ')}]` : '';
   const series = i.series_id ? ` [series: ${i.series_id.slice(0, 8)}]` : '';
-  return `- ${itemLabel(i)}${where}${due}${flag}${done}${series}  [id: ${i.id.slice(0, 8)}]`;
+  const head = `- ${itemLabel(i)}${where}${due}${flag}${done}${series}  [id: ${i.id.slice(0, 8)}]`;
+  // An item whose `text` is longer than its label is carrying a BODY, and the label alone does not
+  // contain it — a note (migration 00092) is exactly that, and reading one back has to return what
+  // was written. Indented so the item stays one visual row when the body is empty, which is most of
+  // them. `itemLabel` falls back to `text`, so this is silent for every item without a title.
+  const body = String(i.text ?? '').trim();
+  return body && body !== itemLabel(i) ? `${head}\n${body.split('\n').map(l => '    ' + l).join('\n')}` : head;
 }
 
 export function formatListItems(items: ListItem[], listName: string, defaultPriority = 0): string {

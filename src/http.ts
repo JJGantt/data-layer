@@ -7,7 +7,6 @@
 
 import http from 'node:http';
 import * as lists from './lists.js';
-import * as notes from './notes.js';
 import * as health from './health.js';
 import * as workouts from './workouts.js';
 import * as recipes from './recipes.js';
@@ -88,22 +87,6 @@ const server = http.createServer(async (req, res) => {
       const item = await lists.setDue(body.list ?? null, setDueMatch[1], patch);
       if (!item) return json(res, { error: 'not found' }, 404);
       return json(res, { item });
-    }
-
-    // ── Notes ──
-    if (path === '/data/notes' && method === 'GET') {
-      return json(res, { notes: await notes.availableNotes() });
-    }
-    const noteMatch = path.match(/^\/data\/notes\/([^/]+)$/);
-    if (noteMatch && method === 'GET') {
-      const note = await notes.getNote(noteMatch[1]);
-      if (!note) return json(res, { error: 'not found' }, 404);
-      return json(res, { note });
-    }
-    if (noteMatch && method === 'PUT') {
-      const body = await parseBody(req);
-      await notes.setNote(noteMatch[1], body.content);
-      return json(res, { ok: true });
     }
 
     // ── Health ──
@@ -227,9 +210,6 @@ const server = http.createServer(async (req, res) => {
     }
 
     // ── Reviews ──
-    if (path === '/data/reviews/notes' && method === 'GET') {
-      return json(res, { text: await reviews.buildNotesReview() });
-    }
     const reviewListMatch = path.match(/^\/data\/reviews\/lists(?:\/([^/]+))?$/);
     if (reviewListMatch && method === 'GET') {
       return json(res, { text: await reviews.buildListReview(reviewListMatch[1]) });
