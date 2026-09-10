@@ -89,6 +89,9 @@ export interface DeskSession {
   // answer while a new one is in flight. reply_at is when that text landed.
   working: boolean; reply_at: string | null;
   claude_session_id: string | null; started: string; last_seen: string;
+  command_id: string | null;
+  // The last turn boundary — a prompt sent or a turn finished. Orders, numbers and focuses sessions.
+  active_at: string | null;
 }
 
 /** Every project a machine has published, most recently touched first. */
@@ -142,14 +145,13 @@ export async function startSession(repo: string | undefined, prompt: string, mac
 }
 
 /**
- * Point follow-ups at the dispatch just made.
- *
- * Moved ONLY from here and from resume — never from anything a human does at a keyboard. Jared may be
- * working in another session at the same moment, and "the most recently active session" would send a
- * dictated follow-up straight into it. The pointer belongs to the assistant's own dispatches.
+ * Mark the dispatch just made, so a follow-up said before its session exists is held for it rather
+ * than landing in whatever was active a moment earlier. It also releases a session Jared had focused by
+ * name: starting new work is him turning to it.
  *
  * A command id, not a session id: at this moment the session does not exist yet. The machine creates
- * it a moment later and records command_id on the row, which is what resolves the two.
+ * it a moment later, records command_id on the row and publishes it as the most recently active
+ * session, which is what focus follows from then on (see focusedSession).
  */
 export async function setFocus(commandId: string, machine: Machine) {
   await getClient().from('desk_focus')
@@ -158,34 +160,55 @@ export async function setFocus(commandId: string, machine: Machine) {
 }
 
 /**
- * The session a follow-up should go to.
+ * The session a spoken follow-up lands in, and the one every surface shows as focused. In order:
  *
- * Two ways it can be set, and `session_id` wins because it is the deliberate one: Jared naming a
- * session he wants to talk to. `command_id` is the automatic one — the dispatch just made — and is
- * how the pointer moves when he starts work rather than chooses it.
+ *   1. a session Jared FOCUSED BY NAME (`focus_session`), while it is still running. His explicit
+ *      word outranks everything until he focuses another, says "latest", or dispatches new work;
+ *   2. a dispatch whose session has not opened yet (`pending`) — words said in that gap are meant for
+ *      it, not for whatever was active a moment before;
+ *   3. otherwise the MOST RECENTLY ACTIVE running session, on either machine.
+ *
+ * 3 includes the session he is typing in at his keyboard, which the pointer once excluded on purpose.
+ * He chose this: the session he last used is the one he means. Ambient speech is guarded where it
+ * always was — `follow_up` only runs when he hands words over ('tell it to…') — not by where the
+ * pointer may go.
+ *
+ * The hub's `/api/sessions` implements the same rule (`pickFocus` in server.js). The two must agree,
+ * or the wall shows one session as focused while a follow-up lands in another.
  */
-export async function focusedSession(): Promise<DeskSession | null> {
-  const { data: f } = await getClient().from('desk_focus').select('*').eq('id', 'current').maybeSingle();
+export async function focusedSession(): Promise<{ session: DeskSession | null; pending: boolean }> {
+  const [{ data: f }, rows] = await Promise.all([
+    getClient().from('desk_focus').select('*').eq('id', 'current').maybeSingle(),
+    listSessions(),
+  ]);
+  const running = rows.filter((r) => r.status === 'resident');
   if (f?.session_id) {
-    const { data } = await getClient().from('desk_sessions').select('*').eq('id', f.session_id).maybeSingle();
-    return (data as DeskSession) ?? null;
+    const hit = running.find((r) => r.id === f.session_id);
+    if (hit) return { session: hit, pending: false };
   }
-  if (!f?.command_id) return null;
-  const { data } = await getClient().from('desk_sessions').select('*').eq('command_id', f.command_id).maybeSingle();
-  return (data as DeskSession) ?? null;
+  if (f?.command_id && !rows.some((r) => r.command_id === f.command_id)) {
+    // Only while it can still become a session: a command that failed or expired never will.
+    const { data: c } = await getClient().from('desk_commands').select('status').eq('id', f.command_id).maybeSingle();
+    if (c && (c.status === 'pending' || c.status === 'running')) return { session: null, pending: true };
+  }
+  return { session: numberSessions(running)[0] ?? null, pending: false };
 }
 
 /**
- * Point at a session that already exists, so what he says next goes there.
+ * Pin a session by name, so what he says next goes there whatever else becomes active — until he
+ * pins another, says "latest", or dispatches new work. Unpinned, focus follows activity.
  *
- * This is the half the pointer was missing. It only ever moved to the LAST THING DISPATCHED, which is
- * fine while starting work and useless for going back to something — on a wall or a watch there is no
- * other way to say which of five sessions he means.
- *
- * Still never automatic: choosing is an act, and the reason the pointer ignores "the most recently
- * active session" is that Jared is usually typing in one of those.
+ * `latest` is the way back: without it, one deliberate focus would hold until that session closed.
  */
 export async function focusSession(ref: string) {
+  if (String(ref || '').trim().toLowerCase() === 'latest') {
+    await getClient().from('desk_focus').upsert(
+      { id: 'current', session_id: null, command_id: null, machine: null, updated: new Date().toISOString() },
+      { onConflict: 'id' });
+    const { session: s } = await focusedSession();
+    return { ok: true as const, latest: true, session: s?.id ?? null, repo: s?.repo ?? null,
+             label: (s as any)?.label ?? null, machine: null };
+  }
   const found = await resolveSession(ref);
   if (!found.ok) return { ok: false as const, error: found.error };
   const row = found.row;
@@ -196,34 +219,29 @@ export async function focusSession(ref: string) {
   await getClient().from('desk_focus').upsert(
     { id: 'current', session_id: row.id, command_id: null, machine, updated: new Date().toISOString() },
     { onConflict: 'id' });
-  return { ok: true as const, session: row.id, repo: row.repo, label: (row as any).label ?? null, machine };
+  return { ok: true as const, latest: false, session: row.id, repo: row.repo, label: (row as any).label ?? null, machine };
 }
 
 /**
- * Send a follow-up into the focused session.
+ * Send a follow-up into the focused session (focusedSession decides which).
  *
- * Resolution can legitimately fail two ways, and they mean different things: nothing has been
- * dispatched yet, or the dispatch has not become a session yet (a launch takes a few seconds). Saying
- * which one saves Jared guessing whether it worked.
+ * It can legitimately have nowhere to go, two ways that mean different things: a dispatch has not
+ * opened its session yet (a launch takes a few seconds), or nothing is running at all. Saying which
+ * saves Jared guessing whether it worked, and the words are kept either way.
  */
 export async function followUp(prompt: string) {
-  const { data: f } = await getClient().from('desk_focus').select('*').eq('id', 'current').maybeSingle();
-  // EITHER pointer counts. `command_id` is the dispatch just made; `session_id` is a session focused
-  // deliberately, and focusing CLEARS command_id — so gating on command_id alone made every follow-up
-  // after a focus fail with "no session has been started from here yet", while the reply claimed it
-  // had been sent. Three rounds of prompt-wording chased that before it turned out to be this line.
-  if (!f?.command_id && !f?.session_id) {
-    return { ok: false as const, error: 'no session has been started or focused from here yet' };
-  }
-  const machine = (f.machine === 'mac' ? 'mac' : 'pi') as Machine;
-  const s = await focusedSession();
-  // Nothing to type into. Both cases lose the words unless they are kept: the session has not opened
-  // yet, or it has since ended — which the machines now report accurately, so this is reachable.
-  if (!s || s.status !== 'resident') {
-    const reason = !s ? 'the last dispatch has not opened its session yet' : 'the session it was aimed at has ended';
-    const saved = await deadLetter('follow_up', { session: s?.id ?? null, prompt, target: machine }, machine, reason);
+  const { session: s, pending } = await focusedSession();
+  if (!s) {
+    const reason = pending ? 'the last dispatch has not opened its session yet' : 'no session is running';
+    let machine: Machine | null = null;
+    if (pending) {
+      const { data: f } = await getClient().from('desk_focus').select('machine').eq('id', 'current').maybeSingle();
+      machine = f?.machine === 'mac' ? 'mac' : 'pi';
+    }
+    const saved = await deadLetter('follow_up', { session: null, prompt, ...(machine ? { target: machine } : {}) }, machine, reason);
     return { ok: false as const, saved, error: `${reason} — nothing was sent. The follow-up is saved and can be retried.` };
   }
+  const machine: Machine = s.worker === 'desk' ? 'mac' : 'pi';
   if (!(await machineAwake(machine))) {
     const saved = await deadLetter('follow_up', { session: s.id, prompt, target: machine }, machine,
                                    `the ${machine === 'mac' ? 'Mac' : 'Pi'} is not responding`);
@@ -240,14 +258,15 @@ export async function followUp(prompt: string) {
 /**
  * Sessions with a NUMBER, which is how they get talked about out loud.
  *
- * **1 is the newest.** Only ACTIVE sessions (resident or evicted) are numbered, so the list is
- * always 1..N over what is actually there.
+ * **1 is the most recently active.** Only ACTIVE sessions (resident or evicted) are numbered, so the
+ * list is always 1..N over what is actually there.
  *
- * ORDERED BY `started`, WHICH NEVER CHANGES. Ordering by `last_seen` was the obvious reading of "most
- * recent" and it made the numbers unusable: every row is touched by its reconcile tick every 30s, so
- * the order reshuffled between two reads seconds apart — measured, with two sessions sharing a
- * timestamp to the second. A number said out loud has to still mean the same session by the time it
- * is resolved, and a spoken command is several seconds of speech plus a model turn.
+ * ORDERED BY `active_at`, the last TURN BOUNDARY — a prompt sent or a turn finished — because the
+ * session he is using is the one he is talking about. Two other orders fail in opposite ways:
+ * `last_seen` is touched by every reconcile tick, so the list reshuffled every 30s between two reads
+ * seconds apart (measured), and `started` never moves, which kept a session in active use below newer
+ * idle ones. `active_at` moves only when a session does something, so a number said out loud can still
+ * change before it is resolved — but only if a session starts or finishes a turn in those seconds.
  *
  * The number is a POSITION, not identity: it belongs to the list, not to the session, and closing one
  * renumbers the rest. Numbers that stick to a session drift upward for ever and you end up saying
@@ -257,7 +276,7 @@ export async function followUp(prompt: string) {
  * voice tools disagree about which session is which.
  */
 export function numberSessions(rows: DeskSession[]): (DeskSession & { n: number })[] {
-  // RUNNING FIRST, then parked, newest first within each. The number has to be the POSITION IN THE
+  // RUNNING FIRST, then parked, most recent first within each. The number has to be the POSITION IN THE
   // LIST HE IS LOOKING AT — that is where "the second session" comes from — and every surface shows
   // running above parked. Numbering the two together by age alone put the running sessions at 12 and
   // 13 while parked ones held 1 through 11, so the badges read 12, 13, 1, 2, 3 down the screen and
@@ -266,10 +285,11 @@ export function numberSessions(rows: DeskSession[]): (DeskSession & { n: number 
   // It also keeps the low numbers on the sessions that can actually be spoken to: focus and follow-up
   // only reach a running one.
   const rank = (r: DeskSession) => (r.status === 'resident' ? 0 : 1);
+  // Rows from before `active_at` existed fall back to their last reply, then to when they started.
+  const activity = (r: DeskSession) => new Date(r.active_at || r.reply_at || r.started).getTime();
   return rows
     .filter((r) => r.status === 'resident' || r.status === 'evicted')
-    .sort((a, b) => rank(a) - rank(b)
-                 || new Date(b.started).getTime() - new Date(a.started).getTime())
+    .sort((a, b) => rank(a) - rank(b) || activity(b) - activity(a))
     .map((r, i) => ({ ...r, n: i + 1 }));
 }
 
