@@ -110,7 +110,7 @@ there, or check the `validate_safe_tools()` line in the worker's startup log.
 ## A session is named by number, not by id
 
 `resolveSession` takes what Jared actually says — "3", "status-hub", or a full id. The numbering rule
-(`numberSessions`: active sessions by when their last turn finished, `active_at`, **1 is the most recently
+(`numberSessions`: active sessions by last turn boundary, `active_at`, **1 is the most recently
 active**) is duplicated in the hub's `/api/sessions`, and so is the focus rule (`focusedSession` and the
 hub's `pickFocus`). Each pair must agree, or the pane and the voice tools disagree about which session
 is which, or the wall shows one session focused while a follow-up lands in another. The number is a position in the current list, never identity — closing one renumbers the
