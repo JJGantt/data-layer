@@ -12,6 +12,7 @@ import * as workouts from './workouts.js';
 import * as recipes from './recipes.js';
 import * as nutrition from './nutrition.js';
 import * as reviews from './reviews.js';
+import * as shopping from './shopping.js';
 import { ValidationError } from './helpers.js';
 
 const PORT = Number(process.env.DATA_HTTP_PORT || 27186);
@@ -42,6 +43,32 @@ const server = http.createServer(async (req, res) => {
   const path = url.pathname;
 
   try {
+    // ── Walmart cart ──
+    //
+    // The order route is what the Gmail watcher calls when a Walmart order-confirmation mail
+    // arrives. Checkout is the one cart change no session can observe, because none is running when
+    // it happens. Recording the order and emptying the cart is a single call so the two cannot drift.
+    //
+    // Idempotent on the order number, which matters twice over: Pub/Sub redelivers by design, and an
+    // order containing alcohol is two separate checkouts and so two confirmation mails.
+    if (path === '/data/walmart/cart' && method === 'GET') {
+      return json(res, await shopping.getCart());
+    }
+    if (path === '/data/walmart/cart' && method === 'PUT') {
+      const body = await parseBody(req);
+      const message = await shopping.setCart(body.items || [], {
+        unit_count: body.unit_count, subtotal: body.subtotal, savings: body.savings,
+        source: body.source || 'session',
+      });
+      return json(res, { message, cart: await shopping.getCart() });
+    }
+    if (path === '/data/walmart/order' && method === 'POST') {
+      const body = await parseBody(req);
+      if (!body.order_number) return json(res, { error: 'order_number required' }, 400);
+      const result = await shopping.recordOrder(body);
+      return json(res, result);
+    }
+
     // ── Lists ──
     //
     // The `:list` path segment is a list ID, not a name (00094). Nothing here creates a list as a
