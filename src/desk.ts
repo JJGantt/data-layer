@@ -90,7 +90,7 @@ export interface DeskSession {
   working: boolean; reply_at: string | null;
   claude_session_id: string | null; started: string; last_seen: string;
   command_id: string | null;
-  // The last turn boundary — a prompt sent or a turn finished. Orders, numbers and focuses sessions.
+  // When its last turn FINISHED — the only thing that earns recency. Orders, numbers and focuses sessions.
   active_at: string | null;
 }
 
@@ -261,12 +261,12 @@ export async function followUp(prompt: string) {
  * **1 is the most recently active.** Only ACTIVE sessions (resident or evicted) are numbered, so the
  * list is always 1..N over what is actually there.
  *
- * ORDERED BY `active_at`, the last TURN BOUNDARY — a prompt sent or a turn finished — because the
- * session he is using is the one he is talking about. Two other orders fail in opposite ways:
- * `last_seen` is touched by every reconcile tick, so the list reshuffled every 30s between two reads
- * seconds apart (measured), and `started` never moves, which kept a session in active use below newer
- * idle ones. `active_at` moves only when a session does something, so a number said out loud can still
- * change before it is resolved — but only if a session starts or finishes a turn in those seconds.
+ * ORDERED BY `active_at`, when the session last FINISHED a turn — only finishing earns recency, not a
+ * prompt and not the work in between. Two other orders fail in opposite ways: `last_seen` is touched by
+ * every reconcile tick, so the list reshuffled every 30s between two reads seconds apart (measured),
+ * and `started` never moves, which kept a session in active use below newer idle ones. `active_at`
+ * moves only when a turn finishes, so a number said out loud can still change before it is resolved —
+ * but only if a session finishes a turn in those seconds.
  *
  * The number is a POSITION, not identity: it belongs to the list, not to the session, and closing one
  * renumbers the rest. Numbers that stick to a session drift upward for ever and you end up saying
