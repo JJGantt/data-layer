@@ -163,7 +163,7 @@ export async function setFocus(commandId: string, machine: Machine) {
  * The session a spoken follow-up lands in, and the one every surface shows as focused. In order:
  *
  *   1. a session Jared FOCUSED BY NAME (`focus_session`), while it is still running. His explicit
- *      word outranks everything until he focuses another, says "latest", or dispatches new work;
+ *      word outranks everything until he focuses another, releases it, or dispatches new work;
  *   2. a dispatch whose session has not opened yet (`pending`) — words said in that gap are meant for
  *      it, not for whatever was active a moment before;
  *   3. otherwise the MOST RECENTLY ACTIVE running session, on either machine.
@@ -195,20 +195,14 @@ export async function focusedSession(): Promise<{ session: DeskSession | null; p
 }
 
 /**
- * Pin a session by name, so what he says next goes there whatever else becomes active — until he
- * pins another, says "latest", or dispatches new work. Unpinned, focus follows activity.
+ * Pin a session, so what he says next goes there whatever else becomes active — until he pins another,
+ * releases it (unfocusSession), dispatches new work, or it closes. Unpinned, focus follows activity.
  *
- * `latest` is the way back: without it, one deliberate focus would hold until that session closed.
+ * "Focus the latest session" is a pin like any other: of whichever session is newest NOW, which then
+ * stays put while others become newer. Going back to automatic is a separate verb on purpose — when one
+ * tool did both, "latest" could be read either way.
  */
 export async function focusSession(ref: string) {
-  if (String(ref || '').trim().toLowerCase() === 'latest') {
-    await getClient().from('desk_focus').upsert(
-      { id: 'current', session_id: null, command_id: null, machine: null, updated: new Date().toISOString() },
-      { onConflict: 'id' });
-    const { session: s } = await focusedSession();
-    return { ok: true as const, latest: true, session: s?.id ?? null, repo: s?.repo ?? null,
-             label: (s as any)?.label ?? null, machine: null };
-  }
   const found = await resolveSession(ref);
   if (!found.ok) return { ok: false as const, error: found.error };
   const row = found.row;
@@ -219,7 +213,19 @@ export async function focusSession(ref: string) {
   await getClient().from('desk_focus').upsert(
     { id: 'current', session_id: row.id, command_id: null, machine, updated: new Date().toISOString() },
     { onConflict: 'id' });
-  return { ok: true as const, latest: false, session: row.id, repo: row.repo, label: (row as any).label ?? null, machine };
+  return { ok: true as const, session: row.id, repo: row.repo, label: (row as any).label ?? null, machine };
+}
+
+/**
+ * Release the pin: follow-ups go to whichever session is most recently active again. Returns that
+ * session, so the answer can say where they go now.
+ */
+export async function unfocusSession() {
+  await getClient().from('desk_focus').upsert(
+    { id: 'current', session_id: null, command_id: null, machine: null, updated: new Date().toISOString() },
+    { onConflict: 'id' });
+  const { session: s } = await focusedSession();
+  return { session: s?.id ?? null, repo: s?.repo ?? null, label: (s as any)?.label ?? null };
 }
 
 /**
