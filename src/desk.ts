@@ -120,7 +120,7 @@ export async function knownRepo(name: string): Promise<{ path: string; name: str
  * conversation that started it, and the Mac sleeps. Choose 'mac' when the work wants the Mac
  * specifically — iOS, where compiling locally is the whole advantage.
  */
-export async function startSession(repo: string | undefined, prompt: string, machine: Machine = 'pi', report = false, label?: string) {
+export async function startSession(repo: string | undefined, prompt: string, machine: Machine = 'pi', report = false, label?: string, relay = false) {
   // No repo named, or one that matches nothing, lands in the home directory. A request the router
   // could not pin to a project still gets sent somewhere it can act — refusing it would be worse,
   // and the session can find its own way from there.
@@ -130,7 +130,9 @@ export async function startSession(repo: string | undefined, prompt: string, mac
   const id = uuid();
   // `report` is opt-in and only ever set when Jared asked for a write-up. The launchers append
   // their report directive on this flag alone, so an ordinary dispatch stays a plain session.
-  const payload = { path: target.path, name: target.name, target: machine, ...(prompt ? { prompt } : {}), ...(report ? { report: true } : {}), ...(label ? { label: label.slice(0, 60) } : {}) };
+  // `relay` asks the machine to post the session's first finished reply back into the hub thread
+  // (voice-pipeline orchestrator/src/relay.js). Only a dispatch from the hub conversation sets it.
+  const payload = { path: target.path, name: target.name, target: machine, ...(prompt ? { prompt } : {}), ...(report ? { report: true } : {}), ...(label ? { label: label.slice(0, 60) } : {}), ...(relay ? { relay: true } : {}) };
   // The machine has to be there NOW. Writing the command anyway is the silent failure this guards:
   // nobody claims it, it expires unread, and the reply already said a session had started.
   if (!(await machineAwake(machine))) {

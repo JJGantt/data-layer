@@ -460,7 +460,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
     if (name === 'start_session') {
       const machine = String(a.machine || 'pi').toLowerCase() === 'mac' ? 'mac' : 'pi';
-      const r = await desk.startSession(a.repo ? String(a.repo) : undefined, String(a.prompt || ''), machine as desk.Machine, a.report === true, a.label ? String(a.label) : undefined);
+      // DATA_CALLER=hub is set by the voice worker alone, so only a dispatch from the hub conversation
+      // has its first reply relayed back into that thread; another agent's dispatch stays out of it.
+      const r = await desk.startSession(a.repo ? String(a.repo) : undefined, String(a.prompt || ''), machine as desk.Machine, a.report === true, a.label ? String(a.label) : undefined, process.env.DATA_CALLER === 'hub');
       if (!r.ok) return text(r.error);
       const where = r.repo === 'root' ? 'the home directory' : `**${r.repo}**`;
       return text(`Started a session in ${where} on the ${r.machine === 'mac' ? 'Mac' : 'Pi'}. It runs on its own; check back with get_sessions.`);
