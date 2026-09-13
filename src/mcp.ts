@@ -13,6 +13,7 @@ import * as lists from './lists.js';
 import * as desk from './desk.js';
 import * as reports from './reports.js';
 import * as shopping from './shopping.js';
+import * as surf from './surf.js';
 
 const PRODUCE_TYPE_DESC = "Set ONLY for fruits and vegetables; pick exactly one, the three are mutually exclusive. 'dark_green_vegetable' is the USDA dark green vegetable subgroup, which is broader than leafy: alongside the dark leafy greens it includes broccoli, broccolini, Brussels sprouts, asparagus, green beans and green/snap peas. 'other_vegetable' is every other vegetable, including legumes, beans and starchy vegetables. 'fruit' includes avocado. Omit the field entirely for anything that is not a fruit or vegetable.";
 
@@ -64,6 +65,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
   return {
   tools: [
     { name: 'get_health_profile', description: 'Returns height, recent weight log entries, and current nutrition targets (calories, protein, carbs, fat).', inputSchema: { type: 'object' as const, properties: {} } },
+    { name: 'get_surf', description: "The surf forecast at Jared's break (Mayport Poles) from Surfline — rating, wave size, wind and swell at three-hour steps, when the forecast was captured, and the water temperature. Use this for surf there rather than web search: Surfline blocks bots, so the web does not have it.", inputSchema: { type: 'object' as const, properties: { days: { type: 'number', description: 'How many days ahead, 1-10. Omit for 2.' } } } },
     { name: 'set_height', description: 'Set or update height in inches.', inputSchema: { type: 'object' as const, properties: { height_in: { type: 'number', description: 'Height in inches (e.g. 72 for 6\'0").' } }, required: ['height_in'] } },
     { name: 'log_weight', description: 'Log a body weight entry. Appends to the weight log. ONLY call this with a weight the user EXPLICITLY stated as a number in their message. NEVER infer, estimate, guess, or fabricate a bodyweight, and NEVER back-fill multiple days from one request. If no explicit number was given — e.g. "log my weight" with no value, or a workout command like "add 10 rows body weight" (that is a SET of the Rows exercise, not a weigh-in) — do NOT call this tool; ask the user for the number instead.', inputSchema: { type: 'object' as const, properties: { weight_lbs: { type: 'number', description: 'Body weight in pounds — must be a value the user explicitly spoke.' }, date: { type: 'string', description: 'Date in YYYY-MM-DD format. Defaults to today.' } }, required: ['weight_lbs'] } },
     { name: 'get_nutrition_targets', description: 'Get the current daily nutrition targets (calories, protein, carbs, fat) and recent target history.', inputSchema: { type: 'object' as const, properties: {} } },
@@ -140,6 +142,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   try {
+    if (name === 'get_surf') return text(await surf.surfReport(Number(a.days) || 2));
     if (name === 'get_health_profile') {
       const profile = await health.getProfile();
       const weights = await health.recentWeights();
@@ -465,7 +468,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const r = await desk.startSession(a.repo ? String(a.repo) : undefined, String(a.prompt || ''), machine as desk.Machine, a.report === true, a.label ? String(a.label) : undefined, process.env.DATA_CALLER === 'hub');
       if (!r.ok) return text(r.error);
       const where = r.repo === 'root' ? 'the home directory' : `**${r.repo}**`;
-      return text(`Started a session in ${where} on the ${r.machine === 'mac' ? 'Mac' : 'Pi'}. It runs on its own; check back with get_sessions.`);
+      const back = process.env.DATA_CALLER === 'hub'
+        ? 'Its first reply is posted into the hub conversation when it finishes.'
+        : 'It runs on its own; check back with get_sessions.';
+      return text(`Started a session in ${where} on the ${r.machine === 'mac' ? 'Mac' : 'Pi'}. ${back}`);
     }
     if (name === 'follow_up') {
       const r = await desk.followUp(String(a.prompt || ''));

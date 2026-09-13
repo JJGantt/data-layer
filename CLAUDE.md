@@ -20,6 +20,9 @@ It is a file rather than an env value because the worker's MCP session is warm (
 timestamp in the environment froze it at the first command's value and stamped 29 hours of writes with
 one moment before that was caught, on 2026-09-01.
 
+`DATA_LOC_FILE` is the same arrangement for where he was when he spoke (`helpers.whereJaredWas()`,
+one line or empty); `startSession` appends it to a hub dispatch's prompt.
+
 **Always use `helpers.now()` and `helpers.today()`.** A module with its own clock helper skips the
 override and stamps voice-logged data late, which is exactly how nutrition disagreed with every other
 table until it was fixed.

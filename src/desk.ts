@@ -1,5 +1,5 @@
 import { getClient } from './client.js';
-import { uuid } from './helpers.js';
+import { uuid, whereJaredWas } from './helpers.js';
 
 // Dispatching work to a machine, and seeing what is already running there.
 //
@@ -128,6 +128,10 @@ export async function startSession(repo: string | undefined, prompt: string, mac
   const hit = want && want.toLowerCase() !== 'root' ? await knownRepo(want) : null;
   const target = hit ?? { path: '~', name: 'root' };
   const id = uuid();
+  // A hub dispatch carries where he was, so "get me a ride home" knows where the ride starts. His
+  // words stay verbatim; the position is a separate bracketed line after them.
+  const where = relay ? whereJaredWas() : '';
+  if (where && prompt) prompt = `${prompt}\n\n[Where Jared was when he asked: ${where}]`;
   // `report` is opt-in and only ever set when Jared asked for a write-up. The launchers append
   // their report directive on this flag alone, so an ordinary dispatch stays a plain session.
   // `relay` asks the machine to post the session's first finished reply back into the hub thread
