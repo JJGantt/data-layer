@@ -30,7 +30,9 @@ both call, which is why the MCP and the API can never disagree about what a writ
 `shopping_items` is the saved retailer catalogue: `retailer, item_id, name, default_qty,
 last_verified`. Three MCP tools cover it — `get_shopping_items` (read it whole; it is small and has
 no search), `build_walmart_cart_url` (ids + quantities -> one URL that fills the cart in a single
-navigation), and `save_shopping_item`. Quantities ADD to the cart, so pass deltas.
+navigation), and `save_shopping_item`. Quantities ADD to the cart, so pass deltas. The catalogue
+holds only what Jared has actually bought: an item found by search and put in a cart is not saved,
+so `build_walmart_cart_url` refuses it and the affiliate URL is built by hand.
 
 Amazon has no cart URL — its documented `/gp/aws/cart/add.html` was tested and adds nothing — so an
 Amazon row saves the search, not the session.

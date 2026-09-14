@@ -38,7 +38,8 @@ export async function walmartCartUrl(items: { item_id: string; qty?: number }[])
   const missing = items.filter(i => !saved.has(String(i.item_id)));
   if (missing.length) {
     throw new Error(`not in the catalogue: ${missing.map(m => m.item_id).join(', ')} — ` +
-      `call get_shopping_items, or save_shopping_item first`);
+      `call get_shopping_items. An item not bought before is not saved on purpose (the catalogue is ` +
+      `what Jared has bought, not what went in a cart) — build https://affil.walmart.com/cart/addToCart?items=<id>%7C<qty> by hand instead`);
   }
   const parts = items.map(i => {
     const s = saved.get(String(i.item_id))!;
