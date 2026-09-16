@@ -213,11 +213,20 @@ export async function dueItems(withinDays?: number): Promise<ListItem[]> {
   return all.filter(i => (i.scheduled_at ?? i.due ?? '').slice(0, 10) < limit);
 }
 
-/** Its scheduled moment has passed and it has not been cleared. A date-only item fires at 9am. */
+/**
+ * Overdue: it is no longer on time and it has not been cleared. A timed item is late at its own moment.
+ * A date-only item is on time for its whole day and late at the next day's 4am origin — the hub's
+ * scoring deadline (`taskDeadline` in status-hub `lib/score.js`), which is what makes an item cost
+ * points, so it is also what makes one overdue. It still FIRES at 9am; when it notifies and when it is
+ * late are different questions.
+ */
 export function isExpired(i: ListItem, nowLocal: string): boolean {
-  if (!i.scheduled_at) return false;
-  const m = /T\d/.test(i.scheduled_at) ? i.scheduled_at : `${i.scheduled_at.slice(0, 10)}T09:00:00`;
-  return m <= nowLocal;
+  const at = i.scheduled_at ?? i.due;
+  if (!at) return false;
+  if (/T\d/.test(at)) return at <= nowLocal;
+  const [y, mo, d] = at.slice(0, 10).split('-').map(Number);
+  const late = new Date(Date.UTC(y, mo - 1, d + 1, 4)).toISOString().slice(0, 19);
+  return late <= nowLocal;
 }
 
 export interface AddOpts {

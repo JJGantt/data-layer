@@ -1,4 +1,5 @@
-import { listItems, allLists, getList, dueItems, itemLabel, type ListItem } from './lists.js';
+import { listItems, allLists, getList, dueItems, itemLabel, isExpired, type ListItem } from './lists.js';
+import { now } from './helpers.js';
 import { getClient } from './client.js';
 
 export async function buildListReview(listId?: string): Promise<string> {
@@ -45,11 +46,10 @@ export async function buildDueReview(): Promise<string> {
   const active = await dueItems();
   if (!active.length) return 'Nothing has a due date.\n\n---\nINSTRUCTIONS: Let the user know the slate is clean. Ask if they have anything coming up they want to be reminded about.';
 
-  const nowDate = new Date();
-  const overdue: ListItem[] = []; const upcoming: ListItem[] = [];
-  for (const i of active) {
-    try { if (new Date(i.due!) < nowDate) overdue.push(i); else upcoming.push(i); } catch { upcoming.push(i); }
-  }
+  // Local wall clock against local-naive dues, by the same rule every other surface calls overdue.
+  const nowLocal = now();
+  const overdue = active.filter((i) => isExpired(i, nowLocal));
+  const upcoming = active.filter((i) => !isExpired(i, nowLocal));
   const row = (i: ListItem) => `- ${itemLabel(i)} [${i.list_name}] (due: ${i.due})  [id: ${i.id.slice(0, 8)}]`;
 
   const parts = [`## Due Review (${active.length} dated)\n`];
