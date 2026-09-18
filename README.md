@@ -65,6 +65,25 @@ nothing on any surface says a guess was made. The hub's `POST /api/todos/alarm` 
 from the other side, and `list_items.alarm_armed_at` is the phone confirming it actually holds the
 alarm — the hub cannot see that for itself.
 
+## A pin is released by hand, and by nothing else
+
+`desk_focus` holds one row. `session_id` on it is a PIN Jared set (`focus_session`); `command_id` is
+automatic focus following a dispatch. Three things release a pin — pinning another session, releasing
+it (`unfocus_session`), or closing that session by hand (`end_session`). Nothing else does:
+
+- **Dispatching work does not.** Sessions are started for every small reason, so a pin any of them
+  could take is not a pin. `setFocus` leaves an existing `session_id` alone.
+- **Eviction does not**, and a resume does not lose it: the pin holds the CONVERSATION. `focusedSession`
+  matches the pinned row, or any resident row with the same `claude_session_id`, or the pinned row
+  itself while it is parked. So a pinned session that is evicted and later resumed is still pinned.
+
+The one thing that does clear it automatically is a pin pointing at a session row that no longer
+exists at all — nothing can release that by hand, so it would block automatic focus for ever.
+
+The hub computes the same thing a second time (`pickFocus` in status-hub's `server.js`) because it
+serves the surfaces. Both copies have to say the same thing or a wall disagrees with the phone about
+which session is held.
+
 ## A list is addressed by its ID
 
 `lists.id` is the key ('l_grocery'), and `list_items.list_id` is the reference. The name is a label:

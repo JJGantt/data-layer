@@ -159,10 +159,38 @@ export async function startSession(repo: string | undefined, prompt: string, mac
  * it a moment later, records command_id on the row and publishes it as the most recently active
  * session, which is what focus follows from then on (see focusedSession).
  */
+/**
+ * Point automatic focus at a dispatch — WITHOUT disturbing a pin.
+ *
+ * A pin is released by exactly three things: pinning another session, releasing it (unfocusSession),
+ * or closing the pinned session by hand. Starting work is not one of them. Sessions are dispatched for
+ * every small reason — a Walmart cart, a lookup — and a pin that any of those can silently take is not
+ * a pin; the surfaces then disagree about which session is held, which is how this was noticed.
+ *
+ * The one exception is a pin pointing at a session that no longer exists at all. Nothing can release
+ * that by hand, so it would block automatic focus for ever.
+ */
 export async function setFocus(commandId: string, machine: Machine) {
+  const { data: f } = await getClient().from('desk_focus')
+    .select('session_id').eq('id', 'current').maybeSingle();
+  if (f?.session_id) {
+    const { data: held } = await getClient().from('desk_sessions')
+      .select('id').eq('id', f.session_id).maybeSingle();
+    if (held) return;                       // his pin stands
+  }
   await getClient().from('desk_focus')
     .upsert({ id: 'current', command_id: commandId, session_id: null, machine, updated: new Date().toISOString() },
             { onConflict: 'id' });
+}
+
+/** Release the pin if it is on this session — what closing one by hand means. */
+export async function releaseFocusFor(sessionId: string) {
+  const { data: f } = await getClient().from('desk_focus')
+    .select('session_id').eq('id', 'current').maybeSingle();
+  if (f?.session_id !== sessionId) return;
+  await getClient().from('desk_focus').upsert(
+    { id: 'current', session_id: null, command_id: null, machine: null, updated: new Date().toISOString() },
+    { onConflict: 'id' });
 }
 
 /**
@@ -189,8 +217,15 @@ export async function focusedSession(): Promise<{ session: DeskSession | null; p
   ]);
   const running = rows.filter((r) => r.status === 'resident');
   if (f?.session_id) {
-    const hit = running.find((r) => r.id === f.session_id);
+    // A pin holds the CONVERSATION, not the row. Eviction is not him closing a session, and a resume
+    // makes a new row for the same transcript — so the pin re-attaches to whichever row is carrying it
+    // now, and survives being parked in between.
+    const pinnedRow = rows.find((r) => r.id === f.session_id);
+    const conv = pinnedRow?.claude_session_id;
+    const hit = running.find((r) => r.id === f.session_id)
+      || (conv ? running.find((r) => r.claude_session_id === conv) : null);
     if (hit) return { session: hit, pending: false };
+    if (pinnedRow) return { session: pinnedRow, pending: false };   // parked, and still his
   }
   if (f?.command_id && !rows.some((r) => r.command_id === f.command_id)) {
     // Only while it can still become a session: a command that failed or expired never will.
@@ -202,7 +237,9 @@ export async function focusedSession(): Promise<{ session: DeskSession | null; p
 
 /**
  * Pin a session, so what he says next goes there whatever else becomes active — until he pins another,
- * releases it (unfocusSession), dispatches new work, or it closes. Unpinned, focus follows activity.
+ * releases it (unfocusSession), or closes it by hand. Dispatching work does NOT release it, and neither
+ * does eviction: a pin holds the conversation, and re-attaches to it when it is resumed. Unpinned,
+ * focus follows activity.
  *
  * "Focus the latest session" is a pin like any other: of whichever session is newest NOW, which then
  * stays put while others become newer. Going back to automatic is a separate verb on purpose — when one
@@ -433,6 +470,9 @@ export async function sessionCommand(kind: 'resume_session' | 'end_session', ses
   const id = uuid();
   const { error } = await getClient().from('desk_commands').insert({ id, kind, payload });
   if (error) return { ok: false as const, error: error.message };
+  // Closing a session BY HAND is one of the three things that release a pin — the others being pinning
+  // another and unfocusing. Anything automatic (eviction, a dispatch) leaves it alone.
+  if (kind === 'end_session') await releaseFocusFor(session);
   // Resuming makes that session the one you are talking to again, so follow-ups should go there.
   if (kind === 'resume_session') await setFocus(id, machine);
   return { ok: true as const, id };
