@@ -305,20 +305,60 @@ export async function getExerciseHistory(name: string, limit = 60): Promise<{ da
 
 export interface MuscleVolume { muscle: string; label: string; group: string; sets: number; }
 
-/** Trailing-window fractional set volume per muscle, summed across all logged sets. */
+// A muscle earns at most this many adjusted sets in one BOUT, and a bout is a run of sets with no gap
+// longer than BOUT_GAP_MS. The junk-volume guard, mirroring the hub's server/lib/volume.js.
+const PER_BOUT_CAP = 11;
+const BOUT_GAP_MS = 3 * 60 * 60 * 1000;
+
+/**
+ * Trailing-window fractional set volume per muscle.
+ *
+ * THE WINDOW AND THE CAP BOTH HAVE TO MATCH THE HUB, or this reports a number the muscle map
+ * contradicts — which is exactly what happened on 2026-09-18: this said 14.5 glute sets while the map
+ * drew them yellow, because 7.5 of them were on a day the hub does not count. The hub's window is
+ * `days` DAY-BUCKETS on the 4am boundary (lib/dates.js lastNTrainingDays), so with `days = 7` it opens
+ * at the start of the 4am-day six days back. Subtracting `days * 86400000` from now opens it a whole
+ * calendar day earlier than that, and a leg session on that day is pure invention.
+ *
+ * Duplicated rather than shared because the two repos ship separately — the same bargain the targets
+ * below are under, and the same hazard: a change to either rule there has to be made here too.
+ */
 export async function getWeeklyVolume(days = 7): Promise<{ days: number; volumes: MuscleVolume[] }> {
-  const since = toEastern(new Date(Date.now() - days * 86400000)).slice(0, 10);
-  const { data: setRows } = await getClient().from('sets').select('exercise, muscles_override').gte('occurred_at', since);
+  // The 4am day: before 4am is still yesterday, so shift the clock back four hours before taking the
+  // date. Then open the window (days - 1) days before it, which makes `days` buckets counting today.
+  const today = toEastern(new Date(Date.now() - 4 * 3600000)).slice(0, 10);
+  const since = new Date(Date.parse(today + 'T12:00:00Z') - (days - 1) * 86400000)
+    .toISOString().slice(0, 10);
+  const { data: setRows } = await getClient().from('sets')
+    .select('occurred_at, exercise, muscles_override').gte('occurred_at', since);
   const { muscles } = await catalogMaps();
 
+  // Sets in time order, each expanded to the muscles it works.
+  const expanded = (setRows ?? []).map((s: any) => ({
+    ts: new Date(s.occurred_at).getTime(),
+    pairs: s.muscles_override
+      ? Object.entries(s.muscles_override as Record<string, number>)
+          .map(([muscle, contribution]) => ({ muscle, contribution: Number(contribution) }))
+      : (muscles.get(String(s.exercise).toLowerCase()) ?? []),
+  })).sort((a, b) => a.ts - b.ts);
+
+  // Grouped into bouts, then each muscle's contribution within a bout clipped. A second session hours
+  // later is a FRESH bout with its own cap — that is added frequency, not junk volume.
   const totals = new Map<string, number>();
-  for (const s of (setRows ?? [])) {
-    const override = (s as any).muscles_override as Record<string, number> | null;
-    const map = override
-      ? Object.entries(override).map(([muscle, contribution]) => ({ muscle, contribution }))
-      : (muscles.get(String(s.exercise).toLowerCase()) ?? []);
-    for (const mm of map) totals.set(mm.muscle, (totals.get(mm.muscle) ?? 0) + mm.contribution);
+  let bout: { lastTs: number; raw: Record<string, number> } | null = null;
+  const flush = () => {
+    if (!bout) return;
+    for (const [muscle, raw] of Object.entries(bout.raw)) {
+      totals.set(muscle, (totals.get(muscle) ?? 0) + Math.min(raw, PER_BOUT_CAP));
+    }
+  };
+  for (const e of expanded) {
+    if (!bout || e.ts - bout.lastTs > BOUT_GAP_MS) { flush(); bout = { lastTs: e.ts, raw: {} }; }
+    bout.lastTs = e.ts;
+    for (const mm of e.pairs) bout.raw[mm.muscle] = (bout.raw[mm.muscle] ?? 0) + Number(mm.contribution);
   }
+  flush();
+
   const volumes = MUSCLE_GROUPS.flatMap(g => g.muscles.map(m => ({
     muscle: m.slug, label: m.label, group: g.group,
     sets: Math.round((totals.get(m.slug) ?? 0) * 10) / 10,
