@@ -56,8 +56,13 @@ named for one — `add_to_list` with a `due` is how you create one.
 dated item with `alarm` RINGS, through silent mode and through a Focus, because the phone registers it
 with iOS 26's AlarmKit (the hub serves those items at `/api/alarms`; status-hub's `docs/TODO.md` has
 the mechanism). It is false by default and nothing infers it — not priority, not wording — because a
-soup timer should wake the room and an errand at 2am should not. No MCP tool sets it yet; the hub's
-`POST /api/todos/alarm` is the only way in.
+soup timer should wake the room and an errand at 2am should not.
+
+`add_to_list` takes `alarm`, `set_alarm` turns it on or off afterwards, and every list line prints
+`[alarm]` so a reader can tell which of his dated items will wake him. Both tool descriptions refuse
+to infer it, the same way `priority` does and for a sharper reason: a wrong guess here wakes a room,
+and nothing on any surface says a guess was made. The hub's `POST /api/todos/alarm` is the same
+switch from the other side.
 
 ## A list is addressed by its ID
 

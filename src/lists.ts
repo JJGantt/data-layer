@@ -44,6 +44,14 @@ export interface ListItem {
   // changes what his score does, and nothing on any surface says a guess was made. He asked for the
   // words to be the trigger — "important", "exempt" — and for everything else to stay 0.
   priority: number;
+  // Should it RING rather than notify? An alarm-grade item is registered with iOS 26's AlarmKit by
+  // the phone (the hub serves them at /api/alarms) and breaks through silent mode and through a
+  // Focus, exactly like the Clock app's alarm.
+  //
+  // Like `priority`, ONLY EVER SET FROM WHAT HE ACTUALLY SAID, and for a sharper reason: this one
+  // wakes a room. A soup timer should and an errand at 2am should not, and no property of an item
+  // tells you which it is — "alarm", "wake me", "timer" do.
+  alarm: boolean;
   series_id: string | null;  // set on every occurrence one scheduling request produced
   // When it was DONE. Null means outstanding. A timestamp rather than a flag because the score needs
   // to know how late it was, and a boolean beside the time is a field that can contradict it.
@@ -234,6 +242,8 @@ export interface AddOpts {
   due?: string;
   /** Omit to inherit the list's default. A number here is an explicit override, 0 included. */
   priority?: number;
+  /** True makes it RING through silent mode and Focus rather than notify. Requires `due` to mean anything. */
+  alarm?: boolean;
   /** '<n> <unit>' — makes this a series. Requires `due`, which is the first occurrence. */
   repeat_every?: string;
   /** Last date a series occurrence may fall on. Defaults to SERIES_DEFAULT_HORIZON_DAYS out. */
@@ -267,9 +277,12 @@ export async function addItem(listId: string, text: string, opts: AddOpts = {}):
 
   // `list_name` is left to the trigger: it is derived from `list_id`, and sending both is how the two
   // get a chance to disagree.
+  // An alarm with no moment to ring at is not an alarm, so the flag only survives alongside a due —
+  // the same rule `repeat_every` follows two lines up, and for the same reason.
+  const alarm = !!opts.alarm && !!opts.due;
   const rows = occurrences.map(due => ({
     id: uuid(), list_id: list.id, text, title,
-    due, scheduled_at: due, priority, series_id: seriesId,
+    due, scheduled_at: due, priority, alarm, series_id: seriesId,
     deleted: false, created: n, updated: n,
   }));
   const { data } = await sb.from('list_items').insert(rows).select();
@@ -458,6 +471,25 @@ export async function setPriority(
 }
 
 /**
+ * Turn an existing item into an alarm, or back into an ordinary dated item.
+ *
+ * Separate from setPriority even though the shape is identical: these are different questions and a
+ * combined verb would invite answering one while meaning the other. Important is about SCORE; alarm
+ * is about whether it wakes you.
+ */
+export async function setAlarm(
+  listId: string | null,
+  idPrefix: string,
+  alarm: boolean,
+): Promise<ListItem | null> {
+  const id = await resolveListItemId(listId, idPrefix);
+  if (!id) return null;
+  await getClient().from('list_items').update({ alarm, updated: now() }).eq('id', id);
+  const { data } = await getClient().from('list_items').select('*').eq('id', id).single();
+  return data as ListItem;
+}
+
+/**
  * Clear every remaining occurrence of a series in one go.
  *
  * This is the operation materialised recurrence owes you: without it, stopping a daily item means
@@ -538,9 +570,12 @@ function line(i: ListItem, withList = false): string {
   const where = withList ? ` [${i.list_name}]` : '';
   const due = i.due ? ` (due: ${i.due})` : '';
   const flag = i.priority > 0 ? ' [important]' : i.priority < 0 ? ' [exempt]' : '';
+  // Stated, because it is the one property that changes what an item DOES rather than what it is
+  // worth — a reader who cannot see it cannot tell which of his dated items will wake him.
+  const rings = i.alarm ? ' [alarm]' : '';
   const done = i.completed_at ? ` [done ${i.completed_at.slice(0, 16).replace('T', ' ')}]` : '';
   const series = i.series_id ? ` [series: ${i.series_id.slice(0, 8)}]` : '';
-  const head = `- ${itemLabel(i)}${where}${due}${flag}${done}${series}  [id: ${i.id.slice(0, 8)}]`;
+  const head = `- ${itemLabel(i)}${where}${due}${flag}${rings}${done}${series}  [id: ${i.id.slice(0, 8)}]`;
   // An item whose `text` is longer than its label is carrying a BODY, and the label alone does not
   // contain it — a note (migration 00092) is exactly that, and reading one back has to return what
   // was written. Indented so the item stays one visual row when the body is empty, which is most of
