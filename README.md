@@ -52,6 +52,13 @@ A reminder is a list item with a `due` date. Any item on any list, dated, fires 
 identically; nothing distinguishes a "reminder" from a dated grocery item, and there is no tool
 named for one — `add_to_list` with a `due` is how you create one.
 
+**`list_items.alarm` is the one exception to "dated items are all alike."** A dated item notifies; a
+dated item with `alarm` RINGS, through silent mode and through a Focus, because the phone registers it
+with iOS 26's AlarmKit (the hub serves those items at `/api/alarms`; status-hub's `docs/TODO.md` has
+the mechanism). It is false by default and nothing infers it — not priority, not wording — because a
+soup timer should wake the room and an errand at 2am should not. No MCP tool sets it yet; the hub's
+`POST /api/todos/alarm` is the only way in.
+
 ## A list is addressed by its ID
 
 `lists.id` is the key ('l_grocery'), and `list_items.list_id` is the reference. The name is a label:
