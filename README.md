@@ -59,10 +59,11 @@ the mechanism). It is false by default and nothing infers it — not priority, n
 soup timer should wake the room and an errand at 2am should not.
 
 `add_to_list` takes `alarm`, `set_alarm` turns it on or off afterwards, and every list line prints
-`[alarm]` so a reader can tell which of his dated items will wake him. Both tool descriptions refuse
-to infer it, the same way `priority` does and for a sharper reason: a wrong guess here wakes a room,
-and nothing on any surface says a guess was made. The hub's `POST /api/todos/alarm` is the same
-switch from the other side.
+`[alarm]` so a reader can tell which dated items will wake him. Both tool descriptions refuse to infer
+it, the same way `priority` does and for a sharper reason: a wrong guess here wakes a room, and
+nothing on any surface says a guess was made. The hub's `POST /api/todos/alarm` is the same switch
+from the other side, and `list_items.alarm_armed_at` is the phone confirming it actually holds the
+alarm — the hub cannot see that for itself.
 
 ## A list is addressed by its ID
 

@@ -85,6 +85,22 @@ rather than breaking anything visibly.
 `Prefer: resolution=merge-duplicates` overwrites every column in the payload — and a column left out
 is set to null, not left alone. Send the columns you want preserved, even unchanged ones.
 
+## Weekly volume is computed twice, and both copies must agree
+
+`get_weekly_volume` here and `computeVolume` in status-hub's `server/lib/volume.js` answer the same
+question for different surfaces — the spoken report and the muscle map. Three rules have to match, or
+one calls a muscle short of a goal the other says it has met:
+
+- **the window** — `days` DAY-BUCKETS on the 4am boundary, so `days = 7` opens at the start of the
+  4am-day six days back. Subtracting `days * 86400000` from now opens a whole calendar day earlier,
+  which is a day of sets the map does not count.
+- **the per-bout clip** — a muscle earns at most 11 adjusted sets in one bout, where a bout is a run
+  of sets with no gap over 3h. A second session hours later is a fresh bout with its own cap.
+- **the targets** — `TARGET_DEFAULT` and the per-muscle overrides in `TARGETS`.
+
+Duplicated rather than shared because the two repos ship separately. A change to any of the three
+there has to be made here in the same breath.
+
 ## The voice worker holds this MCP warm — a rebuild alone does nothing
 
 The worker's fast path (`SdkRunner`, primary since 2026-08-30) is one long-lived process holding the
