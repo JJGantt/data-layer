@@ -540,9 +540,23 @@ export function formatSessions(rows: DeskSession[], q: any[]): string {
   // Numbered, because the number is how Jared refers to one out loud, and it has to be the same
   // number the pane shows. The machine is named for the same reason: "move it to the Mac" needs him
   // to know where it is now.
+  //
+  // THE ID IS PRINTED BESIDE IT, because the number is a position in THIS listing and positions move.
+  // Resuming or ending several sessions renumbers the list after each one — every resume promotes a
+  // session from Parked to Running, which shifts everything below it — so a caller working from one
+  // listing addresses a different session with each call. That happened: a batch of five resumes by
+  // number reopened two copies of an unrelated session and missed three of the intended ones. An id
+  // cannot go stale that way, and `resolveSession` has always accepted one; it simply was not shown
+  // anywhere, so nothing could use it.
   const numbered = numberSessions(rows);
+  // AN UNNAMED SESSION IS NOT CALLED "root". `label` is null until something names it — a session
+  // Jared opened in a terminal himself is `adopted`, so no dispatch label was ever written, and
+  // Claude Code's own generated title does not exist until the first exchange finishes. Falling back
+  // to `repo` printed a dozen rows reading `root (root on the Mac)`, which looks like a name and is
+  // the working directory. Nothing distinguished them from a session actually called that.
+  const shown = (r: DeskSession) => (r as any).label || '(unnamed)';
   const line = (r: DeskSession & { n: number }) =>
-    `- **${r.n}.** ${(r as any).label || r.repo} (${r.repo} on the ${r.worker === 'desk' ? 'Mac' : 'Pi'})`
+    `- **${r.n}.** ${shown(r)} (${r.repo} on the ${r.worker === 'desk' ? 'Mac' : 'Pi'}) \`${r.id}\``
     + ` — ${(r.last_reply || r.prompt || 'no output yet').replace(/\s+/g, ' ').slice(0, 100)}`;
   const res = numbered.filter((r) => r.status === 'resident');
   const ev = numbered.filter((r) => r.status === 'evicted');
