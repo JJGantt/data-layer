@@ -44,9 +44,8 @@ export interface ListItem {
   // changes what his score does, and nothing on any surface says a guess was made. He asked for the
   // words to be the trigger — "important", "exempt" — and for everything else to stay 0.
   priority: number;
-  // Should it RING rather than notify? An alarm-grade item is registered with iOS 26's AlarmKit by
-  // the phone (the hub serves them at /api/alarms) and breaks through silent mode and through a
-  // Focus, exactly like the Clock app's alarm.
+  // Should it RING rather than notify? An alarm-grade item plays on a loop on the TV and on any open
+  // hub page from its moment until someone stops it (status-hub docs/ALARMS.md).
   //
   // Like `priority`, ONLY EVER SET FROM WHAT HE ACTUALLY SAID, and for a sharper reason: this one
   // wakes a room. A soup timer should and an errand at 2am should not, and no property of an item
@@ -242,7 +241,7 @@ export interface AddOpts {
   due?: string;
   /** Omit to inherit the list's default. A number here is an explicit override, 0 included. */
   priority?: number;
-  /** True makes it RING through silent mode and Focus rather than notify. Requires `due` to mean anything. */
+  /** True makes it RING on the TV and any open hub page rather than notify. Requires `due` to mean anything. */
   alarm?: boolean;
   /** '<n> <unit>' — makes this a series. Requires `due`, which is the first occurrence. */
   repeat_every?: string;
