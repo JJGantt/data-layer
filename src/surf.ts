@@ -53,11 +53,15 @@ export async function surfReport(days = 2): Promise<string> {
 // realtime, decides, and owns the alarm item that results (status-hub server/lib/surfalarm.js). The
 // matching is written once, there, so there is no second copy here to disagree with it.
 
-export type SurfRule = { hours: number[]; wake: string };
+export type SurfRule = { hours: number[]; not_fair?: number[]; wake: string };
 const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
 
 function ruleText(r: SurfRule): string {
-  return r.hours.length ? `fair at ${r.hours.join(', ')} -> ${r.wake}` : `otherwise -> ${r.wake}`;
+  const parts = [
+    ...(r.hours.length ? [`fair at ${r.hours.join(', ')}`] : []),
+    ...(r.not_fair?.length ? [`not fair at ${r.not_fair.join(', ')}`] : []),
+  ];
+  return `${parts.length ? parts.join(' and ') : 'otherwise'} -> ${r.wake}`;
 }
 
 function decisionText(a: any): string {
@@ -76,19 +80,26 @@ function checkDay(day: string): string {
   return m[0];
 }
 
+function checkHours(v: unknown, what: string, i: number): number[] {
+  const hours = v == null ? [] : Array.isArray(v) ? v.map(Number) : null;
+  if (!hours || hours.some((h: number) => !Number.isInteger(h) || h < 0 || h > 23)) {
+    throw new Error(`rule ${i + 1}: ${what} must be whole hours 0-23`);
+  }
+  return [...new Set<number>(hours)].sort((a, b) => a - b);
+}
+
 function checkRules(rules: unknown): SurfRule[] {
   if (!Array.isArray(rules) || !rules.length) throw new Error('rules must be a non-empty list of {hours, wake}');
   const out = rules.map((r: any, i: number) => {
-    const hours = Array.isArray(r?.hours) ? r.hours.map(Number) : null;
-    if (!hours || hours.some((h: number) => !Number.isInteger(h) || h < 0 || h > 23)) {
-      throw new Error(`rule ${i + 1}: hours must be whole hours 0-23`);
-    }
+    const hours = checkHours(r?.hours, 'hours', i);
+    const notFair = checkHours(r?.not_fair, 'not_fair', i);
+    if (notFair.some(h => hours.includes(h))) throw new Error(`rule ${i + 1}: an hour cannot be both fair and not fair`);
     const wake = String(r?.wake ?? '').trim();
     if (!HHMM.test(wake)) throw new Error(`rule ${i + 1}: wake must be HH:MM, got '${r?.wake}'`);
-    return { hours: [...new Set<number>(hours)].sort((a, b) => a - b), wake };
+    return { hours, ...(notFair.length ? { not_fair: notFair } : {}), wake };
   });
   // Every rule after an unconditional one is unreachable, which is a mistake rather than a wish.
-  const open = out.findIndex(r => !r.hours.length);
+  const open = out.findIndex(r => !r.hours.length && !r.not_fair?.length);
   if (open >= 0 && open < out.length - 1) throw new Error('a rule with no hours matches always, so it must be the last one');
   return out;
 }
