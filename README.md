@@ -7,7 +7,7 @@ Two entry points over the same modules:
 
 | | what | who runs it |
 |---|---|---|
-| `dist/mcp.js` | 53 MCP tools | every Claude session, Mac and Pi, via `~/.claude.json` |
+| `dist/mcp.js` | the MCP tools | every Claude session, Mac and Pi, via `~/.claude.json` |
 | `dist/http.js` | JSON API on `:27186` | `data-http.service` on the Pi; the Mac calls it |
 
 Both run from `dist/`; `pull-repos` rebuilds after pulling, so a change made on one machine reaches
@@ -41,6 +41,7 @@ Amazon row saves the search, not the session.
 An earlier version matched on names and had to reject "milk" as ambiguous against a milkshake
 cereal — a failure mode that only existed because of the matcher.
 | `reviews.ts` | as named |
+| `surf.ts` | the forecast read (`get_surf`) and a surf alarm's conditions (`set_surf_alarm`, table `surf_alarms`). It only stores them: the hub decides and owns the alarm — status-hub `docs/ALARMS.md` |
 | `desk.ts` | dispatching Claude sessions to a machine, and the follow-up pointer |
 | `reports.ts` | the HTML write-ups a dispatched session publishes |
 | `helpers.ts` | ids, validation, and the clock — read it before using `now()` |
