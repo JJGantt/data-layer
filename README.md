@@ -160,6 +160,10 @@ separate from `log_nutrition` so that the voice router can allow it on the fast 
 `voice-pipeline/docs/ROUTING.md`. `save_recipe` also accepts `from_entry`, which builds the recipe
 from a meal already in the log.
 
+A recipe is used only when the user explicitly calls it one ("my oatmeal recipe"). A meal described
+by a past log ("same as yesterday") is copied from that entry, never from a recipe that shares its name:
+the recipe can differ from what was actually eaten, and each "same as yesterday" then copies the error forward.
+
 ## Migrations
 
 Numbered SQL in `supabase/migrations/`, applied with `./migrate.sh` from whichever machine wrote them
