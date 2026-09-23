@@ -137,6 +137,18 @@ const server = http.createServer(async (req, res) => {
       const entry = await health.logWeight(body.weight_lbs, body.date);
       return json(res, { entry });
     }
+    const weightMatch = path.match(/^\/data\/health\/weight\/(\d+)$/);
+    if (weightMatch && method === 'PATCH') {
+      const body = await parseBody(req);
+      const entry = await health.updateWeight(Number(weightMatch[1]), body);
+      if (!entry) return json(res, { error: 'not found' }, 404);
+      return json(res, { entry });
+    }
+    if (weightMatch && method === 'DELETE') {
+      const entry = await health.removeWeight(Number(weightMatch[1]));
+      if (!entry) return json(res, { error: 'not found' }, 404);
+      return json(res, { deleted: entry });
+    }
     if (path === '/data/health/targets' && method === 'POST') {
       const body = await parseBody(req);
       const entry = await health.setNutritionTargets({

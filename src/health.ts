@@ -23,6 +23,41 @@ export async function logWeight(weightLbs: number, date?: string): Promise<Weigh
   return data as WeightEntry;
 }
 
+/**
+ * Delete one weigh-in by its id. Returns the row that went, so the caller can say what it was.
+ *
+ * The id is the only handle, and `recentWeights` is where it comes from: two weigh-ins on one date
+ * is the ordinary case this exists for — a second reading after a mistaken first — so a date does
+ * not name a row.
+ */
+export async function removeWeight(id: number): Promise<WeightEntry | null> {
+  const sb = getClient();
+  const { data: row } = await sb.from('weight_log').select('*').eq('id', id).maybeSingle();
+  if (!row) return null;
+  await sb.from('weight_log').delete().eq('id', id);
+  return row as WeightEntry;
+}
+
+/**
+ * Correct a weigh-in in place. Both fields are optional and only what is passed is written, so
+ * fixing the number leaves the date alone and moving it to another day leaves the number alone.
+ *
+ * Editing rather than delete-and-relog keeps `logged_at`, the moment the reading was actually
+ * taken, which is what tells a morning weigh-in from an evening one.
+ */
+export async function updateWeight(id: number, patch: { weight_lbs?: number; date?: string }): Promise<WeightEntry | null> {
+  const sb = getClient();
+  const upd: Record<string, unknown> = {};
+  if (patch.weight_lbs !== undefined) {
+    if (!Number.isFinite(patch.weight_lbs) || patch.weight_lbs <= 0) throw new Error('weight_lbs must be a positive number');
+    upd.weight_lbs = patch.weight_lbs;
+  }
+  if (patch.date !== undefined) upd.date = ensureEasternDate(patch.date);
+  if (!Object.keys(upd).length) throw new Error('nothing to change — pass weight_lbs, date, or both');
+  const { data } = await sb.from('weight_log').update(upd).eq('id', id).select().maybeSingle();
+  return (data ?? null) as WeightEntry | null;
+}
+
 export async function recentWeights(limit = 5): Promise<WeightEntry[]> {
   const { data } = await getClient().from('weight_log')
     .select('*').order('date', { ascending: false }).order('id', { ascending: false }).limit(limit);
@@ -81,8 +116,10 @@ export function formatProfile(profile: { height_in: number | null }, weights: We
   }
   if (weights.length) {
     lines.push(`Latest weight: ${weights[0].weight_lbs} lbs on ${weights[0].date}`);
-    lines.push(`\nWeight log (last ${weights.length}):`);
-    for (const e of weights) lines.push(`  ${e.date}: ${e.weight_lbs} lbs`);
+    // Each row's id, so a specific weigh-in can be targeted with update_weight / remove_weight.
+    // Two on one date is the case that needs it, and the case the date cannot express.
+    lines.push(`\nWeight log (last ${weights.length}, use the id to edit or remove one):`);
+    for (const e of weights) lines.push(`- \`${e.id}\` ${e.date}: ${e.weight_lbs} lbs`);
   } else {
     lines.push('Weight log: empty');
   }
