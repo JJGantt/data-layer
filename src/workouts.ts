@@ -371,7 +371,7 @@ export async function getWeeklyVolume(days = 7): Promise<{ days: number; volumes
 // if a target moves there it has to move here too, or this report calls a muscle short of a goal the
 // wall says it has met.
 const TARGET_DEFAULT = 14;
-const TARGETS: Record<string, number> = { abs: 8, obliques: 8, erectors: 8, hip_flexors: 8, forearms: 10 };
+const TARGETS: Record<string, number> = { abs: 8, obliques: 8, erectors: 4, hip_flexors: 8, forearms: 10 };
 const targetFor = (slug: string) => TARGETS[slug] ?? TARGET_DEFAULT;
 
 export function formatWeeklyVolume(result: { days: number; volumes: MuscleVolume[] }): string {
