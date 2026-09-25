@@ -346,11 +346,13 @@ const BOUT_GAP_MS = 3 * 60 * 60 * 1000;
 export async function getWeeklyVolume(days = 7): Promise<{ days: number; volumes: MuscleVolume[] }> {
   // The 4am day: before 4am is still yesterday, so shift the clock back four hours before taking the
   // date. Then open the window (days - 1) days before it, which makes `days` buckets counting today.
+  // occurred_at is naive Eastern, so the window opens at 04:00 on that day: a set logged between
+  // midnight and 4am belongs to the day before, which is outside the window.
   const today = toEastern(new Date(Date.now() - 4 * 3600000)).slice(0, 10);
   const since = new Date(Date.parse(today + 'T12:00:00Z') - (days - 1) * 86400000)
     .toISOString().slice(0, 10);
   const { data: setRows } = await getClient().from('sets')
-    .select('occurred_at, exercise, muscles_override').gte('occurred_at', since);
+    .select('occurred_at, exercise, muscles_override').gte('occurred_at', since + 'T04:00:00');
   const { muscles } = await catalogMaps();
 
   // Sets in time order, each expanded to the muscles it works.
