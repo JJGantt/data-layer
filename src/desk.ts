@@ -28,6 +28,46 @@ export async function machineAwake(machine: Machine): Promise<boolean> {
 }
 
 /**
+ * Write a command and wait for its machine to say what happened.
+ *
+ * An insert into the queue always succeeds, so answering at insert time reports "sent" for commands
+ * the machine then refuses — the model repeats that to Jared and the words are lost from his view.
+ * The channel is SUBSCRIBED BEFORE the insert, or a consumer that finishes in milliseconds is missed.
+ * No verdict within CONFIRM_MS means it is still queued and may yet run: reported as unconfirmed,
+ * never as delivered. A refused command is dead-lettered by the consumer that refused it.
+ */
+const CONFIRM_MS = 20_000;
+export async function dispatchConfirmed(id: string, kind: string, payload: any):
+  Promise<{ state: 'done' | 'error' | 'unconfirmed'; detail: string }> {
+  const client = getClient();
+  let settle!: (v: { state: 'done' | 'error'; detail: string }) => void;
+  const verdict = new Promise<{ state: 'done' | 'error'; detail: string }>((r) => { settle = r; });
+  const channel = client.channel(`desk-cmd-${id}`)
+    .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'desk_commands', filter: `id=eq.${id}` },
+      (m: any) => {
+        const st = m.new?.status;
+        if (st === 'done' || st === 'error') settle({ state: st, detail: String(m.new?.detail || '') });
+      });
+  const subscribed = await new Promise<boolean>((r) => {
+    const t = setTimeout(() => r(false), 5_000);
+    channel.subscribe((st) => {
+      if (st === 'SUBSCRIBED') { clearTimeout(t); r(true); }
+      else if (st === 'CHANNEL_ERROR' || st === 'TIMED_OUT' || st === 'CLOSED') { clearTimeout(t); r(false); }
+    });
+  });
+  try {
+    const { error } = await client.from('desk_commands').insert({ id, kind, payload });
+    if (error) return { state: 'error', detail: error.message };
+    if (!subscribed) return { state: 'unconfirmed', detail: 'could not listen for the result' };
+    const timer = new Promise<{ state: 'unconfirmed'; detail: string }>((r) =>
+      setTimeout(() => r({ state: 'unconfirmed', detail: 'no answer from the machine yet' }), CONFIRM_MS));
+    return await Promise.race([verdict, timer]);
+  } finally {
+    await client.removeChannel(channel);
+  }
+}
+
+/**
  * Keep a command that could not run.
  *
  * A dispatched prompt is usually minutes of dictated speech that cannot be said again the same way,
@@ -272,13 +312,27 @@ export async function unfocusSession() {
 }
 
 /**
- * Send a follow-up into the focused session (focusedSession decides which).
+ * Send a follow-up: to the session he NAMED, or with no name to the focused one (focusedSession).
  *
- * It can legitimately have nowhere to go, two ways that mean different things: a dispatch has not
- * opened its session yet (a launch takes a few seconds), or nothing is running at all. Saying which
- * saves Jared guessing whether it worked, and the words are kept either way.
+ * A named session gets the words whatever it is doing — running and mid-turn, they are typed in and
+ * Claude Code queues them; parked, it is resumed with them. Naming a session routes this one message
+ * and leaves the pin alone.
+ *
+ * With no name it can legitimately have nowhere to go, two ways that mean different things: a dispatch
+ * has not opened its session yet (a launch takes a few seconds), or nothing is running at all. Saying
+ * which saves Jared guessing whether it worked, and the words are kept either way.
  */
-export async function followUp(prompt: string) {
+export async function followUp(prompt: string, ref?: string) {
+  if (ref) {
+    const found = await resolveSession(ref);
+    if (!found.ok) return { ok: false as const, error: found.error };
+    const row = found.row;
+    if (row.status !== 'resident') {
+      const r = await sessionCommand('resume_session', row.id, prompt);
+      return r.ok ? { ...r, repo: row.repo, session: row.id } : r;
+    }
+    return deliverFollowUp(row, prompt);
+  }
   const { session: s, pending } = await focusedSession();
   if (!s) {
     const reason = pending ? 'the last dispatch has not opened its session yet' : 'no session is running';
@@ -290,6 +344,10 @@ export async function followUp(prompt: string) {
     const saved = await deadLetter('follow_up', { session: null, prompt, ...(machine ? { target: machine } : {}) }, machine, reason);
     return { ok: false as const, saved, error: `${reason} — nothing was sent. The follow-up is saved and can be retried.` };
   }
+  return deliverFollowUp(s, prompt);
+}
+
+async function deliverFollowUp(s: DeskSession, prompt: string) {
   const machine: Machine = s.worker === 'desk' ? 'mac' : 'pi';
   if (!(await machineAwake(machine))) {
     const saved = await deadLetter('follow_up', { session: s.id, prompt, target: machine }, machine,
@@ -298,10 +356,11 @@ export async function followUp(prompt: string) {
              error: `The ${machine === 'mac' ? 'Mac' : 'Pi'} is not responding, so the follow-up was not sent. It is saved and can be retried.` };
   }
   const id = uuid();
-  const { error } = await getClient().from('desk_commands').insert({
-    id, kind: 'follow_up', payload: { session: s.id, prompt, target: machine },
-  });
-  return error ? { ok: false as const, error: error.message } : { ok: true as const, id, repo: s.repo, session: s.id };
+  const v = await dispatchConfirmed(id, 'follow_up', { session: s.id, prompt, target: machine });
+  if (v.state === 'error') {
+    return { ok: false as const, error: `The ${s.repo} session did not get it (${v.detail}). It is saved and can be retried.` };
+  }
+  return { ok: true as const, id, repo: s.repo, session: s.id, confirmed: v.state === 'done' };
 }
 
 /**
@@ -468,14 +527,14 @@ export async function sessionCommand(kind: 'resume_session' | 'end_session', ses
              error: `The ${machine === 'mac' ? 'Mac' : 'Pi'} is not responding, so that did not happen. It is saved and can be retried.` };
   }
   const id = uuid();
-  const { error } = await getClient().from('desk_commands').insert({ id, kind, payload });
-  if (error) return { ok: false as const, error: error.message };
+  const v = await dispatchConfirmed(id, kind, payload);
+  if (v.state === 'error') return { ok: false as const, error: `${session}: ${v.detail}` };
   // Closing a session BY HAND is one of the three things that release a pin — the others being pinning
   // another and unfocusing. Anything automatic (eviction, a dispatch) leaves it alone.
   if (kind === 'end_session') await releaseFocusFor(session);
   // Resuming makes that session the one you are talking to again, so follow-ups should go there.
   if (kind === 'resume_session') await setFocus(id, machine);
-  return { ok: true as const, id };
+  return { ok: true as const, id, confirmed: v.state === 'done' };
 }
 
 /**
