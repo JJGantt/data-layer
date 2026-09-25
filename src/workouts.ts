@@ -273,34 +273,54 @@ export async function getDaySets(date?: string): Promise<{ date: string; sets: S
   return { date: day, sets: (data ?? []) as SetRow[] };
 }
 
-/** Recent workout days (grouped from sets), newest first. */
-export async function listWorkoutDays(limit = 10): Promise<{ date: string; setCount: number; categories: string[]; exercises: string[] }[]> {
+/**
+ * Recent workout days (grouped from sets), newest day first — but WITHIN a day everything runs in
+ * the order it was done. The query is newest-first to find the recent days, and reading its rows
+ * straight into a list hands a model the day backwards: it then tells him he opened with the
+ * triceps he finished on. `start`/`end` are local wall-clock HH:MM, so the order is stated, not implied.
+ */
+export async function listWorkoutDays(limit = 10): Promise<{ date: string; start: string; end: string; setCount: number; categories: string[]; exercises: string[] }[]> {
   const { data } = await getClient().from('sets').select('occurred_at, exercise').order('occurred_at', { ascending: false }).limit(2000);
   const { cats } = await catalogMaps();
-  const byDay = new Map<string, { setCount: number; cats: Set<string>; ex: Set<string> }>();
+  const byDay = new Map<string, { at: string; exercise: string }[]>();
   for (const s of (data ?? [])) {
     const d = String(s.occurred_at).slice(0, 10);
-    if (!byDay.has(d)) byDay.set(d, { setCount: 0, cats: new Set(), ex: new Set() });
-    const e = byDay.get(d)!;
-    e.setCount++; e.ex.add(s.exercise);
-    for (const c of (cats.get(String(s.exercise).toLowerCase()) ?? [])) e.cats.add(c);
+    if (!byDay.has(d)) byDay.set(d, []);
+    byDay.get(d)!.push({ at: String(s.occurred_at), exercise: s.exercise });
   }
   return [...byDay.entries()]
     .sort((a, b) => b[0].localeCompare(a[0]))
     .slice(0, limit)
-    .map(([date, e]) => ({ date, setCount: e.setCount, categories: [...e.cats].sort((a, b) => CAT_ORDER[a] - CAT_ORDER[b]), exercises: [...e.ex] }));
+    .map(([date, rows]) => {
+      rows.sort((a, b) => a.at.localeCompare(b.at));
+      const ex: string[] = [];
+      const c = new Set<string>();
+      for (const r of rows) {
+        if (!ex.includes(r.exercise)) ex.push(r.exercise);
+        for (const k of (cats.get(String(r.exercise).toLowerCase()) ?? [])) c.add(k);
+      }
+      return {
+        date, start: rows[0].at.slice(11, 16), end: rows[rows.length - 1].at.slice(11, 16), setCount: rows.length,
+        categories: [...c].sort((a, b) => CAT_ORDER[a] - CAT_ORDER[b]), exercises: ex,
+      };
+    });
 }
 
-export async function getExerciseHistory(name: string, limit = 60): Promise<{ date: string; sets: { weight_lbs: number; reps: number }[] }[]> {
+/** One exercise across days, newest DAY first; each day's sets in the order done, with their times. */
+export async function getExerciseHistory(name: string, limit = 60): Promise<{ date: string; sets: { time: string; weight_lbs: number; reps: number }[] }[]> {
+  // `limit` counts days, so fetch sets generously and cut by day.
   const { data } = await getClient().from('sets').select('occurred_at, weight_lbs, reps')
-    .ilike('exercise', name.trim()).order('occurred_at', { ascending: false }).limit(limit);
-  const byDay = new Map<string, { weight_lbs: number; reps: number }[]>();
+    .ilike('exercise', name.trim()).order('occurred_at', { ascending: false }).limit(Math.min(limit * 20, 5000));
+  const byDay = new Map<string, { at: string; weight_lbs: number; reps: number }[]>();
   for (const s of (data ?? [])) {
     const d = String(s.occurred_at).slice(0, 10);
     if (!byDay.has(d)) byDay.set(d, []);
-    byDay.get(d)!.push({ weight_lbs: s.weight_lbs, reps: s.reps });
+    byDay.get(d)!.push({ at: String(s.occurred_at), weight_lbs: s.weight_lbs, reps: s.reps });
   }
-  return [...byDay.entries()].sort((a, b) => b[0].localeCompare(a[0])).map(([date, sets]) => ({ date, sets }));
+  return [...byDay.entries()].sort((a, b) => b[0].localeCompare(a[0])).slice(0, limit).map(([date, sets]) => ({
+    date,
+    sets: sets.sort((a, b) => a.at.localeCompare(b.at)).map(s => ({ time: s.at.slice(11, 16), weight_lbs: s.weight_lbs, reps: s.reps })),
+  }));
 }
 
 export interface MuscleVolume { muscle: string; label: string; group: string; sets: number; }
@@ -405,7 +425,7 @@ export async function formatDay(date?: string): Promise<string> {
   for (const ex of order) for (const c of (cats.get(ex.toLowerCase()) ?? [])) allCats.add(c);
   const lines = [
     `**${categoryLabel([...allCats].sort((a, b) => CAT_ORDER[a] - CAT_ORDER[b]))}** (${day})`,
-    '', '| Exercise | Sets | Reps | Weight |', '|---|---|---|---|',
+    '', '| Exercise (in the order started) | Sets | Reps | Weight |', '|---|---|---|---|',
   ];
   for (const ex of order) {
     const list = byEx.get(ex)!;
@@ -415,11 +435,14 @@ export async function formatDay(date?: string): Promise<string> {
     lines.push(`| ${ex} | ${list.length} | ${repsStr} | ${weightStr} |`);
   }
   // Per-set ids so a specific set can be targeted with update_set / remove_set (e.g. "the 2nd set").
-  lines.push('', 'Individual sets (use the id to edit or remove one):');
-  for (const ex of order) {
-    byEx.get(ex)!.forEach((s, i) => {
-      lines.push(`- \`${s.id}\` ${ex} — set ${i + 1}: ${fmtWeight(s.weight_lbs)} × ${s.reps}`);
-    });
+  // In the order they were done, each with its time, so "what did I do first/last" is read off the
+  // clock rather than guessed from the grouping above.
+  lines.push('', 'Individual sets, in the order done (use the id to edit or remove one):');
+  const nth = new Map<string, number>();
+  for (const s of sets) {
+    const i = (nth.get(s.exercise) ?? 0) + 1;
+    nth.set(s.exercise, i);
+    lines.push(`- ${String(s.occurred_at).slice(11, 16)} \`${s.id}\` ${s.exercise} — set ${i}: ${fmtWeight(s.weight_lbs)} × ${s.reps}`);
   }
   return lines.join('\n');
 }
