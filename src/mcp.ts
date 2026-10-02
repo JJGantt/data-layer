@@ -495,6 +495,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       // caller simply retries with a label, where a silent default would be wrong on every row.
       const label = String(a.label || '').trim();
       if (!label) return text('No label. Pass `label`: three to six words naming the job — the product, the cart, the file it acts on.');
+      // A dispatched session handing its OWN request back to start_session would open a second session
+      // for the same work: the words it was given can still say "start a session in X and have it...",
+      // and that reads like an order. The launchers tell it otherwise; this is the guarantee.
+      if (await desk.redispatch(process.env.HUB_SESSION_ID, String(a.prompt || ''))) {
+        return text('Not started: you ARE the session this request was dispatched to. Do the work yourself.');
+      }
       // DATA_CALLER=hub is set by the voice worker alone, so only a dispatch from the hub conversation
       // has its first reply relayed back into that thread; another agent's dispatch stays out of it.
       const r = await desk.startSession(a.repo ? String(a.repo) : undefined, String(a.prompt || ''), machine as desk.Machine, a.report === true, label, process.env.DATA_CALLER === 'hub');

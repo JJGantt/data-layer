@@ -191,6 +191,22 @@ export async function startSession(repo: string | undefined, prompt: string, mac
 }
 
 /**
+ * Whether `prompt` is the request the calling session was itself dispatched with. `session` is
+ * HUB_SESSION_ID, which only the desk launchers set, so a session opened by hand is never caught.
+ * Matched on the head of the new prompt inside the row's: start_session passes his words verbatim
+ * minus the addressing, so a re-dispatch is the same text with "start a session in X" taken off the
+ * front. The row keeps only 500 characters of the prompt, which is why only the head is compared.
+ */
+export async function redispatch(session: string | undefined, prompt: string) {
+  if (!session) return false;
+  const flat = (t: string) => t.toLowerCase().replace(/\s+/g, ' ').trim();
+  const head = flat(prompt).slice(0, 120);
+  if (head.length < 20) return false;
+  const { data } = await getClient().from('desk_sessions').select('prompt').eq('id', session).maybeSingle();
+  return !!data?.prompt && flat(data.prompt).includes(head);
+}
+
+/**
  * Mark the dispatch just made, so a follow-up said before its session exists is held for it rather
  * than landing in whatever was active a moment earlier. It also releases a session Jared had focused by
  * name: starting new work is him turning to it.
