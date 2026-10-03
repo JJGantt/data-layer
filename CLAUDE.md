@@ -128,9 +128,12 @@ there, or check the `validate_safe_tools()` line in the worker's startup log.
 
 ## A session is named by number, not by id
 
-`resolveSession` takes what Jared actually says — "3", "status-hub", or a full id. The numbering rule
-(`numberSessions`: active sessions by last turn boundary, `active_at`, **1 is the most recently
-active**) is duplicated in the hub's `/api/sessions`, and so is the focus rule (`focusedSession` and the
+`resolveSession` takes what Jared actually says — "3", "status-hub" — or an id. The id to SAVE is the
+permanent handle `s-<first 8 of claude_session_id>` (`sessionHandle`), which `get_sessions` prints: a
+row id names one stretch of a conversation and is replaced at the next resume. Any of them resolves to
+the conversation's current row, so a stale row id still reaches the session instead of reopening an
+old stretch of it beside the live one. The numbering rule (`numberSessions`: active sessions by last
+turn boundary, `active_at`, **1 is the most recently active**, one row per conversation) is duplicated in the hub's `/api/sessions`, and so is the focus rule (`focusedSession` and the
 hub's `pickFocus`). Each pair must agree, or the pane and the voice tools disagree about which session
 is which, or the wall shows one session focused while a follow-up lands in another. The number is a position in the current list, never identity — closing one renumbers the
 rest, which is what keeps the list 1..N over what is actually open. An

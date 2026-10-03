@@ -399,6 +399,25 @@ async function deliverFollowUp(s: DeskSession, prompt: string) {
  * The hub's `/api/sessions` implements the identical rule; the two have to agree or the pane and the
  * voice tools disagree about which session is which.
  */
+/**
+ * The conversation a row carries. A SESSION IS ITS CONVERSATION, not a row: every resume makes a new
+ * row (a new tab on the Mac, a new tmux session on the Pi) for the same Claude Code transcript, and
+ * `claude --resume` keeps the transcript's id, so `claude_session_id` is the one thing that stays put.
+ */
+export function conversationOf(r: DeskSession): string {
+  return r.claude_session_id || r.id;
+}
+
+/**
+ * The PERMANENT handle every tool shows and takes: `s-` and the conversation's first eight characters.
+ * A row id names one stretch of the conversation and is replaced on the next resume, so a row id saved
+ * in a note goes stale — and resuming the stale one opened a second copy of a conversation already
+ * running. Row ids still resolve (`resolveSession`), through their conversation.
+ */
+export function sessionHandle(r: DeskSession): string {
+  return r.claude_session_id ? `s-${r.claude_session_id.slice(0, 8)}` : r.id;
+}
+
 export function numberSessions(rows: DeskSession[]): (DeskSession & { n: number })[] {
   // RUNNING FIRST, then parked, most recent first within each. The number has to be the POSITION IN THE
   // LIST HE IS LOOKING AT — that is where "the second session" comes from — and every surface shows
@@ -411,9 +430,14 @@ export function numberSessions(rows: DeskSession[]): (DeskSession & { n: number 
   const rank = (r: DeskSession) => (r.status === 'resident' ? 0 : 1);
   // Rows from before `active_at` existed fall back to their last reply, then to when they started.
   const activity = (r: DeskSession) => new Date(r.active_at || r.reply_at || r.started).getTime();
+  // ONE ROW PER CONVERSATION: the first after sorting, which is the running one if it runs, else the
+  // most recently active. The rows of earlier stretches stay parked until retention drops them, and
+  // listing them too showed one conversation three times under three numbers.
+  const seen = new Set<string>();
   return rows
     .filter((r) => r.status === 'resident' || r.status === 'evicted')
     .sort((a, b) => rank(a) - rank(b) || activity(b) - activity(a))
+    .filter((r) => { const c = conversationOf(r); if (seen.has(c)) return false; seen.add(c); return true; })
     .map((r, i) => ({ ...r, n: i + 1 }));
 }
 
@@ -423,7 +447,10 @@ export async function listSessions(): Promise<DeskSession[]> {
 }
 
 /**
- * Find the session someone named — by number ("session three"), by repo or label, or by full id.
+ * Find the session someone named — by number ("session three"), by repo or label, by its permanent
+ * handle (`s-…`, `sessionHandle`) or by a row id. A handle or row id lands on the CURRENT row of that
+ * conversation, so an old row id saved somewhere still reaches the session rather than reopening a
+ * stretch of it.
  *
  * An ambiguous name is answered with the choices rather than a guess: picking one of three status-hub
  * sessions at random and then ending or moving it is not a recoverable mistake.
@@ -432,7 +459,8 @@ export async function resolveSession(ref: string): Promise<
   { ok: true; row: DeskSession & { n: number } } | { ok: false; error: string }> {
   const want = String(ref || '').trim();
   if (!want) return { ok: false, error: 'which session?' };
-  const rows = numberSessions(await listSessions());
+  const all = await listSessions();
+  const rows = numberSessions(all);
   if (!rows.length) return { ok: false, error: 'no sessions are running or parked' };
 
   const low = want.toLowerCase();
@@ -441,8 +469,20 @@ export async function resolveSession(ref: string): Promise<
     return hit ? { ok: true, row: hit }
                : { ok: false, error: `there is no session ${want} — there are ${rows.length}` };
   }
-  const exact = rows.find((r) => r.id === want);
-  if (exact) return { ok: true, row: exact };
+  // A row id, or the conversation's id or its prefix (the handle is `s-` and eight of it).
+  const hex = low.replace(/^s-/, '');
+  const named = all.find((r) => r.id === want)
+    || (/^[0-9a-f-]{8,}$/.test(hex) ? all.find((r) => (r.claude_session_id || '').startsWith(hex)) : undefined);
+  if (named) {
+    const conv = conversationOf(named);
+    if (/^[0-9a-f-]{8,}$/.test(hex) && named.id !== want
+        && new Set(all.filter((r) => (r.claude_session_id || '').startsWith(hex)).map(conversationOf)).size > 1) {
+      return { ok: false, error: `more than one session starts with ${want} — use more of its id` };
+    }
+    const hit = rows.find((r) => conversationOf(r) === conv);
+    return hit ? { ok: true, row: hit }
+               : { ok: false, error: `${want} is ${named.status}, so it cannot be reached or resumed` };
+  }
 
   const matches = (r: DeskSession & { n: number }) =>
     String(r.repo || '').toLowerCase().startsWith(low)
@@ -631,7 +671,7 @@ export function formatSessions(rows: DeskSession[], q: any[]): string {
   // the working directory. Nothing distinguished them from a session actually called that.
   const shown = (r: DeskSession) => (r as any).label || '(unnamed)';
   const line = (r: DeskSession & { n: number }) =>
-    `- **${r.n}.** ${shown(r)} (${r.repo} on the ${r.worker === 'desk' ? 'Mac' : 'Pi'}) \`${r.id}\``
+    `- **${r.n}.** ${shown(r)} (${r.repo} on the ${r.worker === 'desk' ? 'Mac' : 'Pi'}) \`${sessionHandle(r)}\``
     + ` — ${(r.last_reply || r.prompt || 'no output yet').replace(/\s+/g, ' ').slice(0, 100)}`;
   const res = numbered.filter((r) => r.status === 'resident');
   const ev = numbered.filter((r) => r.status === 'evicted');
