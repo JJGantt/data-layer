@@ -590,7 +590,7 @@ export async function sessionCommand(kind: 'resume_session' | 'end_session', ses
   if (kind === 'end_session') await releaseFocusFor(session);
   // Resuming makes that session the one you are talking to again, so follow-ups should go there.
   if (kind === 'resume_session') await setFocus(id, machine);
-  return { ok: true as const, id, confirmed: v.state === 'done' };
+  return { ok: true as const, id, confirmed: v.state === 'done', detail: v.detail };
 }
 
 /**

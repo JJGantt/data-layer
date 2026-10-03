@@ -557,7 +557,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
     if (name === 'resume_session') {
       const r = await desk.sessionCommand('resume_session', String(a.session), a.prompt ? String(a.prompt) : undefined);
+      // The machine answers "already running" when the session was open: nothing was reopened, and a
+      // prompt went straight into the live session. Saying "resumed" there describes something that
+      // did not happen.
+      const already = r.ok && /already running/.test((r as any).detail || '');
       return text(!r.ok ? r.error
+        : already ? (a.prompt ? 'That session was already running, so nothing was reopened — the words went straight to it.'
+                              : 'That session was already running, so nothing was reopened.')
         : r.confirmed ? 'Resumed that session with its full context.'
         : 'Queued the resume, but its machine has not confirmed it yet.');
     }
