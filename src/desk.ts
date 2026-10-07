@@ -419,25 +419,24 @@ export function sessionHandle(r: DeskSession): string {
 }
 
 export function numberSessions(rows: DeskSession[]): (DeskSession & { n: number })[] {
-  // RUNNING FIRST, then parked, most recent first within each. The number has to be the POSITION IN THE
-  // LIST HE IS LOOKING AT — that is where "the second session" comes from — and every surface shows
-  // running above parked. Numbering the two together by age alone put the running sessions at 12 and
-  // 13 while parked ones held 1 through 11, so the badges read 12, 13, 1, 2, 3 down the screen and
-  // the second row was not session two.
-  //
-  // It also keeps the low numbers on the sessions that can actually be spoken to: focus and follow-up
-  // only reach a running one.
+  // MOST RECENTLY ACTIVE FIRST, running and parked TOGETHER. The number has to be the POSITION IN THE
+  // LIST HE IS LOOKING AT — that is where "the second session" comes from — and every surface draws the
+  // list in this order. Parking is not activity: a session evicted to free the Pi, or replaced by a
+  // dispatch, keeps the place its last turn earned. Grouping running above parked is the attractive
+  // alternative and it is wrong: every eviction would shove a session below everything still open,
+  // however recently it was used. Shared with `/api/sessions` in status-hub; the two must agree.
   const rank = (r: DeskSession) => (r.status === 'resident' ? 0 : 1);
   // Rows from before `active_at` existed fall back to their last reply, then to when they started.
   const activity = (r: DeskSession) => new Date(r.active_at || r.reply_at || r.started).getTime();
-  // ONE ROW PER CONVERSATION: the first after sorting, which is the running one if it runs, else the
-  // most recently active. The rows of earlier stretches stay parked until retention drops them, and
-  // listing them too showed one conversation three times under three numbers.
+  // ONE ROW PER CONVERSATION: the running one if it runs, else the most recently active. The rows of
+  // earlier stretches stay parked until retention drops them, and listing them too showed one
+  // conversation three times under three numbers.
   const seen = new Set<string>();
   return rows
     .filter((r) => r.status === 'resident' || r.status === 'evicted')
     .sort((a, b) => rank(a) - rank(b) || activity(b) - activity(a))
     .filter((r) => { const c = conversationOf(r); if (seen.has(c)) return false; seen.add(c); return true; })
+    .sort((a, b) => activity(b) - activity(a))
     .map((r, i) => ({ ...r, n: i + 1 }));
 }
 
@@ -657,8 +656,8 @@ export function formatSessions(rows: DeskSession[], q: any[]): string {
   // to know where it is now.
   //
   // THE ID IS PRINTED BESIDE IT, because the number is a position in THIS listing and positions move.
-  // Resuming or ending several sessions renumbers the list after each one — every resume promotes a
-  // session from Parked to Running, which shifts everything below it — so a caller working from one
+  // Resuming or ending several sessions renumbers the list after each one — every resume makes that
+  // session the most recently active, which shifts everything above where it was — so a caller working from one
   // listing addresses a different session with each call. That happened: a batch of five resumes by
   // number reopened two copies of an unrelated session and missed three of the intended ones. An id
   // cannot go stale that way, and `resolveSession` has always accepted one; it simply was not shown
@@ -673,15 +672,12 @@ export function formatSessions(rows: DeskSession[], q: any[]): string {
   const line = (r: DeskSession & { n: number }) =>
     `- **${r.n}.** ${shown(r)} (${r.repo} on the ${r.worker === 'desk' ? 'Mac' : 'Pi'}) \`${sessionHandle(r)}\``
     + ` — ${(r.last_reply || r.prompt || 'no output yet').replace(/\s+/g, ' ').slice(0, 100)}`;
-  const res = numbered.filter((r) => r.status === 'resident');
-  const ev = numbered.filter((r) => r.status === 'evicted');
-  if (res.length) {
-    lines.push(`**Running** (${res.length}):`);
-    for (const r of res) lines.push(line(r));
-  }
-  if (ev.length) {
-    lines.push(`**Parked** (${ev.length}, resumable with full context):`);
-    for (const r of ev) lines.push(line(r));
+  // ONE LIST IN NUMBER ORDER, each row saying whether it runs: the number is the position by activity
+  // alone, so splitting Running from Parked would print the numbers out of order.
+  if (numbered.length) {
+    const nRes = numbered.filter((r) => r.status === 'resident').length;
+    lines.push(`**Sessions** (${nRes} running, ${numbered.length - nRes} parked — a parked one resumes with full context):`);
+    for (const r of numbered) lines.push(line(r) + (r.status === 'resident' ? '' : ' _(parked)_'));
   }
   if (q.length) {
     lines.push(`**Queued** (${q.length}, waiting for a slot):`);
