@@ -184,10 +184,16 @@ export async function startSession(repo: string | undefined, prompt: string, mac
     return { ok: false as const, machine, saved,
              error: `The ${machine === 'mac' ? 'Mac' : 'Pi'} is not responding, so nothing was started. The prompt is saved and can be retried.` };
   }
-  const { error } = await getClient().from('desk_commands').insert({ id, kind: 'open_session', payload });
-  if (error) return { ok: false as const, error: error.message };
+  // Focus first: a follow-up said while the launch is still being confirmed belongs to this dispatch.
   await setFocus(id, machine);
-  return { ok: true as const, id, repo: target.name, machine, matched: !!hit || !want };
+  // Confirmed, not inserted: a machine short of room QUEUES the session instead of launching it
+  // (pi-desk runQueue), and "started" for a session that is waiting is what he was told on
+  // 2026-10-11 while it sat in the queue for two days.
+  const v = await dispatchConfirmed(id, 'open_session', payload);
+  if (v.state === 'error') return { ok: false as const, error: v.detail };
+  const state = v.state === 'unconfirmed' ? 'unconfirmed' as const
+    : /^queued\b/.test(v.detail) ? 'queued' as const : 'launched' as const;
+  return { ok: true as const, id, repo: target.name, machine, matched: !!hit || !want, state, detail: v.detail };
 }
 
 /**

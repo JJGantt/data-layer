@@ -509,7 +509,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const back = process.env.DATA_CALLER === 'hub'
         ? 'Its first reply is posted into the hub conversation when it finishes.'
         : 'It runs on its own; check back with get_sessions.';
-      return text(`Started "${label}" in ${where} on the ${r.machine === 'mac' ? 'Mac' : 'Pi'}. ${back}`);
+      const on = r.machine === 'mac' ? 'Mac' : 'Pi';
+      if (r.state === 'queued') {
+        return text(`NOT started yet: "${label}" is queued on the ${on} (${r.detail.replace(/^queued\s*[—-]?\s*/, '')}). It launches when the ${on} has room; get_sessions lists it under Queued.`);
+      }
+      if (r.state === 'unconfirmed') {
+        return text(`Sent "${label}" to the ${on}, but the ${on} has not confirmed it launched. Check get_sessions before saying it started.`);
+      }
+      return text(`Started "${label}" in ${where} on the ${on}. ${back}`);
     }
     if (name === 'follow_up') {
       const r = await desk.followUp(String(a.prompt || ''), a.session ? String(a.session) : undefined);
