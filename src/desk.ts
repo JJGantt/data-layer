@@ -37,8 +37,14 @@ export async function machineAwake(machine: Machine): Promise<boolean> {
  * never as delivered. A refused command is dead-lettered by the consumer that refused it.
  */
 const CONFIRM_MS = 20_000;
-export async function dispatchConfirmed(id: string, kind: string, payload: any):
-  Promise<{ state: 'done' | 'error' | 'unconfirmed'; detail: string }> {
+type Verdict = { state: 'done' | 'error' | 'unconfirmed'; detail: string };
+
+/**
+ * Wait for command `id` to reach a verdict. `write` runs once the listener is live — the insert, for a
+ * new command — so a consumer that answers in milliseconds cannot be missed; with no write, the row is
+ * read once after subscribing instead, for a command that may already have finished.
+ */
+async function awaitVerdict(id: string, write?: () => Promise<string | null>): Promise<Verdict> {
   const client = getClient();
   let settle!: (v: { state: 'done' | 'error'; detail: string }) => void;
   const verdict = new Promise<{ state: 'done' | 'error'; detail: string }>((r) => { settle = r; });
@@ -56,8 +62,13 @@ export async function dispatchConfirmed(id: string, kind: string, payload: any):
     });
   });
   try {
-    const { error } = await client.from('desk_commands').insert({ id, kind, payload });
-    if (error) return { state: 'error', detail: error.message };
+    if (write) {
+      const err = await write();
+      if (err) return { state: 'error', detail: err };
+    } else {
+      const { data } = await client.from('desk_commands').select('status,detail').eq('id', id).maybeSingle();
+      if (data?.status === 'done' || data?.status === 'error') return { state: data.status, detail: String(data.detail || '') };
+    }
     if (!subscribed) return { state: 'unconfirmed', detail: 'could not listen for the result' };
     const timer = new Promise<{ state: 'unconfirmed'; detail: string }>((r) =>
       setTimeout(() => r({ state: 'unconfirmed', detail: 'no answer from the machine yet' }), CONFIRM_MS));
@@ -65,6 +76,25 @@ export async function dispatchConfirmed(id: string, kind: string, payload: any):
   } finally {
     await client.removeChannel(channel);
   }
+}
+
+export async function dispatchConfirmed(id: string, kind: string, payload: any): Promise<Verdict> {
+  return awaitVerdict(id, async () => {
+    const { error } = await getClient().from('desk_commands').insert({ id, kind, payload });
+    return error ? error.message : null;
+  });
+}
+
+/**
+ * Follow a Pi command that handed its work to the Mac. A Pi with no memory to spare sends a new
+ * session or a resume on to the Mac as a fresh command and answers `handed to the Mac as <id> — why`;
+ * that is not a launch, so the Mac's own verdict is what gets reported. Anything else passes through.
+ */
+async function followHandoff(id: string, v: Verdict, machine: Machine):
+  Promise<{ id: string; v: Verdict; machine: Machine; handedOff: string | null }> {
+  const m = v.state === 'done' ? /^handed to the Mac as (\S+)(?: — (.*))?/.exec(v.detail) : null;
+  if (!m) return { id, v, machine, handedOff: null };
+  return { id: m[1], v: await awaitVerdict(m[1]), machine: 'mac', handedOff: m[2] || 'no room on the Pi' };
 }
 
 /**
@@ -189,11 +219,15 @@ export async function startSession(repo: string | undefined, prompt: string, mac
   // Confirmed, not inserted: a machine short of room QUEUES the session instead of launching it
   // (pi-desk runQueue), and "started" for a session that is waiting is what he was told on
   // 2026-10-11 while it sat in the queue for two days.
-  const v = await dispatchConfirmed(id, 'open_session', payload);
+  const f = await followHandoff(id, await dispatchConfirmed(id, 'open_session', payload), machine);
+  const v = f.v;
   if (v.state === 'error') return { ok: false as const, error: v.detail };
+  // The launch now belongs to the Mac's command, which is the one its session row will carry.
+  if (f.handedOff) await setFocus(f.id, 'mac');
   const state = v.state === 'unconfirmed' ? 'unconfirmed' as const
     : /^queued\b/.test(v.detail) ? 'queued' as const : 'launched' as const;
-  return { ok: true as const, id, repo: target.name, machine, matched: !!hit || !want, state, detail: v.detail };
+  return { ok: true as const, id: f.id, repo: target.name, machine: f.machine, matched: !!hit || !want, state,
+           detail: v.detail, handedOff: f.handedOff };
 }
 
 /**
@@ -587,15 +621,17 @@ export async function sessionCommand(kind: 'resume_session' | 'end_session', ses
     return { ok: false as const, saved,
              error: `The ${machine === 'mac' ? 'Mac' : 'Pi'} is not responding, so that did not happen. It is saved and can be retried.` };
   }
-  const id = uuid();
-  const v = await dispatchConfirmed(id, kind, payload);
+  const sent = uuid();
+  const f = await followHandoff(sent, await dispatchConfirmed(sent, kind, payload), machine);
+  const v = f.v;
   if (v.state === 'error') return { ok: false as const, error: `${session}: ${v.detail}` };
   // Closing a session BY HAND is one of the three things that release a pin — the others being pinning
   // another and unfocusing. Anything automatic (eviction, a dispatch) leaves it alone.
   if (kind === 'end_session') await releaseFocusFor(session);
   // Resuming makes that session the one you are talking to again, so follow-ups should go there.
-  if (kind === 'resume_session') await setFocus(id, machine);
-  return { ok: true as const, id, confirmed: v.state === 'done', detail: v.detail };
+  if (kind === 'resume_session') await setFocus(f.id, f.machine);
+  return { ok: true as const, id: f.id, machine: f.machine, confirmed: v.state === 'done', detail: v.detail,
+           queued: v.state === 'done' && /^queued\b/.test(v.detail), handedOff: f.handedOff };
 }
 
 /**

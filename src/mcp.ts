@@ -516,7 +516,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (r.state === 'unconfirmed') {
         return text(`Sent "${label}" to the ${on}, but the ${on} has not confirmed it launched. Check get_sessions before saying it started.`);
       }
-      return text(`Started "${label}" in ${where} on the ${on}. ${back}`);
+      const why = r.handedOff ? ` The Pi had no room (${r.handedOff}), so it went to the Mac.` : '';
+      return text(`Started "${label}" in ${where} on the ${on}.${why} ${back}`);
     }
     if (name === 'follow_up') {
       const r = await desk.followUp(String(a.prompt || ''), a.session ? String(a.session) : undefined);
@@ -571,6 +572,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return text(!r.ok ? r.error
         : already ? (a.prompt ? 'That session was already running, so nothing was reopened — the words went straight to it.'
                               : 'That session was already running, so nothing was reopened.')
+        : r.queued ? `NOT resumed yet: it is queued on the Pi (${r.detail.replace(/^queued resume of \S+\s*[—-]?\s*/, '')}). It resumes when there is room; get_sessions lists it under Queued.`
+        : r.confirmed && r.handedOff ? `The Pi had no room (${r.handedOff}), so that session resumed on the Mac with its full context.`
         : r.confirmed ? 'Resumed that session with its full context.'
         : 'Queued the resume, but its machine has not confirmed it yet.');
     }
