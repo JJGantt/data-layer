@@ -29,7 +29,7 @@ function normalizeOccurredAt(value?: string): string {
 // for rather than starting a fresh day at midnight.
 const EATING_DAY_BOUNDARY_HOUR = 4;
 function dateFromOccurredAt(value: string): string {
-  const m = value.match(/^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}):(\d{2}))?/);
+  const m = value.match(/^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2}))?)?/);
   if (!m) return now().slice(0, 10);
   const [y, mo, d, h, mi, s] = m.slice(1).map((v) => (v === undefined ? 0 : Number(v)));
   const dt = new Date(y, mo - 1, d, h, mi, s);
