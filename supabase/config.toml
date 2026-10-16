@@ -1,1 +1,4 @@
 project_id = "felyggqjjhltwokdfhop"
+
+[functions.voice-fallback]
+verify_jwt = false
