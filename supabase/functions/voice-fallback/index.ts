@@ -14,8 +14,9 @@
 // so a Fly worker that is up while the hub is down cannot take it.
 //
 // Auth is the hub's own device token (X-Hub-Token), checked against the sha256 the hub writes into
-// `fallback_config` at boot. The Groq key comes from the same table. Deployed with --no-verify-jwt,
-// since the watch holds no Supabase JWT.
+// `fallback_config` at boot. The Groq key is this function's own secret (`supabase secrets set
+// GROQ_API_KEY=…`), the same key the hub holds on Fly. No JWT check (config.toml), since the watch holds
+// no Supabase JWT.
 import { createClient } from "npm:@supabase/supabase-js@2.45.4";
 
 const SB_URL = Deno.env.get("SUPABASE_URL")!;
@@ -66,8 +67,8 @@ function location(q: URLSearchParams) {
 }
 
 async function transcribe(clip: Uint8Array, type: string): Promise<string> {
-  const key = (await cfg()).groq_api_key;
-  if (!key) throw new Error("no Groq key in fallback_config");
+  const key = Deno.env.get("GROQ_API_KEY");
+  if (!key) throw new Error("GROQ_API_KEY is not set on the function");
   const form = new FormData();
   // Groq identifies the format by the file name's extension, not the part's content-type.
   form.append("file", new Blob([clip], { type }), "clip.m4a");
