@@ -158,7 +158,7 @@ export async function upsertCatalogExercise(name: string, categories: unknown, m
 }
 
 // ---- sets (the flat log) ----
-export interface SetRow { id: number; occurred_at: string; exercise: string; weight_lbs: number; reps: number; }
+export interface SetRow { id: number; occurred_at: string; exercise: string; weight_lbs: number; reps: number; note: string | null; }
 
 /**
  * A caller-supplied set time, normalized for the `sets.occurred_at` column.
@@ -192,6 +192,12 @@ function normalizeSetTime(value: string): string {
   return `${y}-${p(mo)}-${p(d)}T${p(h)}:${p(mi)}:${p(s)}`;
 }
 
+/** A set's note as stored: trimmed, and empty means none — which is also how update_set clears one. */
+function normalizeNote(value: unknown): string | null {
+  const t = String(value ?? '').trim();
+  return t ? t : null;
+}
+
 /**
  * Log one or more sets. Each set is its own timestamped row.
  * An exercise is named by its catalog id, never by a string — see loadCatalog for why.
@@ -199,14 +205,14 @@ function normalizeSetTime(value: string): string {
  * A set may override that with its own `occurred_at` — for a set being written down after the fact,
  * which is the only way to place one at a time that has already passed.
  */
-export async function logSets(items: { exercise_id: number; weight_lbs: number; reps: number; occurred_at?: string }[]): Promise<SetRow[]> {
+export async function logSets(items: { exercise_id: number; weight_lbs: number; reps: number; occurred_at?: string; note?: string }[]): Promise<SetRow[]> {
   const sb = getClient();
   // now() is voice-aware: for a voice-logged set it resolves to the audio CAPTURE START (when he spoke),
   // not the current instant — see helpers.ts. That's what makes rest gaps between sets read true.
   const ts = now();
   // Read once for the whole call rather than per set.
   const catalog = await loadCatalog();
-  const rows: { occurred_at: string; exercise_id: number; weight_lbs: number; reps: number }[] = [];
+  const rows: { occurred_at: string; exercise_id: number; weight_lbs: number; reps: number; note: string | null }[] = [];
   for (const it of items) {
     const n = Number(it.exercise_id);
     if (!Number.isInteger(n)) throw new Error(`each set needs an integer exercise_id from get_workout_catalog, got ${JSON.stringify(it.exercise_id)}`);
@@ -217,7 +223,7 @@ export async function logSets(items: { exercise_id: number; weight_lbs: number; 
     // Only a set that states its own time departs from the call's shared stamp, so logging several
     // sets together still records them as one moment. The `exercise` column is filled by the
     // sets_resolve_exercise trigger (migration 00075) from this id — never written here.
-    rows.push({ occurred_at: it.occurred_at ? normalizeSetTime(it.occurred_at) : ts, exercise_id: n, weight_lbs: it.weight_lbs, reps: it.reps });
+    rows.push({ occurred_at: it.occurred_at ? normalizeSetTime(it.occurred_at) : ts, exercise_id: n, weight_lbs: it.weight_lbs, reps: it.reps, note: normalizeNote(it.note) });
   }
   const { data } = await sb.from('sets').insert(rows).select();
   return (data ?? []) as SetRow[];
@@ -241,7 +247,7 @@ export async function removeSet(id: number): Promise<SetRow | null> {
  */
 export async function updateSet(
   id: number,
-  patch: { exercise_id?: number; weight_lbs?: number; reps?: number; occurred_at?: string },
+  patch: { exercise_id?: number; weight_lbs?: number; reps?: number; occurred_at?: string; note?: string },
 ): Promise<SetRow | null> {
   const sb = getClient();
   const upd: Record<string, unknown> = {};
@@ -260,7 +266,8 @@ export async function updateSet(
     upd.reps = patch.reps;
   }
   if (patch.occurred_at !== undefined) upd.occurred_at = normalizeSetTime(patch.occurred_at);
-  if (!Object.keys(upd).length) throw new Error('nothing to change — pass at least one of exercise_id, weight_lbs, reps, occurred_at');
+  if (patch.note !== undefined) upd.note = normalizeNote(patch.note);
+  if (!Object.keys(upd).length) throw new Error('nothing to change — pass at least one of exercise_id, weight_lbs, reps, occurred_at, note');
   const { data } = await sb.from('sets').update(upd).eq('id', id).select().maybeSingle();
   return (data ?? null) as SetRow | null;
 }
@@ -307,19 +314,19 @@ export async function listWorkoutDays(limit = 10): Promise<{ date: string; start
 }
 
 /** One exercise across days, newest DAY first; each day's sets in the order done, with their times. */
-export async function getExerciseHistory(name: string, limit = 60): Promise<{ date: string; sets: { time: string; weight_lbs: number; reps: number }[] }[]> {
+export async function getExerciseHistory(name: string, limit = 60): Promise<{ date: string; sets: { time: string; weight_lbs: number; reps: number; note: string | null }[] }[]> {
   // `limit` counts days, so fetch sets generously and cut by day.
-  const { data } = await getClient().from('sets').select('occurred_at, weight_lbs, reps')
+  const { data } = await getClient().from('sets').select('occurred_at, weight_lbs, reps, note')
     .ilike('exercise', name.trim()).order('occurred_at', { ascending: false }).limit(Math.min(limit * 20, 5000));
-  const byDay = new Map<string, { at: string; weight_lbs: number; reps: number }[]>();
+  const byDay = new Map<string, { at: string; weight_lbs: number; reps: number; note: string | null }[]>();
   for (const s of (data ?? [])) {
     const d = String(s.occurred_at).slice(0, 10);
     if (!byDay.has(d)) byDay.set(d, []);
-    byDay.get(d)!.push({ at: String(s.occurred_at), weight_lbs: s.weight_lbs, reps: s.reps });
+    byDay.get(d)!.push({ at: String(s.occurred_at), weight_lbs: s.weight_lbs, reps: s.reps, note: s.note ?? null });
   }
   return [...byDay.entries()].sort((a, b) => b[0].localeCompare(a[0])).slice(0, limit).map(([date, sets]) => ({
     date,
-    sets: sets.sort((a, b) => a.at.localeCompare(b.at)).map(s => ({ time: s.at.slice(11, 16), weight_lbs: s.weight_lbs, reps: s.reps })),
+    sets: sets.sort((a, b) => a.at.localeCompare(b.at)).map(s => ({ time: s.at.slice(11, 16), weight_lbs: s.weight_lbs, reps: s.reps, note: s.note })),
   }));
 }
 
@@ -444,7 +451,7 @@ export async function formatDay(date?: string): Promise<string> {
   for (const s of sets) {
     const i = (nth.get(s.exercise) ?? 0) + 1;
     nth.set(s.exercise, i);
-    lines.push(`- ${String(s.occurred_at).slice(11, 16)} \`${s.id}\` ${s.exercise} — set ${i}: ${fmtWeight(s.weight_lbs)} × ${s.reps}`);
+    lines.push(`- ${String(s.occurred_at).slice(11, 16)} \`${s.id}\` ${s.exercise} — set ${i}: ${fmtWeight(s.weight_lbs)} × ${s.reps}${s.note ? ` — note: ${s.note}` : ''}`);
   }
   return lines.join('\n');
 }
