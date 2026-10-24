@@ -33,17 +33,6 @@ export function now(): string {
   return toEastern(new Date());
 }
 
-/**
- * Where Jared was when he gave the in-flight command, as one line — '' when his device sent no
- * position, or outside the voice worker. The worker rewrites the file DATA_LOC_FILE names at every
- * command; a file rather than an env value for the same warm-session reason as DATA_TS_FILE above.
- */
-export function whereJaredWas(): string {
-  const f = process.env.DATA_LOC_FILE;
-  if (!f) return '';
-  try { return readFileSync(f, 'utf8').trim(); } catch { return ''; }
-}
-
 /** Format a Date as this machine's own local wall-clock reading (yyyy-MM-ddTHH:mm:ss). */
 export function toEastern(d: Date): string {
   const p = (n: number) => String(n).padStart(2, '0');

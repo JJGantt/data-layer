@@ -14,6 +14,7 @@ import * as desk from './desk.js';
 import * as reports from './reports.js';
 import * as shopping from './shopping.js';
 import * as surf from './surf.js';
+import * as location from './location.js';
 
 const PRODUCE_TYPE_DESC = "Set ONLY for fruits and vegetables; pick exactly one, the three are mutually exclusive. 'dark_green_vegetable' is the USDA dark green vegetable subgroup, which is broader than leafy: alongside the dark leafy greens it includes broccoli, broccolini, Brussels sprouts, asparagus, green beans and green/snap peas. 'other_vegetable' is every other vegetable, including legumes, beans and starchy vegetables. 'fruit' includes avocado. Omit the field entirely for anything that is not a fruit or vegetable.";
 
@@ -65,6 +66,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
   return {
   tools: [
     { name: 'get_health_profile', description: 'Returns height, recent weight log entries, and current nutrition targets (calories, protein, carbs, fat).', inputSchema: { type: 'object' as const, properties: {} } },
+    { name: 'get_location', description: "Where Jared last was: a lat/lon fix per device (watch, web), each with how old it is. Call it only when a request depends on where he is — 'near me', directions, a ride, local hours, the weather here — and never otherwise. It updates when he speaks to a device that has a fix, so check the age: hours old may no longer be where he is. Nothing here names the place; the coordinates are the answer.", inputSchema: { type: 'object' as const, properties: {} } },
     { name: 'get_surf', description: "The surf forecast at Jared's break (Mayport Poles) from Surfline — rating, wave size, wind and swell at three-hour steps, when the forecast was captured, and the water temperature. Use this for surf there rather than web search: Surfline blocks bots, so the web does not have it.", inputSchema: { type: 'object' as const, properties: { days: { type: 'number', description: 'How many days ahead, 1-10. Omit for 2.' } } } },
     { name: 'set_height', description: 'Set or update height in inches.', inputSchema: { type: 'object' as const, properties: { height_in: { type: 'number', description: 'Height in inches (e.g. 72 for 6\'0").' } }, required: ['height_in'] } },
     { name: 'log_weight', description: 'Log a body weight entry. Appends to the weight log. ONLY call this with a weight the user EXPLICITLY stated as a number in their message. NEVER infer, estimate, guess, or fabricate a bodyweight, and NEVER back-fill multiple days from one request. If no explicit number was given — e.g. "log my weight" with no value, or a workout command like "add 10 rows body weight" (that is a SET of the Rows exercise, not a weigh-in) — do NOT call this tool; ask the user for the number instead.', inputSchema: { type: 'object' as const, properties: { weight_lbs: { type: 'number', description: 'Body weight in pounds — must be a value the user explicitly spoke.' }, date: { type: 'string', description: 'Date in YYYY-MM-DD format. Defaults to today.' } }, required: ['weight_lbs'] } },
@@ -146,6 +148,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   try {
+    if (name === 'get_location') return text(await location.lastLocation());
     if (name === 'get_surf') return text(await surf.surfReport(Number(a.days) || 2));
     if (name === 'get_health_profile') {
       const profile = await health.getProfile();
