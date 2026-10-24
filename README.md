@@ -42,7 +42,7 @@ An earlier version matched on names and had to reject "milk" as ambiguous agains
 cereal — a failure mode that only existed because of the matcher.
 | `reviews.ts` | as named |
 | `surf.ts` | the forecast read (`get_surf`) and a surf alarm's conditions (`set_surf_alarm`, table `surf_alarms`). It only stores them: the hub decides and owns the alarm — status-hub `docs/ALARMS.md` |
-| `location.ts` | where he last was (`get_location`, table `locations`), one row per device; the hub writes it from the fix a command carries |
+| `location.ts` | where he last was (`get_location`, table `locations`), one row per device, kept by a trigger from the fix a command carries |
 | `desk.ts` | dispatching Claude sessions to a machine, and the follow-up pointer |
 | `reports.ts` | the HTML write-ups a dispatched session publishes |
 | `helpers.ts` | ids, validation, and the clock — read it before using `now()` |

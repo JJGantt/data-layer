@@ -1,5 +1,5 @@
--- WHERE JARED LAST WAS, one row per device that reports a position. The hub upserts it from the fix a
--- device sends with a command (status-hub server.js `noteLocation`): the watch, or the phone/browser
+-- WHERE JARED LAST WAS, one row per device that reports a position, kept current from the fix a
+-- device sends with a command (trigger in 00129): the watch, or the phone/browser
 -- page. A model reads it on demand through the data MCP's `get_location` rather than having it pasted
 -- into every prompt, so a request that does not need it never sees it.
 --

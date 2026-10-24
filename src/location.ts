@@ -1,6 +1,6 @@
 import { getClient } from './client.js';
 
-// Where Jared last was, from `locations` (00128): one row per device, upserted by the hub from the
+// Where Jared last was, from `locations` (00128): one row per device, kept by a trigger (00129) from the
 // fix a device sends with a command. Read on demand by a model that needs it, instead of being pasted
 // into every prompt.
 //
