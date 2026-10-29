@@ -27,6 +27,37 @@ export async function machineAwake(machine: Machine): Promise<boolean> {
   return !!t && (Date.now() - new Date(t).getTime()) / 1000 <= DESK_STALE_S;
 }
 
+const NAME: Record<Machine, string> = { pi: 'Pi', mac: 'Mac' };
+type Readiness = { ok: true } | { ok: false; why: string; login: string | null };
+
+/**
+ * Can each machine start a session right now — beating AND signed in?
+ *
+ * A session runs on the machine's interactive `/login`, which dies on a fixed date about four weeks after
+ * sign-in; one started after that answers "Login expired" and does nothing. Each desk heartbeat carries
+ * the date (`info.login_expires_at`, voice-pipeline orchestrator/src/login.js), so this is one read of
+ * two rows, with nothing asked of either machine. `login` is the expired date, set only when the login
+ * is the reason. A beat without the field (a consumer not yet updated) counts as signed in.
+ */
+export async function machinesReady(): Promise<Record<Machine, Readiness>> {
+  const { data } = await getClient().from('worker_presence')
+    .select('worker, last_seen, info').in('worker', Object.values(DESK_WORKER));
+  const out = {} as Record<Machine, Readiness>;
+  for (const m of ['pi', 'mac'] as Machine[]) {
+    const row = data?.find((r: any) => r.worker === DESK_WORKER[m]);
+    const t = row?.last_seen;
+    const exp = row?.info?.login_expires_at;
+    if (!t || (Date.now() - new Date(t).getTime()) / 1000 > DESK_STALE_S) {
+      out[m] = { ok: false, why: `the ${NAME[m]} is not responding`, login: null };
+    } else if (exp !== undefined && !(exp && Date.parse(exp) > Date.now())) {
+      out[m] = { ok: false, why: `the ${NAME[m]}'s Claude login has expired`, login: exp || 'none' };
+    } else {
+      out[m] = { ok: true };
+    }
+  }
+  return out;
+}
+
 /**
  * Write a command and wait for its machine to say what happened.
  *
@@ -190,7 +221,7 @@ export async function knownRepo(name: string): Promise<{ path: string; name: str
  * conversation that started it, and the Mac sleeps. Choose 'mac' when the work wants the Mac
  * specifically — iOS, where compiling locally is the whole advantage.
  */
-export async function startSession(repo: string | undefined, prompt: string, machine: Machine = 'pi', report = false, label?: string, relay = false) {
+export async function startSession(repo: string | undefined, prompt: string, machine: Machine = 'pi', report = false, label?: string, relay = false, repair = false) {
   // No repo named, or one that matches nothing, lands in the home directory. A request the router
   // could not pin to a project still gets sent somewhere it can act — refusing it would be worse,
   // and the session can find its own way from there.
@@ -203,13 +234,27 @@ export async function startSession(repo: string | undefined, prompt: string, mac
   // `relay` asks the machine to post the session's first finished reply back into the hub thread
   // (voice-pipeline orchestrator/src/relay.js). Only a dispatch from the hub conversation sets it.
   const payload = { path: target.path, name: target.name, target: machine, ...(prompt ? { prompt } : {}), ...(report ? { report: true } : {}), ...(label ? { label: label.slice(0, 60) } : {}), ...(relay ? { relay: true } : {}) };
-  // The machine has to be there NOW. Writing the command anyway is the silent failure this guards:
-  // nobody claims it, it expires unread, and the reply already said a session had started.
-  if (!(await machineAwake(machine))) {
-    const saved = await deadLetter('open_session', payload, machine, `the ${machine === 'mac' ? 'Mac' : 'Pi'} is not responding`);
-    return { ok: false as const, machine, saved,
-             error: `The ${machine === 'mac' ? 'Mac' : 'Pi'} is not responding, so nothing was started. The prompt is saved and can be retried.` };
+  // The machine has to be able to run it NOW: beating, and signed in. Writing the command anyway is the
+  // silent failure this guards — nobody claims it, or it launches a session that cannot authenticate,
+  // and the reply already said a session had started. The one asked for first, then the other.
+  const ready = await machinesReady();
+  const other: Machine = machine === 'pi' ? 'mac' : 'pi';
+  const asked = machine;
+  const fail = ready[asked];
+  if (!fail.ok) {
+    if (!ready[other].ok) {
+      const why = `${fail.why}, and ${(ready[other] as { why: string }).why}`;
+      const saved = await deadLetter('open_session', payload, asked, why);
+      return { ok: false as const, machine: asked, saved,
+               error: `Nothing was started: ${why}. The prompt is saved and can be retried.` };
+    }
+    machine = other;
+    payload.target = machine;
   }
+  const rerouted = fail.ok ? null : fail.why;
+  // A dead login is a problem with a known fix, so it gets a session of its own that fixes it, run on
+  // the machine that still works. Once per expired login, however many dispatches route around it.
+  if (!fail.ok && fail.login && !repair) await startLoginRepair(asked, fail.login, machine, relay);
   // Focus first: a follow-up said while the launch is still being confirmed belongs to this dispatch.
   await setFocus(id, machine);
   // Confirmed, not inserted: a machine short of room QUEUES the session instead of launching it
@@ -223,7 +268,26 @@ export async function startSession(repo: string | undefined, prompt: string, mac
   const state = v.state === 'unconfirmed' ? 'unconfirmed' as const
     : /^queued\b/.test(v.detail) ? 'queued' as const : 'launched' as const;
   return { ok: true as const, id: f.id, repo: target.name, machine: f.machine, matched: !!hit || !want, state,
-           detail: v.detail, handedOff: f.handedOff };
+           detail: v.detail, handedOff: f.handedOff, rerouted };
+}
+
+/**
+ * Start a session, in the health repo, whose job is to renew `dead`'s login — on `on`, the machine
+ * that can still run one. `expired` is the date the dead login carried; the marker in app_settings
+ * holds it, so a second dispatch around the same dead login does not start a second repair, while the
+ * next time it expires (a new date) does. The procedure lives in health/runbooks/claude-login.md.
+ */
+async function startLoginRepair(dead: Machine, expired: string, on: Machine, relay: boolean) {
+  const key = `login_repair_${dead}`;
+  const client = getClient();
+  const { data } = await client.from('app_settings').select('value').eq('key', key).maybeSingle();
+  if (data?.value === expired) return;
+  await client.from('app_settings').upsert({ key, value: expired, updated_at: new Date().toISOString() }, { onConflict: 'key' });
+  const prompt = `The ${NAME[dead]}'s interactive Claude login has expired (its refresh token's expiry was ${expired}), `
+    + `so sessions are being started on the ${NAME[on]} instead. Renew the ${NAME[dead]}'s login by following `
+    + `runbooks/claude-login.md in this repo, verify it with the probe there, and tell Jared what you did.`;
+  const r = await startSession('health', prompt, on, false, `Renew ${NAME[dead]} Claude login`, relay, true);
+  if (!r.ok) console.error(`[desk] login repair for ${dead}: ${r.error}`);
 }
 
 /**

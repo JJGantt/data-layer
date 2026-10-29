@@ -513,14 +513,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         ? 'Its first reply is posted into the hub conversation when it finishes.'
         : 'It runs on its own; check back with get_sessions.';
       const on = r.machine === 'mac' ? 'Mac' : 'Pi';
+      // Said whenever the work is not where the caller asked, so the reply can tell him where it went.
+      const moved = r.rerouted
+        ? ` It went to the ${on} instead of the machine asked for, because ${r.rerouted}.`
+          + (/login/.test(r.rerouted) ? ' A separate session has been started to renew that login.' : '')
+        : '';
       if (r.state === 'queued') {
-        return text(`NOT started yet: "${label}" is queued on the ${on} (${r.detail.replace(/^queued\s*[—-]?\s*/, '')}). It launches when the ${on} has room; get_sessions lists it under Queued.`);
+        return text(`NOT started yet: "${label}" is queued on the ${on} (${r.detail.replace(/^queued\s*[—-]?\s*/, '')}). It launches when the ${on} has room; get_sessions lists it under Queued.${moved}`);
       }
       if (r.state === 'unconfirmed') {
-        return text(`Sent "${label}" to the ${on}, but the ${on} has not confirmed it launched. Check get_sessions before saying it started.`);
+        return text(`Sent "${label}" to the ${on}, but the ${on} has not confirmed it launched. Check get_sessions before saying it started.${moved}`);
       }
       const why = r.handedOff ? ` The Pi had no room (${r.handedOff}), so it went to the Mac.` : '';
-      return text(`Started "${label}" in ${where} on the ${on}.${why} ${back}`);
+      return text(`Started "${label}" in ${where} on the ${on}.${moved}${why} ${back}`);
     }
     if (name === 'follow_up') {
       const r = await desk.followUp(String(a.prompt || ''), a.session ? String(a.session) : undefined);
