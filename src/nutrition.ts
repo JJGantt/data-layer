@@ -149,17 +149,24 @@ export async function commitStaged(idPrefix: string): Promise<NutritionEntry | n
   return data as NutritionEntry;
 }
 
-// Edit a staged meal's name and/or ingredients. Macros are NEVER set directly — any edit that changes
-// the food rebuilds the ingredient list and re-derives the entry totals from it, so parent == sum of
-// ingredients always holds. A bare `nutrition` (simple food) is folded into a single name-only ingredient.
-export async function editStaged(idPrefix: string, fields: {
-  name?: string; nutrition?: MacroNutritionInput; ingredients?: NutritionIngredient[] | null;
+// Edit a meal's name and/or ingredients — staged or already logged, one implementation. Macros are
+// NEVER set directly — any edit that changes the food rebuilds the ingredient list and re-derives the
+// entry totals from it, so parent == sum of ingredients always holds. A bare `nutrition` (simple food)
+// is folded into a single name-only ingredient. `occurred_at` moves a LOGGED entry to another time (and
+// its eating day with it); a staged meal has no meaningful time, since committing restamps it.
+export async function editEntry(idPrefix: string, staged: boolean, fields: {
+  name?: string; nutrition?: MacroNutritionInput; ingredients?: NutritionIngredient[] | null; occurred_at?: string;
 }): Promise<NutritionEntry | null> {
-  const row = await findStaged(idPrefix);
+  const row = await findEntry(idPrefix, staged);
   if (!row) return null;
   const newName = fields.name != null && fields.name.trim() ? fields.name.trim() : row.name;
   const patch: Record<string, unknown> = {};
   if (newName !== row.name) patch.name = newName;
+  if (!staged && fields.occurred_at != null && fields.occurred_at.trim()) {
+    const occurredAt = normalizeOccurredAt(fields.occurred_at);
+    patch.occurred_at = occurredAt;
+    patch.date = dateFromOccurredAt(occurredAt);
+  }
 
   // Decide the new ingredient list (if the food is being edited at all).
   let raw: any[] | undefined;
@@ -168,7 +175,7 @@ export async function editStaged(idPrefix: string, fields: {
 
   let warnings: string[] = [];
   if (raw) {
-    const out = normalizeIngredients(raw, `Staged meal '${newName}'`, true);
+    const out = normalizeIngredients(raw, `${staged ? 'Staged meal' : 'Nutrition entry'} '${newName}'`, true);
     const nutr = rollup(out.ingredients);
     const prod = produceRollup(out.ingredients);
     patch.ingredients = out.ingredients;
