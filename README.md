@@ -8,7 +8,7 @@ Two entry points over the same modules:
 | | what | who runs it |
 |---|---|---|
 | `dist/mcp.js` | the MCP tools | every Claude session, Mac and Pi, via `~/.claude.json` |
-| `dist/http.js` | JSON API on `:27186` | `data-http.service` on the Pi; the Mac calls it |
+| `dist/http.js` | JSON API on `:27186`, and with `HOME_AGENT=1` the Pi's home-network jobs (below) | `data-http.service` on the Pi; the Mac calls it |
 
 Both run from `dist/`; `pull-repos` rebuilds after pulling, so a change made on one machine reaches
 the other's sessions within about fifteen minutes. `CLAUDE.md` covers what to know before editing.
@@ -45,8 +45,29 @@ cereal — a failure mode that only existed because of the matcher.
 | `location.ts` | where he last was (`get_location`, table `locations`), one row per device, kept by a trigger from the fix a command carries |
 | `desk.ts` | dispatching Claude sessions to a machine, and the follow-up pointer |
 | `reports.ts` | the HTML write-ups a dispatched session publishes |
+| `bedroomTv.ts` | the bedroom TV (`bedroom_tv`, table `tv_commands`): inserts a command and awaits the TV's answer. The hub relays it to the TV's app; google-tv `docs/VOICE.md` |
+| `youtube.ts` | public YouTube (`youtube` search / video / related / channel), parsed from the JSON YouTube embeds in its pages |
+| `youtubeAccount.ts` | Jared's own YouTube (`youtube` history / home / subscriptions / …), signed in with the Pi browser's cookies. Runs only on the Pi |
+| `ytParse.ts` | YouTube's renderer JSON, old and new shapes, flattened to rows; shared by the two above |
+| `catalog.ts` | what is streaming where (`catalog`), from JustWatch, with Android TV deep links |
+| `homeRequests.ts` | reads only the Pi can answer (table `home_requests`): any machine asks, data-http on the Pi answers |
+| `tvHome.ts` | the bedroom TV's home-network end on the Pi: power over Wake-on-LAN and adb, and a wake before `open` / `launch` |
+| `realtime.ts` | `onInserts`, the reconnecting INSERT subscription both Pi jobs run on |
 | `helpers.ts` | ids, validation, and the clock — read it before using `now()` |
 | `client.ts` | the Supabase client and where its key comes from |
+
+## The Pi's home-network jobs
+
+Some things only a machine on the home network can do: wake the bedroom TV (Wake-on-LAN, adb), or read
+Jared's own YouTube through the Pi's signed-in automation browser. The voice worker usually runs on
+Fly, which can do neither. So the caller writes a row (`tv_commands`, `home_requests`) and data-http
+on the Pi, subscribed to inserts, does the work and fills in the answer. Realtime both ways; nothing
+polls.
+
+It runs inside data-http rather than as its own service, so it costs one realtime socket and no
+extra process; data-http measured 75MB resident with it on (2026-10-30). It is switched on by
+`HOME_AGENT=1` in `/etc/systemd/system/data-http.service.d/home-agent.conf` on the Pi. No other
+machine may set it: two answerers would both act on every power command.
 
 ## There is no reminders table, and no notes table
 
