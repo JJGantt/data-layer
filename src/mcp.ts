@@ -512,11 +512,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const back = process.env.DATA_CALLER === 'hub'
         ? 'Its first reply is posted into the hub conversation when it finishes.'
         : 'It runs on its own; check back with get_sessions.';
-      const on = r.machine === 'mac' ? 'Mac' : 'Pi';
+      const on = desk.machineName(r.machine);
       // Said whenever the work is not where the caller asked, so the reply can tell him where it went.
+      // A login repair is started only when a machine of his still works (desk.ts startSession); Fly
+      // gets the caveat instead, since it cannot do what needs his signed-in browser.
       const moved = r.rerouted
         ? ` It went to the ${on} instead of the machine asked for, because ${r.rerouted}.`
-          + (/login/.test(r.rerouted) ? ' A separate session has been started to renew that login.' : '')
+          + (r.machine === 'fly'
+            ? ' The Fly machine has no browser, so anything needing his signed-in accounts cannot be done there.'
+            : /login/.test(r.rerouted) ? ' A separate session has been started to renew that login.' : '')
         : '';
       if (r.state === 'queued') {
         return text(`NOT started yet: "${label}" is queued on the ${on} (${r.detail.replace(/^queued\s*[—-]?\s*/, '')}). It launches when the ${on} has room; get_sessions lists it under Queued.${moved}`);

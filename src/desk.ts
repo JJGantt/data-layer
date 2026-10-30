@@ -7,10 +7,34 @@ import { uuid } from './helpers.js';
 // orchestrator on the Mac). Nothing here touches either machine directly — the hub runs on Fly and
 // this MCP runs wherever it runs, so Supabase carries both directions.
 
-export type Machine = 'pi' | 'mac';
+// 'fly' is never chosen by a caller: it is where startSession sends work when neither the Pi nor the Mac
+// can take it (voice-pipeline fly-desk/). Its sessions are addressed like any other once they exist.
+export type Machine = 'pi' | 'mac' | 'fly';
 
 /** The worker each machine's desk consumer heartbeats as. */
-const DESK_WORKER: Record<Machine, string> = { pi: 'pi-desk', mac: 'desk' };
+const DESK_WORKER: Record<Machine, string> = { pi: 'pi-desk', mac: 'desk', fly: 'fly-desk' };
+/** Which machine a session row belongs to, from the worker that publishes it. */
+export const machineOf = (worker: string | null | undefined): Machine =>
+  worker === 'desk' ? 'mac' : worker === 'fly-desk' ? 'fly' : 'pi';
+const asMachine = (m: unknown): Machine => (m === 'mac' || m === 'fly' ? m : 'pi');
+
+/**
+ * Start the Fly session machine and report whether it answered.
+ *
+ * It is stopped almost always, so it has no fresh heartbeat to read. Fly's proxy starts a stopped machine
+ * for any request to it and holds the request until the host is listening, so a 200 here means the host
+ * is up and will drain a command written next. A cold start is seconds; the timeout is for a Fly outage.
+ */
+const FLY_DESK_URL = process.env.FLY_DESK_URL || 'https://jared-desk-fly.fly.dev';
+async function wakeFly(): Promise<boolean> {
+  try {
+    const r = await fetch(`${FLY_DESK_URL}/wake`, { signal: AbortSignal.timeout(45_000) });
+    return r.ok;
+  } catch (e: any) {
+    console.error('[desk] waking the Fly machine:', e?.message || e);
+    return false;
+  }
+}
 // Same 90s the hub and pi-desk use: three missed 30s beats.
 const DESK_STALE_S = 90;
 
@@ -21,13 +45,15 @@ const DESK_STALE_S = 90;
  * that is asleep is claimed by nobody, expires unread, and the caller was already told it started.
  */
 export async function machineAwake(machine: Machine): Promise<boolean> {
+  if (machine === 'fly') return wakeFly();
   const { data } = await getClient().from('worker_presence')
     .select('last_seen').eq('worker', DESK_WORKER[machine]).maybeSingle();
   const t = data?.last_seen;
   return !!t && (Date.now() - new Date(t).getTime()) / 1000 <= DESK_STALE_S;
 }
 
-const NAME: Record<Machine, string> = { pi: 'Pi', mac: 'Mac' };
+const NAME: Record<Machine, string> = { pi: 'Pi', mac: 'Mac', fly: 'Fly machine' };
+export const machineName = (m: Machine) => NAME[m];
 type Readiness = { ok: true } | { ok: false; why: string; login: string | null };
 
 /**
@@ -39,11 +65,11 @@ type Readiness = { ok: true } | { ok: false; why: string; login: string | null }
  * two rows, with nothing asked of either machine. `login` is the expired date, set only when the login
  * is the reason. A beat without the field (a consumer not yet updated) counts as signed in.
  */
-export async function machinesReady(): Promise<Record<Machine, Readiness>> {
+export async function machinesReady(): Promise<Record<'pi' | 'mac', Readiness>> {
   const { data } = await getClient().from('worker_presence')
-    .select('worker, last_seen, info').in('worker', Object.values(DESK_WORKER));
-  const out = {} as Record<Machine, Readiness>;
-  for (const m of ['pi', 'mac'] as Machine[]) {
+    .select('worker, last_seen, info').in('worker', [DESK_WORKER.pi, DESK_WORKER.mac]);
+  const out = {} as Record<'pi' | 'mac', Readiness>;
+  for (const m of ['pi', 'mac'] as const) {
     const row = data?.find((r: any) => r.worker === DESK_WORKER[m]);
     const t = row?.last_seen;
     const exp = row?.info?.login_expires_at;
@@ -161,9 +187,9 @@ export async function retryDeadLetter(id: string) {
   const { data: row } = await getClient().from('desk_dead_letters').select('*').eq('id', id).maybeSingle();
   if (!row) return { ok: false as const, error: 'no such saved command' };
   if (row.retried) return { ok: false as const, error: 'already retried' };
-  const machine = (row.machine === 'mac' ? 'mac' : 'pi') as Machine;
+  const machine = asMachine(row.machine);
   if (!(await machineAwake(machine))) {
-    return { ok: false as const, error: `the ${machine === 'mac' ? 'Mac' : 'Pi'} is still not responding — leaving it saved` };
+    return { ok: false as const, error: `the ${NAME[machine]} is still not responding — leaving it saved` };
   }
   const cmdId = uuid();
   const { error } = await getClient().from('desk_commands')
@@ -237,24 +263,35 @@ export async function startSession(repo: string | undefined, prompt: string, mac
   // The machine has to be able to run it NOW: beating, and signed in. Writing the command anyway is the
   // silent failure this guards — nobody claims it, or it launches a session that cannot authenticate,
   // and the reply already said a session had started. The one asked for first, then the other.
+  //
+  // With neither, the Fly machine takes it: it runs on the year-long token, so no login date applies, but
+  // it has no browser and no Remote Control, which is why it is last rather than an equal.
   const ready = await machinesReady();
-  const other: Machine = machine === 'pi' ? 'mac' : 'pi';
-  const asked = machine;
+  const asked = machine === 'mac' ? 'mac' : 'pi';
+  const other = asked === 'pi' ? 'mac' : 'pi';
   const fail = ready[asked];
+  let rerouted: string | null = null;
   if (!fail.ok) {
-    if (!ready[other].ok) {
+    if (ready[other].ok) {
+      machine = other;
+      rerouted = fail.why;
+    } else {
       const why = `${fail.why}, and ${(ready[other] as { why: string }).why}`;
-      const saved = await deadLetter('open_session', payload, asked, why);
-      return { ok: false as const, machine: asked, saved,
-               error: `Nothing was started: ${why}. The prompt is saved and can be retried.` };
+      if (!(await wakeFly())) {
+        const saved = await deadLetter('open_session', payload, asked, `${why}, and the Fly machine did not start`);
+        return { ok: false as const, machine: asked, saved,
+                 error: `Nothing was started: ${why}, and the Fly machine did not start. The prompt is saved and can be retried.` };
+      }
+      machine = 'fly';
+      rerouted = why;
     }
-    machine = other;
     payload.target = machine;
   }
-  const rerouted = fail.ok ? null : fail.why;
   // A dead login is a problem with a known fix, so it gets a session of its own that fixes it, run on
   // the machine that still works. Once per expired login, however many dispatches route around it.
-  if (!fail.ok && fail.login && !repair) await startLoginRepair(asked, fail.login, machine, relay);
+  // The repair session needs a shell on the other machine (the runbook drives the Pi's login from the
+  // Mac), so it is started only where one of the two still works, never on Fly.
+  if (!fail.ok && fail.login && !repair && machine !== 'fly') await startLoginRepair(asked, fail.login, machine, relay);
   // Focus first: a follow-up said while the launch is still being confirmed belongs to this dispatch.
   await setFocus(id, machine);
   // Confirmed, not inserted: a machine short of room QUEUES the session instead of launching it
@@ -408,7 +445,7 @@ export async function focusSession(ref: string) {
   if (row.status !== 'resident') {
     return { ok: false as const, error: `that session is not running — resume it first` };
   }
-  const machine: Machine = row.worker === 'desk' ? 'mac' : 'pi';
+  const machine = machineOf(row.worker);
   await getClient().from('desk_focus').upsert(
     { id: 'current', session_id: row.id, command_id: null, machine, updated: new Date().toISOString() },
     { onConflict: 'id' });
@@ -455,7 +492,7 @@ export async function followUp(prompt: string, ref?: string) {
     let machine: Machine | null = null;
     if (pending) {
       const { data: f } = await getClient().from('desk_focus').select('machine').eq('id', 'current').maybeSingle();
-      machine = f?.machine === 'mac' ? 'mac' : 'pi';
+      machine = asMachine(f?.machine);
     }
     const saved = await deadLetter('follow_up', { session: null, prompt, ...(machine ? { target: machine } : {}) }, machine, reason);
     return { ok: false as const, saved, error: `${reason} — nothing was sent. The follow-up is saved and can be retried.` };
@@ -464,12 +501,12 @@ export async function followUp(prompt: string, ref?: string) {
 }
 
 async function deliverFollowUp(s: DeskSession, prompt: string) {
-  const machine: Machine = s.worker === 'desk' ? 'mac' : 'pi';
+  const machine = machineOf(s.worker);
   if (!(await machineAwake(machine))) {
     const saved = await deadLetter('follow_up', { session: s.id, prompt, target: machine }, machine,
-                                   `the ${machine === 'mac' ? 'Mac' : 'Pi'} is not responding`);
+                                   `the ${NAME[machine]} is not responding`);
     return { ok: false as const, saved,
-             error: `The ${machine === 'mac' ? 'Mac' : 'Pi'} is not responding, so the follow-up was not sent. It is saved and can be retried.` };
+             error: `The ${NAME[machine]} is not responding, so the follow-up was not sent. It is saved and can be retried.` };
   }
   const id = uuid();
   const v = await dispatchConfirmed(id, 'follow_up', { session: s.id, prompt, target: machine });
@@ -615,8 +652,8 @@ export async function transferSession(ref: string, machine: Machine) {
   const found = await resolveSession(ref);
   if (!found.ok) return { ok: false as const, error: found.error };
   const row = found.row;
-  const source: Machine = row.worker === 'desk' ? 'mac' : 'pi';
-  const where = (m: Machine) => (m === 'mac' ? 'the Mac' : 'the Pi');
+  const source = machineOf(row.worker);
+  const where = (m: Machine) => `the ${NAME[m]}`;
   if (source === machine) return { ok: false as const, error: `that session is already on ${where(machine)}` };
   if (!row.claude_session_id) {
     return { ok: false as const, error: 'that session has no transcript recorded, so there is nothing to move' };
@@ -668,7 +705,7 @@ export async function sessionCommand(kind: 'resume_session' | 'end_session', ses
   if (!found.ok) return { ok: false as const, error: found.error };
   const row = found.row;
   session = row.id;
-  const machine: Machine = row.worker === 'desk' ? 'mac' : 'pi';
+  const machine = machineOf(row.worker);
   // Both machines park and resume now: a closed session with a recorded transcript comes back with
   // its whole conversation, in a new tab or a new tmux session. Only one without a transcript is
   // genuinely gone — that is what the `ended` status means, as against `evicted`.
@@ -677,9 +714,9 @@ export async function sessionCommand(kind: 'resume_session' | 'end_session', ses
   }
   const payload = { session, target: machine, ...(prompt ? { prompt } : {}) };
   if (!(await machineAwake(machine))) {
-    const saved = await deadLetter(kind, payload, machine, `the ${machine === 'mac' ? 'Mac' : 'Pi'} is not responding`);
+    const saved = await deadLetter(kind, payload, machine, `the ${NAME[machine]} is not responding`);
     return { ok: false as const, saved,
-             error: `The ${machine === 'mac' ? 'Mac' : 'Pi'} is not responding, so that did not happen. It is saved and can be retried.` };
+             error: `The ${NAME[machine]} is not responding, so that did not happen. It is saved and can be retried.` };
   }
   const sent = uuid();
   const f = await followHandoff(sent, await dispatchConfirmed(sent, kind, payload), machine);
@@ -711,7 +748,7 @@ export async function renameSession(ref: string, name: string) {
   const found = await resolveSession(ref);
   if (!found.ok) return { ok: false as const, error: found.error };
   const row = found.row;
-  const machine: Machine = row.worker === 'desk' ? 'mac' : 'pi';
+  const machine = machineOf(row.worker);
 
   await getClient().from('desk_sessions').update({ label: clean }).eq('id', row.id);
   if (row.status !== 'resident') {
@@ -772,7 +809,7 @@ export function formatSessions(rows: DeskSession[], q: any[]): string {
   // the working directory. Nothing distinguished them from a session actually called that.
   const shown = (r: DeskSession) => (r as any).label || '(unnamed)';
   const line = (r: DeskSession & { n: number }) =>
-    `- **${r.n}.** ${shown(r)} (${r.repo} on the ${r.worker === 'desk' ? 'Mac' : 'Pi'}) \`${sessionHandle(r)}\``
+    `- **${r.n}.** ${shown(r)} (${r.repo} on the ${NAME[machineOf(r.worker)]}) \`${sessionHandle(r)}\``
     + ` — ${(r.last_reply || r.prompt || 'no output yet').replace(/\s+/g, ' ').slice(0, 100)}`;
   // ONE LIST IN NUMBER ORDER, each row saying whether it runs: the number is the position by activity
   // alone, so splitting Running from Parked would print the numbers out of order.
