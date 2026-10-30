@@ -14,6 +14,7 @@ import * as nutrition from './nutrition.js';
 import * as reviews from './reviews.js';
 import * as shopping from './shopping.js';
 import { ValidationError } from './helpers.js';
+import * as tvHome from './tvHome.js';
 
 const PORT = Number(process.env.DATA_HTTP_PORT || 27186);
 
@@ -272,6 +273,8 @@ const server = http.createServer(async (req, res) => {
     json(res, { error: err.message }, err instanceof ValidationError ? 400 : 500);
   }
 });
+
+if (process.env.TV_HOME === '1') tvHome.start();
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`[data-http] listening on :${PORT}`);

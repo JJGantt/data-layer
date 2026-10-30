@@ -6,11 +6,14 @@
 import { randomUUID } from 'crypto';
 import { getClient } from './client.js';
 
-export const OPS = ['brightness', 'contrast', 'night', 'volume', 'open', 'launch', 'sidebar', 'overlay', 'now'] as const;
+export const OPS = ['power', 'brightness', 'contrast', 'night', 'volume', 'open', 'launch', 'sidebar', 'overlay', 'now'] as const;
 export type Op = (typeof OPS)[number];
 
-// Long enough for a volume walk of many key steps; short enough that a TV that is off answers promptly.
+// Long enough for a volume walk of many key steps. An op that may wake the TV first gets longer: the
+// Pi's Wake-on-LAN, the screen coming on and the app reconnecting (google-tv docs/POWER.md).
 const TIMEOUT_MS = 15_000;
+const WAKE_TIMEOUT_MS = 45_000;
+const WAKES = new Set<Op>(['power', 'open', 'launch']);
 
 // Apps by the name he says, to their package (installed on the TV, checked 2026-10-30).
 export const APPS: Record<string, string> = {
@@ -39,7 +42,8 @@ export async function command(op: Op, args: Record<string, unknown>): Promise<Re
         const { error } = await sb.from('tv_commands').insert({ id, op, args });
         if (error) { sb.removeChannel(ch); resolve({ ok: false, error: error.message }); }
       });
-    setTimeout(() => { sb.removeChannel(ch); resolve({ ok: false, error: 'no answer from the TV in 15s' }); }, TIMEOUT_MS);
+    const ms = WAKES.has(op) ? WAKE_TIMEOUT_MS : TIMEOUT_MS;
+    setTimeout(() => { sb.removeChannel(ch); resolve({ ok: false, error: `no answer from the TV in ${ms / 1000}s` }); }, ms);
   });
   return answered;
 }
