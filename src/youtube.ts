@@ -1,11 +1,13 @@
-// YouTube, read the way the site itself is: the watch and results pages carry their data as JSON
-// (`ytInitialPlayerResponse`, `ytInitialData`) inside a <script>. A generic fetch-to-markdown tool
-// (WebFetch) drops scripts and truncates the 1.5MB page, so it never sees a description, chapters or
-// a real video id; parsing that JSON does, with no API key. Works from the Mac, the Pi and Fly alike.
+// YouTube's public side, read the way the site itself is: the watch, results and channel pages carry
+// their data as JSON (`ytInitialPlayerResponse`, `ytInitialData`) inside a <script>. A generic
+// fetch-to-markdown tool (WebFetch) drops scripts and truncates the 1.5MB page, so it never sees a
+// description, chapters or a real video id; parsing that JSON does, with no API key. Works from the
+// Mac, the Pi and Fly alike. Jared's own account (history, recommendations) is youtubeAccount.ts.
 //
 // Transcripts are NOT available this way: the caption URLs in the player response return an empty
 // body, and the transcript endpoint answers FAILED_PRECONDITION, because both now want a token only a
 // real browser's player mints.
+import { find, items, render, txt } from './ytParse.js';
 
 const HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130 Safari/537.36',
@@ -35,38 +37,57 @@ function embedded(html: string, name: string): any {
   return null;
 }
 
-function* find(o: any, key: string): Generator<any> {
-  if (Array.isArray(o)) for (const v of o) yield* find(v, key);
-  else if (o && typeof o === 'object') for (const [k, v] of Object.entries(o)) { if (k === key) yield v; yield* find(v, key); }
+const clock = (s: number) => { const h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60, x = s % 60; return (h ? `${h}:${String(m).padStart(2, '0')}` : `${m}`) + `:${String(x).padStart(2, '0')}`; };
+const clamp = (n: number | undefined, d: number) => Math.max(1, Math.min(50, Math.round(n || d)));
+
+function videoId(s: string): string | null {
+  const m = s.match(/(?:v=|youtu\.be\/|shorts\/|live\/)([\w-]{11})/) || s.match(/^([\w-]{11})$/);
+  return m ? m[1] : null;
 }
 
-const txt = (t: any): string => t?.simpleText ?? (t?.runs || []).map((r: any) => r.text).join('');
-const clock = (s: number) => { const h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60, x = s % 60; return (h ? `${h}:${String(m).padStart(2, '0')}` : `${m}`) + `:${String(x).padStart(2, '0')}`; };
-
-/** Videos for a search, in YouTube's order: id, title, channel, length, views, age. */
-export async function search(query: string, limit = 10): Promise<string> {
+/** Videos (and channels, playlists) for a search, in YouTube's order. */
+export async function search(query: string, limit?: number): Promise<string> {
   const html = await page(`https://www.youtube.com/results?search_query=${encodeURIComponent(query)}&hl=en`);
-  const rows = [...find(embedded(html, 'ytInitialData'), 'videoRenderer')].slice(0, Math.max(1, Math.min(20, limit)));
-  if (!rows.length) return 'No videos found.';
-  return rows.map((v: any) => [v.videoId, txt(v.title), txt(v.ownerText), v.lengthText?.simpleText || 'live',
-    txt(v.viewCountText), txt(v.publishedTimeText)].filter(Boolean).join(' | ')).join('\n');
+  return render(items(embedded(html, 'ytInitialData')).filter((it) => it.kind !== 'short').slice(0, clamp(limit, 10)));
 }
 
 /** One video: title, channel, length, views, date, the full description and its chapters. */
 export async function video(id: string): Promise<string> {
-  const m = id.match(/(?:v=|youtu\.be\/|shorts\/|live\/)([\w-]{11})/) || id.match(/^([\w-]{11})$/);
-  if (!m) return `Not a YouTube video id or URL: ${id}`;
-  const html = await page(`https://www.youtube.com/watch?v=${m[1]}&hl=en`);
+  const v = videoId(id);
+  if (!v) return `Not a YouTube video id or URL: ${id}`;
+  const html = await page(`https://www.youtube.com/watch?v=${v}&hl=en`);
   const player = embedded(html, 'ytInitialPlayerResponse');
   const d = player?.videoDetails;
-  if (!d) return `YouTube returned no details for ${m[1]} (${player?.playabilityStatus?.status || 'no player data'}).`;
+  if (!d) return `YouTube returned no details for ${v} (${player?.playabilityStatus?.status || 'no player data'}).`;
   const micro = player.microformat?.playerMicroformatRenderer || {};
   const chapters = [...find(embedded(html, 'ytInitialData'), 'chapterRenderer')]
     .map((c: any) => `${clock(Math.round(c.timeRangeStartMillis / 1000))} ${txt(c.title)}`);
   return [
     `${d.title}`,
-    `id ${d.videoId} | ${d.author} | ${clock(Number(d.lengthSeconds))} | ${Number(d.viewCount).toLocaleString('en-US')} views${micro.publishDate ? ` | published ${micro.publishDate.slice(0, 10)}` : ''}`,
+    `id ${d.videoId} | ${d.author} (channel ${d.channelId}) | ${clock(Number(d.lengthSeconds))} | ${Number(d.viewCount).toLocaleString('en-US')} views${micro.publishDate ? ` | published ${micro.publishDate.slice(0, 10)}` : ''}${d.isLiveContent ? ' | live' : ''}`,
+    micro.category ? `category ${micro.category}` : '',
     chapters.length ? `\nChapters:\n${[...new Set(chapters)].join('\n')}` : '',
     `\nDescription:\n${d.shortDescription || '(none)'}`,
   ].filter(Boolean).join('\n');
+}
+
+/** What YouTube suggests watching after a video (the watch page's side column). */
+export async function related(id: string, limit?: number): Promise<string> {
+  const v = videoId(id);
+  if (!v) return `Not a YouTube video id or URL: ${id}`;
+  const data = embedded(await page(`https://www.youtube.com/watch?v=${v}&hl=en`), 'ytInitialData');
+  const side = data?.contents?.twoColumnWatchNextResults?.secondaryResults;
+  return render(items(side).filter((it) => it.id !== v && it.kind !== 'short').slice(0, clamp(limit, 15)));
+}
+
+/** A channel's newest uploads. `channel` is an @handle, a channel id (UC…) or a channel URL. */
+export async function channel(channel: string, limit?: number): Promise<string> {
+  const c = channel.trim().replace(/^https?:\/\/(www\.)?youtube\.com\//, '').replace(/\/.*$/, '');
+  const path = /^UC[\w-]{22}$/.test(c) ? `channel/${c}` : `@${c.replace(/^@/, '')}`;
+  const data = embedded(await page(`https://www.youtube.com/${path}/videos?hl=en`), 'ytInitialData');
+  const name = txt(data?.metadata?.channelMetadataRenderer?.title) || data?.metadata?.channelMetadataRenderer?.title;
+  if (!data) return `No channel at youtube.com/${path}.`;
+  const desc = data?.metadata?.channelMetadataRenderer?.description;
+  return [`${name || path}${desc ? `\n${desc.slice(0, 400)}` : ''}`, '', 'Newest uploads:',
+    render(items(data).filter((it) => it.kind === 'video').slice(0, clamp(limit, 15)))].join('\n');
 }

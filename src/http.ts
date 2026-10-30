@@ -15,6 +15,7 @@ import * as reviews from './reviews.js';
 import * as shopping from './shopping.js';
 import { ValidationError } from './helpers.js';
 import * as tvHome from './tvHome.js';
+import * as homeRequests from './homeRequests.js';
 
 const PORT = Number(process.env.DATA_HTTP_PORT || 27186);
 
@@ -274,7 +275,8 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-if (process.env.TV_HOME === '1') tvHome.start();
+// The Pi's home-network jobs (tvHome.ts, homeRequests.ts); set only in the Pi's unit.
+if (process.env.HOME_AGENT === '1') { tvHome.start(); homeRequests.start(); }
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`[data-http] listening on :${PORT}`);
