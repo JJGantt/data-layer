@@ -544,7 +544,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         : `Queued for the ${r.repo} session, but its machine has not confirmed delivery yet.`);
     }
     if (name === 'get_sessions') {
-      return text(desk.formatSessions(await desk.listSessions(), await desk.queued()));
+      const rows = await desk.listSessions();
+      return text(desk.formatSessions(rows, await desk.queued(), await desk.turnSummaries(rows)));
     }
     if (name === 'set_wall') {
       const raw = String(a.mode || '').toLowerCase();

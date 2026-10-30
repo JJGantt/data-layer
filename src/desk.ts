@@ -787,7 +787,26 @@ export async function setWall(mode: WallMode, months?: number) {
   return error ? { ok: false as const, error: error.message } : { ok: true as const, mode };
 }
 
-export function formatSessions(rows: DeskSession[], q: any[]): string {
+/**
+ * Each session's last answer as one sentence, keyed by conversation: the summary the host wrote for
+ * the push notification (data-layer 00133), taken only when it belongs to the turn the row shows.
+ * A summary of an older turn says nothing about the current one, so the turn is matched on reply_at.
+ */
+export async function turnSummaries(rows: DeskSession[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  const withReply = rows.filter((r) => r.reply_at);
+  if (!withReply.length) return out;
+  const { data } = await getClient().from('desk_turns').select('conversation,at,summary')
+    .in('conversation', [...new Set(withReply.map(conversationOf))]).not('summary', 'is', null);
+  const byTurn = new Map((data ?? []).map((t: any) => [`${t.conversation}@${new Date(t.at).getTime()}`, t.summary as string]));
+  for (const r of withReply) {
+    const summary = byTurn.get(`${conversationOf(r)}@${new Date(r.reply_at!).getTime()}`);
+    if (summary) out.set(conversationOf(r), summary);
+  }
+  return out;
+}
+
+export function formatSessions(rows: DeskSession[], q: any[], summaries: Map<string, string> = new Map()): string {
   if (!rows.length && !q.length) return 'No sessions running or parked.';
   const lines: string[] = [];
   // Numbered, because the number is how Jared refers to one out loud, and it has to be the same
@@ -810,7 +829,14 @@ export function formatSessions(rows: DeskSession[], q: any[]): string {
   const shown = (r: DeskSession) => (r as any).label || '(unnamed)';
   const line = (r: DeskSession & { n: number }) =>
     `- **${r.n}.** ${shown(r)} (${r.repo} on the ${NAME[machineOf(r.worker)]}) \`${sessionHandle(r)}\``
-    + ` — ${(r.last_reply || r.prompt || 'no output yet').replace(/\s+/g, ' ').slice(0, 100)}`;
+    + ` — ${lastSaid(r)}`;
+  // WHAT IT LAST SAID is the turn's one-sentence summary — what it did, or the question it ends on —
+  // because a reply cut at a fixed length loses its end, which is where a question for him sits. No
+  // summary means the reply is under 200 characters (short enough to show whole) or the summariser
+  // failed or has not finished, so the reply itself is shown, still bounded: a dozen long reports
+  // would bury the list.
+  const lastSaid = (r: DeskSession) => summaries.get(conversationOf(r))
+    || (r.last_reply || r.prompt || 'no output yet').replace(/\s+/g, ' ').slice(0, 200);
   // ONE LIST IN NUMBER ORDER, each row saying whether it runs: the number is the position by activity
   // alone, so splitting Running from Parked would print the numbers out of order.
   if (numbered.length) {
