@@ -6,14 +6,14 @@
 import { randomUUID } from 'crypto';
 import { getClient } from './client.js';
 
-export const OPS = ['power', 'brightness', 'contrast', 'night', 'volume', 'open', 'launch', 'sidebar', 'overlay', 'now'] as const;
+export const OPS = ['power', 'brightness', 'contrast', 'night', 'volume', 'open', 'launch', 'sidebar', 'overlay', 'now', 'media', 'key', 'input'] as const;
 export type Op = (typeof OPS)[number];
 
 // Long enough for a volume walk of many key steps. An op that may wake the TV first gets longer: the
 // Pi's Wake-on-LAN, the screen coming on and the app reconnecting (google-tv docs/POWER.md).
 const TIMEOUT_MS = 15_000;
 const WAKE_TIMEOUT_MS = 45_000;
-const WAKES = new Set<Op>(['power', 'open', 'launch']);
+const WAKES = new Set<Op>(['power', 'open', 'launch', 'input']);
 
 // Apps by the name he says, to their package (installed on the TV, checked 2026-10-30).
 export const APPS: Record<string, string> = {
@@ -27,6 +27,14 @@ export const APPS: Record<string, string> = {
   appletv: 'com.apple.atve.androidtv.appletv',
   youtubemusic: 'com.google.android.youtube.tvmusic',
   youtubetv: 'com.google.android.youtube.tvunplugged',
+};
+
+// `media` actions, done on whatever is playing through its media session (google-tv TvLink).
+export const MEDIA_ACTIONS = ['play', 'pause', 'toggle', 'stop', 'next', 'previous', 'forward', 'back', 'seek'] as const;
+// Remote buttons, pressed by the Pi over adb (tvHome.ts): an app on the TV cannot inject keys.
+export const KEYS: Record<string, string> = {
+  back: 'KEYCODE_BACK', home: 'KEYCODE_HOME', up: 'KEYCODE_DPAD_UP', down: 'KEYCODE_DPAD_DOWN',
+  left: 'KEYCODE_DPAD_LEFT', right: 'KEYCODE_DPAD_RIGHT', select: 'KEYCODE_DPAD_CENTER',
 };
 
 export async function command(op: Op, args: Record<string, unknown>): Promise<Record<string, unknown>> {

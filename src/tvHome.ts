@@ -4,7 +4,9 @@
 // reach the home network. So the Pi, subscribed to the same tv_commands inserts as the hub, does what
 // only a machine beside the TV can, through google-tv's bin/tv:
 //   - `power`: the whole command (Wake-on-LAN or adb), answered here; the hub leaves these rows alone.
-//   - `open` / `launch`: `bin/tv power on` (Wake-on-LAN resent until the TV reports Awake, then adb),
+//   - `key`: a remote button over adb (an app on the TV cannot inject keys), answered here; the hub
+//     leaves these rows alone too. A TV that is off answers that it is off rather than being woken.
+//   - `open` / `launch` / `input`: `bin/tv power on` (Wake-on-LAN resent until the TV reports Awake, then adb),
 //     harmless when the TV is on. The hub holds the row until the app reconnects and does the rest.
 //     If the TV is still off after that, the row is answered here with that, so the caller hears it in
 //     seconds instead of waiting out its timeout on a wake that did not happen.
@@ -15,10 +17,11 @@ import { promisify } from 'node:util';
 import { homedir } from 'node:os';
 import { getClient } from './client.js';
 import { onInserts } from './realtime.js';
+import { KEYS } from './bedroomTv.js';
 
 const run = promisify(execFile);
 const TV = process.env.TV_BIN || `${homedir()}/repos/google-tv/bin/tv`;
-const WAKE_OPS = new Set(['open', 'launch']);
+const WAKE_OPS = new Set(['open', 'launch', 'input']);
 
 async function answer(id: string, result: Record<string, unknown>): Promise<void> {
   // Only a row nobody has answered: when the wake worked the app may already have done the command.
@@ -42,6 +45,20 @@ async function handle(row: any): Promise<void> {
     console.log(`[tv] ${row.op}: TV ${now}`);
     if (now === 'off') await answer(row.id, { ok: false, error: 'the TV is off and did not wake' });
     return;
+  }
+  if (row.op === 'key') {
+    const code = KEYS[String(row.args?.key || '')];
+    if (!code) return answer(row.id, { ok: false, error: `unknown key ${row.args?.key}` });
+    let result: Record<string, unknown>;
+    try {
+      const { stdout } = await run(TV, ['power'], { timeout: 20_000 });
+      if (stdout.trim() !== 'on') return answer(row.id, { ok: false, error: 'the TV is off' });
+      await run(TV, ['key', code], { timeout: 20_000 });
+      result = { ok: true, key: row.args.key };
+    } catch (e: any) {
+      result = { ok: false, error: String(e.stderr || e.message).trim() };
+    }
+    return answer(row.id, result);
   }
   if (row.op !== 'power') return;
   const state = row.args?.on === false ? 'off' : 'on';
