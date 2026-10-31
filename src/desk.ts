@@ -219,6 +219,8 @@ export interface DeskSession {
   command_id: string | null;
   // The last turn boundary — a prompt sent or a turn finished. Orders, numbers and focuses sessions.
   active_at: string | null;
+  // The claude process running it, on the row's own machine.
+  pid: number | null;
 }
 
 /** Every project a machine has published, most recently touched first. */
@@ -692,6 +694,18 @@ export async function queued() {
 }
 
 /**
+ * Whether `row` is the session this MCP server belongs to. The desk launchers export the row id as
+ * HUB_SESSION_ID on every machine. A session Jared opened by hand at the Mac has no such variable, so
+ * there the parent pid decides: this server is a stdio child of the claude process, whose pid is on
+ * the row. Only on the Mac, the one darwin machine: on Linux a pid match could be a different box.
+ */
+function isSelf(row: DeskSession): boolean {
+  if (process.env.HUB_SESSION_ID && process.env.HUB_SESSION_ID === row.id) return true;
+  return process.platform === 'darwin' && machineOf(row.worker) === 'mac'
+    && row.pid != null && Number(row.pid) === process.ppid;
+}
+
+/**
  * Resume an evicted session with its full context, or end a running one.
  *
  * The target comes from the session's own row. Hardcoding 'pi' sent every Mac session's close and
@@ -711,6 +725,17 @@ export async function sessionCommand(kind: 'resume_session' | 'end_session', ses
   // genuinely gone — that is what the `ended` status means, as against `evicted`.
   if (kind === 'resume_session' && (row as any).status === 'ended') {
     return { ok: false as const, error: 'that session has no transcript recorded, so there is nothing to resume' };
+  }
+  // A session closing ITSELF is mid-turn by definition: it is running the tool call that asked. Closed
+  // now, the process dies before it writes the reply, and the watch and phone get no answer at all. So
+  // its host is told to close it after this turn instead (close_after_turn, migration 00143), once the
+  // reply has been published.
+  if (kind === 'end_session' && isSelf(row)) {
+    const { error } = await getClient().from('desk_sessions')
+      .update({ close_after_turn: new Date().toISOString() }).eq('id', row.id);
+    if (error) return { ok: false as const, error: `could not mark ${session} to close: ${error.message}` };
+    await releaseFocusFor(session);
+    return { ok: true as const, self: true as const, id: row.id, machine };
   }
   const payload = { session, target: machine, ...(prompt ? { prompt } : {}) };
   if (!(await machineAwake(machine))) {

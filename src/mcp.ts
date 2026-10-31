@@ -666,6 +666,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
     if (name === 'end_session') {
       const r = await desk.sessionCommand('end_session', String(a.session));
+      if (r.ok && 'self' in r) return text('That is this session: it closes as soon as this reply is posted. Write the reply as normal.');
       return text(r.ok ? 'Closing that session.' : r.error);
     }
     if (name === 'delete_list') {
