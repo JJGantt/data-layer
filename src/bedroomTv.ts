@@ -37,7 +37,19 @@ export const KEYS: Record<string, string> = {
   left: 'KEYCODE_DPAD_LEFT', right: 'KEYCODE_DPAD_RIGHT', select: 'KEYCODE_DPAD_CENTER',
 };
 
+// A level setter reads the level first and answers with it as `before`, so "what was it before?" and
+// "put it back" have an answer however long after the change he asks. The TV reports only the value
+// after a set, and nothing else keeps the old one.
+const LEVELS = new Set<Op>(['volume', 'brightness', 'contrast']);
+
 export async function command(op: Op, args: Record<string, unknown>): Promise<Record<string, unknown>> {
+  if (!LEVELS.has(op) || args.value === undefined) return send(op, args);
+  const read = await send(op, {});
+  const after = await send(op, args);
+  return read.ok && read[op] !== undefined ? { ...after, before: read[op] } : after;
+}
+
+async function send(op: Op, args: Record<string, unknown>): Promise<Record<string, unknown>> {
   const sb = getClient();
   const id = randomUUID();
   // Subscribed BEFORE the insert, so an answer faster than the subscription cannot be missed.
