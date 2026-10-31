@@ -51,7 +51,7 @@ cereal — a failure mode that only existed because of the matcher.
 | `ytParse.ts` | YouTube's renderer JSON, old and new shapes, flattened to rows; shared by the two above |
 | `catalog.ts` | what is streaming where (`catalog`), from JustWatch, with Android TV deep links |
 | `homeRequests.ts` | reads only the Pi can answer (table `home_requests`): any machine asks, data-http on the Pi answers |
-| `tvHome.ts` | the bedroom TV's home-network end on the Pi: power over Wake-on-LAN and adb, and a wake before `open` / `launch` |
+| `tvHome.ts` | the bedroom TV's home-network end on the Pi: power over Wake-on-LAN and adb, remote keys over adb, and a wake before `open` / `launch` / `input` |
 | `realtime.ts` | `onInserts`, the reconnecting INSERT subscription both Pi jobs run on |
 | `helpers.ts` | ids, validation, and the clock — read it before using `now()` |
 | `client.ts` | the Supabase client and where its key comes from |
