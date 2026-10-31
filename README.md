@@ -13,6 +13,10 @@ Two entry points over the same modules:
 Both run from `dist/`; `pull-repos` rebuilds after pulling, so a change made on one machine reaches
 the other's sessions within about fifteen minutes. `CLAUDE.md` covers what to know before editing.
 
+`dist/http.js` reports its errors and beats to the ops responder (health/responder) through
+`ops_report.cjs`, a copy of that repo's reporter (edit it there). A request it rejects as invalid (400)
+is answered, not reported; any other failure is `console.error`, which is what reports it.
+
 ## Modules
 
 `mcp.ts` and `http.ts` are transports; neither holds logic. The domain modules underneath are what

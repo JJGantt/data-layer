@@ -6,6 +6,7 @@
  */
 
 import http from 'node:http';
+import { createRequire } from 'node:module';
 import * as lists from './lists.js';
 import * as health from './health.js';
 import * as workouts from './workouts.js';
@@ -270,13 +271,23 @@ const server = http.createServer(async (req, res) => {
 
     notFound(res);
   } catch (err: any) {
-    console.error('HTTP error:', err.message);
+    // A bad request is the caller's mistake and is answered, not reported. Anything else is ours.
+    if (err instanceof ValidationError) console.log('HTTP 400:', err.message);
+    else console.error('HTTP error:', err.message);
     json(res, { error: err.message }, err instanceof ValidationError ? 400 : 500);
   }
 });
 
 // The Pi's home-network jobs (tvHome.ts, homeRequests.ts); set only in the Pi's unit.
 if (process.env.HOME_AGENT === '1') { tvHome.start(); homeRequests.start(); }
+
+// Errors and the heartbeat go to the ops responder (health/responder). ops_report.cjs is a copy of its
+// reporter (edit it there). Request-driven, so the event loop is the work loop: a beat from a timer on
+// it stops when the loop is blocked or the process is gone.
+const ops = createRequire(import.meta.url)('../ops_report.cjs');
+ops.install({ machine: process.env.OPS_MACHINE || 'pi', service: 'data-http' });
+setInterval(() => ops.beat(60), 60e3);
+ops.beat(60);
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`[data-http] listening on :${PORT}`);

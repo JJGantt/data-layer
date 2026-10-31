@@ -41,7 +41,7 @@ async function answer(row: any): Promise<void> {
     result = { ok: false, error: String(e.message || e) };
   }
   const { error } = await getClient().from('home_requests').update({ done_at: new Date().toISOString(), result }).eq('id', row.id);
-  if (error) console.log('[home] answer failed', error.message);
+  if (error) console.error('[home] answer failed', error.message);
 }
 
 export const start = () => onInserts('home_requests', answer);

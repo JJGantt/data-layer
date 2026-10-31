@@ -27,7 +27,7 @@ async function answer(id: string, result: Record<string, unknown>): Promise<void
   // Only a row nobody has answered: when the wake worked the app may already have done the command.
   const { error } = await getClient().from('tv_commands')
     .update({ done_at: new Date().toISOString(), result }).eq('id', id).is('done_at', null);
-  if (error) console.log('[tv] answer failed', error.message);
+  if (error) console.error('[tv] answer failed', error.message);
 }
 
 async function handle(row: any): Promise<void> {
