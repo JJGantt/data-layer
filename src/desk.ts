@@ -875,3 +875,44 @@ export function formatSessions(rows: DeskSession[], q: any[], summaries: Map<str
   }
   return lines.join('\n');
 }
+
+// ── Subscription usage gate for new sessions ────────────────────────────────────────────────────────
+// Sessions are what spend the Claude 5-hour and weekly windows; voice turns barely move them, and when a
+// window is exhausted they fall back to API credits anyway (voice-pipeline worker, SDK_CREDITS). So a
+// dispatch is held back at a high reading, leaving the window for voice, unless Jared says to start it
+// anyway. Thresholds are Jared's (2026-11-01): from 75% the session starts and he is told the reading;
+// from 90% it does not start until he confirms. The reading is the newest `claude_usage` row (00144),
+// written after every turn by the voice worker and by each machine's Stop hook.
+export const USAGE_NOTE_PCT = 75;
+export const USAGE_HOLD_PCT = 90;
+
+export interface UsageReading { five: number; fiveResets: string | null; week: number; weekResets: string | null; at: string }
+
+export async function usageNow(): Promise<UsageReading | null> {
+  const { data, error } = await getClient().from('claude_usage')
+    .select('five_hour_pct, five_hour_resets_at, seven_day_pct, seven_day_resets_at, observed_at')
+    .order('observed_at', { ascending: false }).limit(1);
+  if (error) { console.error(`claude_usage read failed: ${error.message}`); return null; }
+  const r = data?.[0];
+  if (!r) return null;
+  return { five: Number(r.five_hour_pct), fiveResets: r.five_hour_resets_at, week: Number(r.seven_day_pct),
+           weekResets: r.seven_day_resets_at, at: r.observed_at };
+}
+
+// "5-hour 92% (resets in 1h 20m), weekly 61% (resets in 3d 4h)", for the model to relay.
+export function describeUsage(u: UsageReading): string {
+  const left = (iso: string | null) => {
+    if (!iso) return 'reset time unknown';
+    const m = Math.max(0, Math.round((Date.parse(iso) - Date.now()) / 60000));
+    const d = Math.floor(m / 1440), h = Math.floor((m % 1440) / 60), mm = m % 60;
+    return 'resets in ' + (d ? `${d}d ${h}h` : h ? `${h}h ${mm}m` : `${mm}m`);
+  };
+  return `5-hour ${Math.round(u.five)}% (${left(u.fiveResets)}), weekly ${Math.round(u.week)}% (${left(u.weekResets)})`;
+}
+
+// A window whose reset has already passed reads 0 until the next turn reports it, so a stale high
+// reading never holds a session back after the window turned over.
+export function effectivePct(u: UsageReading): number {
+  const live = (pct: number, resets: string | null) => (resets && Date.parse(resets) <= Date.now() ? 0 : pct);
+  return Math.max(live(u.five, u.fiveResets), live(u.week, u.weekResets));
+}
