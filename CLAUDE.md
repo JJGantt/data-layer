@@ -141,14 +141,14 @@ recoverable.
 
 Every server-side consumer holds the `servers` secret key (`sb_secret_…`, role service_role) as its
 `SUPABASE_KEY`; apps hold a publishable key (`sb_publishable_…`): `default` in Workset, `apps` for
-restaurant app. A secret key is not a JWT, and the gateway accepts it only in the **`apikey`
+the restaurant menu app. A secret key is not a JWT, and the gateway accepts it only in the **`apikey`
 header** — `Authorization: Bearer` alone is a 401. Sending both (what supabase-js and every raw
 fetch here do) works, and supabase-js 2.106+ and realtime-py 2.31 subscribe with it.
 
 The `default` secret key is what Supabase injects into edge functions as `SUPABASE_SERVICE_ROLE_KEY`
 (voice-fallback runs on it), so deleting it breaks the function; the `default` publishable is injected
 as `SUPABASE_ANON_KEY` and is Workset's. The legacy JWT `anon` / `service_role` keys are still
-enabled only for the restaurant build on testers' phones; nothing else may go back to them.
+enabled only for the restaurant menu app's build on testers' phones; nothing else may go back to them.
 
 ## Conventions
 
