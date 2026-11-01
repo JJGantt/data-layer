@@ -54,6 +54,19 @@ export async function machineAwake(machine: Machine): Promise<boolean> {
 
 const NAME: Record<Machine, string> = { pi: 'Pi', mac: 'Mac', fly: 'Fly machine' };
 export const machineName = (m: Machine) => NAME[m];
+
+/**
+ * Which agent a session runs: Claude Code, or OpenAI's Codex CLI (voice-pipeline orchestrator/src/codex.js)
+ * for when Claude cannot take the work. The hub draws a Codex session blue.
+ */
+export type Agent = 'claude' | 'codex';
+/**
+ * The agent a dispatch defaults to. DATA_AGENT=codex is set on this MCP by whatever is itself running
+ * because Claude could not: the voice worker's Codex fallback and its API-credits runner (a Claude session
+ * would be refused at the usage limit), and every Codex session (pi-desk/launch-codex.sh). Work it hands
+ * on lands on Codex unless the caller names an agent.
+ */
+export const defaultAgent = (): Agent => (process.env.DATA_AGENT === 'codex' ? 'codex' : 'claude');
 type Readiness = { ok: true } | { ok: false; why: string; login: string | null };
 
 /**
@@ -65,7 +78,7 @@ type Readiness = { ok: true } | { ok: false; why: string; login: string | null }
  * two rows, with nothing asked of either machine. `login` is the expired date, set only when the login
  * is the reason. A beat without the field (a consumer not yet updated) counts as signed in.
  */
-export async function machinesReady(): Promise<Record<'pi' | 'mac', Readiness>> {
+export async function machinesReady(agent: Agent = 'claude'): Promise<Record<'pi' | 'mac', Readiness>> {
   const { data } = await getClient().from('worker_presence')
     .select('worker, last_seen, info').in('worker', [DESK_WORKER.pi, DESK_WORKER.mac]);
   const out = {} as Record<'pi' | 'mac', Readiness>;
@@ -75,6 +88,10 @@ export async function machinesReady(): Promise<Record<'pi' | 'mac', Readiness>> 
     const exp = row?.info?.login_expires_at;
     if (!t || (Date.now() - new Date(t).getTime()) / 1000 > DESK_STALE_S) {
       out[m] = { ok: false, why: `the ${NAME[m]} is not responding`, login: null };
+    } else if (agent === 'codex') {
+      // A Codex session needs Codex signed in there (`info.codex`), and nothing of the Claude login.
+      out[m] = row?.info?.codex === true ? { ok: true }
+        : { ok: false, why: `Codex is not signed in on the ${NAME[m]}`, login: null };
     } else if (exp !== undefined && !(exp && Date.parse(exp) > Date.now())) {
       out[m] = { ok: false, why: `the ${NAME[m]}'s Claude login has expired`, login: exp || 'none' };
     } else {
@@ -219,8 +236,10 @@ export interface DeskSession {
   command_id: string | null;
   // The last turn boundary — a prompt sent or a turn finished. Orders, numbers and focuses sessions.
   active_at: string | null;
-  // The claude process running it, on the row's own machine.
+  // The agent process running it, on the row's own machine.
   pid: number | null;
+  // Claude Code or Codex (`Agent`); for Codex, claude_session_id is the Codex thread id.
+  agent?: Agent;
 }
 
 /** Every project a machine has published, most recently touched first. */
@@ -249,7 +268,7 @@ export async function knownRepo(name: string): Promise<{ path: string; name: str
  * conversation that started it, and the Mac sleeps. Choose 'mac' when the work wants the Mac
  * specifically — iOS, where compiling locally is the whole advantage.
  */
-export async function startSession(repo: string | undefined, prompt: string, machine: Machine = 'pi', report = false, label?: string, relay = false, repair = false) {
+export async function startSession(repo: string | undefined, prompt: string, machine: Machine = 'pi', report = false, label?: string, relay = false, repair = false, agent: Agent = 'claude') {
   // No repo named, or one that matches nothing, lands in the home directory. A request the router
   // could not pin to a project still gets sent somewhere it can act — refusing it would be worse,
   // and the session can find its own way from there.
@@ -261,14 +280,14 @@ export async function startSession(repo: string | undefined, prompt: string, mac
   // their report directive on this flag alone, so an ordinary dispatch stays a plain session.
   // `relay` asks the machine to post the session's first finished reply back into the hub thread
   // (voice-pipeline orchestrator/src/relay.js). Only a dispatch from the hub conversation sets it.
-  const payload = { path: target.path, name: target.name, target: machine, ...(prompt ? { prompt } : {}), ...(report ? { report: true } : {}), ...(label ? { label: label.slice(0, 60) } : {}), ...(relay ? { relay: true } : {}) };
+  const payload = { path: target.path, name: target.name, target: machine, ...(prompt ? { prompt } : {}), ...(report ? { report: true } : {}), ...(label ? { label: label.slice(0, 60) } : {}), ...(relay ? { relay: true } : {}), ...(agent === 'codex' ? { agent } : {}) };
   // The machine has to be able to run it NOW: beating, and signed in. Writing the command anyway is the
   // silent failure this guards — nobody claims it, or it launches a session that cannot authenticate,
   // and the reply already said a session had started. The one asked for first, then the other.
   //
   // With neither, the Fly machine takes it: it runs on the year-long token, so no login date applies, but
   // it has no browser and no Remote Control, which is why it is last rather than an equal.
-  const ready = await machinesReady();
+  const ready = await machinesReady(agent);
   const asked = machine === 'mac' ? 'mac' : 'pi';
   const other = asked === 'pi' ? 'mac' : 'pi';
   const fail = ready[asked];
@@ -293,7 +312,7 @@ export async function startSession(repo: string | undefined, prompt: string, mac
   // the machine that still works. Once per expired login, however many dispatches route around it.
   // The repair session needs a shell on the other machine (the runbook drives the Pi's login from the
   // Mac), so it is started only where one of the two still works, never on Fly.
-  if (!fail.ok && fail.login && !repair && machine !== 'fly') await startLoginRepair(asked, fail.login, machine, relay);
+  if (!fail.ok && fail.login && !repair && machine !== 'fly' && agent === 'claude') await startLoginRepair(asked, fail.login, machine, relay);
   // Focus first: a follow-up said while the launch is still being confirmed belongs to this dispatch.
   await setFocus(id, machine);
   // Confirmed, not inserted: a machine short of room QUEUES the session instead of launching it
@@ -307,7 +326,7 @@ export async function startSession(repo: string | undefined, prompt: string, mac
   const state = v.state === 'unconfirmed' ? 'unconfirmed' as const
     : /^queued\b/.test(v.detail) ? 'queued' as const : 'launched' as const;
   return { ok: true as const, id: f.id, repo: target.name, machine: f.machine, matched: !!hit || !want, state,
-           detail: v.detail, handedOff: f.handedOff, rerouted };
+           detail: v.detail, handedOff: f.handedOff, rerouted, agent };
 }
 
 /**
@@ -660,6 +679,10 @@ export async function transferSession(ref: string, machine: Machine) {
   if (!row.claude_session_id) {
     return { ok: false as const, error: 'that session has no transcript recorded, so there is nothing to move' };
   }
+  // A Codex rollout is not mirrored, and the receiving machine would resume it as a Claude conversation.
+  if (row.agent === 'codex') {
+    return { ok: false as const, error: 'that is a Codex session, and Codex sessions stay on the machine that started them' };
+  }
   if (!(await machineAwake(machine))) {
     const saved = await deadLetter('transfer_session', { session: row.id, target: source, to: machine },
                                    machine, `${where(machine)} is not responding`);
@@ -853,7 +876,7 @@ export function formatSessions(rows: DeskSession[], q: any[], summaries: Map<str
   // the working directory. Nothing distinguished them from a session actually called that.
   const shown = (r: DeskSession) => (r as any).label || '(unnamed)';
   const line = (r: DeskSession & { n: number }) =>
-    `- **${r.n}.** ${shown(r)} (${r.repo} on the ${NAME[machineOf(r.worker)]}) \`${sessionHandle(r)}\``
+    `- **${r.n}.** ${shown(r)} (${r.repo} on the ${NAME[machineOf(r.worker)]}${r.agent === 'codex' ? ', on Codex' : ''}) \`${sessionHandle(r)}\``
     + ` — ${lastSaid(r)}`;
   // WHAT IT LAST SAID is the turn's one-sentence summary — what it did, or the question it ends on —
   // because a reply cut at a fixed length loses its end, which is where a question for him sits. No
