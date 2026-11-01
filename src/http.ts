@@ -317,6 +317,8 @@ ops.install({ machine: process.env.OPS_MACHINE || 'pi', service: 'data-http' });
 setInterval(() => ops.beat(60), 60e3);
 ops.beat(60);
 
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`[data-http] listening on :${PORT}`);
+// Loopback by default: its one client (gmail-watcher) runs on the same Pi. DATA_HTTP_HOST widens it.
+const HOST = process.env.DATA_HTTP_HOST || '127.0.0.1';
+server.listen(PORT, HOST, () => {
+  console.log(`[data-http] listening on ${HOST}:${PORT}`);
 });

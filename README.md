@@ -8,7 +8,7 @@ Two entry points over the same modules:
 | | what | who runs it |
 |---|---|---|
 | `dist/mcp.js` | the MCP tools | every Claude session, Mac and Pi, via `~/.claude.json` |
-| `dist/http.js` | JSON API on `:27186` (bearer `DATA_HTTP_TOKEN` on every request, JSON bodies only), and with `HOME_AGENT=1` the Pi's home-network jobs (below) | `data-http.service` on the Pi; its one caller is gmail-watcher's Walmart handler |
+| `dist/http.js` | JSON API on `127.0.0.1:27186` (`DATA_HTTP_HOST` to widen; bearer `DATA_HTTP_TOKEN` on every request, JSON bodies only), and with `HOME_AGENT=1` the Pi's home-network jobs (below) | `data-http.service` on the Pi; its one caller is gmail-watcher's Walmart handler |
 
 Both run from `dist/`; `pull-repos` rebuilds after pulling, so a change made on one machine reaches
 the other's sessions within about fifteen minutes. `CLAUDE.md` covers what to know before editing.
