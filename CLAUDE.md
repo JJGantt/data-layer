@@ -137,15 +137,28 @@ rest, which is what keeps the list 1..N over what is actually open. An
 ambiguous name returns the choices rather than picking one: ending or moving the wrong session is not
 recoverable.
 
+## API keys: a secret key, sent as `apikey`
+
+Every server-side consumer holds the `servers` secret key (`sb_secret_…`, role service_role) as its
+`SUPABASE_KEY`; apps hold a publishable key (`sb_publishable_…`): `default` in Workset, `apps` for
+restaurant app. A secret key is not a JWT, and the gateway accepts it only in the **`apikey`
+header** — `Authorization: Bearer` alone is a 401. Sending both (what supabase-js and every raw
+fetch here do) works, and supabase-js 2.106+ and realtime-py 2.31 subscribe with it.
+
+The `default` secret key is what Supabase injects into edge functions as `SUPABASE_SERVICE_ROLE_KEY`
+(voice-fallback runs on it), so deleting it breaks the function; the `default` publishable is injected
+as `SUPABASE_ANON_KEY` and is Workset's. The legacy JWT `anon` / `service_role` keys are still
+enabled only for the restaurant build on testers' phones; nothing else may go back to them.
+
 ## Conventions
 
 - Migrations are numbered and append-only. Never edit one that has been applied; add another.
 - **A migration that creates a table must also enable RLS on it.** Supabase defaults tables made
-  this way to RLS *off*, and the anon key is public — it ships inside the Workset watch app — so a
-  table without RLS is readable and writable by anyone holding it. `enable row level security` with
-  no policy is the right default: service_role bypasses RLS, so nothing internal notices. Add
-  policies only for a table a client genuinely reaches with the anon key, and grant only the verbs
-  that client uses.
+  this way to RLS *off*, and the client keys are public — the publishable keys ship inside the Workset
+  and restaurant menu apps and act as `anon` — so a table without RLS is readable and writable by anyone
+  holding one. `enable row level security` with no policy is the right default: service_role bypasses
+  RLS, so nothing internal notices. Add policies only for a table a client genuinely reaches with a
+  publishable key, and grant only the verbs that client uses.
 - Apply them with `./migrate.sh`, from whichever machine wrote them.
 - Transport files (`mcp.ts`, `http.ts`) hold no logic — put it in the domain module so the MCP and the
   HTTP API cannot disagree about what a write means.
