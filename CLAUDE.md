@@ -1,6 +1,6 @@
 # Working in data-layer
 
-Nine things that will bite you, none of them visible from the code you are about to edit.
+Things that will bite you, none of them visible from the code you are about to edit.
 
 ## It runs from `dist/`, not `src/`
 
