@@ -1,11 +1,15 @@
 #!/usr/bin/env node
 /**
- * HTTP API server for data operations.
- * Runs alongside the MCP server — this is what the Mac calls.
+ * HTTP API server for data operations, on the Pi (data-http.service).
  * Default port: 27186 (configurable via DATA_HTTP_PORT env var).
+ *
+ * Every request needs `Authorization: Bearer <DATA_HTTP_TOKEN>`, and every write a JSON body: the port
+ * is open on the LAN and the routes write with the service key. The process refuses to start without
+ * the token (on the Pi it lives in ~/data-layer/.env, which client.ts loads).
  */
 
 import http from 'node:http';
+import { timingSafeEqual } from 'node:crypto';
 import { createRequire } from 'node:module';
 import * as lists from './lists.js';
 import * as health from './health.js';
@@ -19,15 +23,34 @@ import * as tvHome from './tvHome.js';
 import * as homeRequests from './homeRequests.js';
 
 const PORT = Number(process.env.DATA_HTTP_PORT || 27186);
+const TOKEN = process.env.DATA_HTTP_TOKEN || '';
+if (TOKEN.length < 32) {
+  console.error('[data-http] DATA_HTTP_TOKEN is not set (or shorter than 32 characters) — refusing to start.');
+  process.exit(1);
+}
 
+function authorized(req: http.IncomingMessage): boolean {
+  const m = /^Bearer (.+)$/.exec(req.headers.authorization || '');
+  if (!m) return false;
+  const given = Buffer.from(m[1]), want = Buffer.from(TOKEN);
+  return given.length === want.length && timingSafeEqual(given, want);
+}
+
+// A write's body must be JSON, declared and parseable. An unparseable body used to read as `{}`, and a
+// form post or text/plain body (what a browser can send cross-origin without a preflight) is refused.
 function parseBody(req: http.IncomingMessage): Promise<any> {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     let body = '';
     req.on('data', (chunk: Buffer) => { body += chunk.toString(); });
     req.on('end', () => {
+      if (!body.trim()) return resolve({});
+      if (!/^application\/json\b/i.test(req.headers['content-type'] || '')) {
+        return reject(new ValidationError('body must be application/json'));
+      }
       try { resolve(JSON.parse(body)); }
-      catch { resolve({}); }
+      catch { reject(new ValidationError('body is not valid JSON')); }
     });
+    req.on('error', reject);
   });
 }
 
@@ -44,6 +67,11 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url || '/', `http://localhost:${PORT}`);
   const method = req.method || 'GET';
   const path = url.pathname;
+
+  if (!authorized(req)) {
+    console.log(`HTTP 401: ${method} ${path} from ${req.socket.remoteAddress}`);
+    return json(res, { error: 'unauthorized' }, 401);
+  }
 
   try {
     // ── Walmart cart ──
