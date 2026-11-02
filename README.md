@@ -108,7 +108,7 @@ it (`unfocus_session`), or closing that session by hand (`end_session`). Nothing
 The one thing that does clear it automatically is a pin pointing at a session row that no longer
 exists at all — nothing can release that by hand, so it would block automatic focus for ever.
 
-The hub computes the same thing a second time (`pickFocus` in status-hub's `server.js`) because it
+The hub computes the same thing a second time (`pickFocus` in status-hub's `server/routes/sessions.js`) because it
 serves the surfaces. Both copies have to say the same thing or a wall disagrees with the phone about
 which session is held.
 
