@@ -4,13 +4,13 @@ import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// The service_role key is NOT in this file. It bypasses RLS entirely — full read/write on every
-// table — so a copy in source is a copy in every clone, every fork, and every commit anyone can read.
+// The service_role key comes from the environment, never from source: it bypasses RLS entirely
+// (full read/write on every table), so a copy in source would be a copy in every clone and fork.
 //
-// It comes from the environment. For callers that set it themselves (the Fly app via secrets, the
-// worker via its own .env, the MCP via its launch config) nothing changes. For everything else,
-// this reads the gitignored .env beside the package, so `node -e` one-liners and local scripts keep
-// working without exporting anything by hand.
+// Callers that set it themselves (the Fly app via secrets, the worker via its own .env, the MCP via
+// its launch config) pass it in the environment. For everything else, this reads the gitignored .env
+// beside the package, so `node -e` one-liners and local scripts work without exporting anything by
+// hand.
 function loadDotEnv(): void {
   try {
     const here = dirname(fileURLToPath(import.meta.url));

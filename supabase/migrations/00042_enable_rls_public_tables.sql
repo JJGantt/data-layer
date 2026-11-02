@@ -1,16 +1,15 @@
--- Enable Row Level Security on all life-data tables that were missing it.
+-- Row Level Security on every life-data table, with no policies.
 --
--- Context: these 38 public tables had RLS disabled (Supabase's default for
--- tables created via SQL migrations). Because the anon + authenticated roles
--- hold default SELECT/write grants, they were readable/writable via PostgREST
--- by anyone holding the project's anon key.
+-- Supabase creates a table from a SQL migration with RLS off, and the anon and
+-- authenticated roles hold default SELECT/write grants, so a table without RLS
+-- is readable and writable through PostgREST with the anon key.
 --
 -- Every legitimate accessor (data-layer client, status-hub server, surf-report)
--- uses the service_role key, which BYPASSES RLS. So enabling RLS with NO
--- policies is non-breaking: service_role keeps full access; anon/authenticated
--- are denied by default. The voice-pipeline tables that need a real anon path
--- (voice_requests anon-insert, voice_presence) already have RLS + policies and
--- are intentionally left untouched.
+-- uses the service_role key, which BYPASSES RLS. RLS with NO policies therefore
+-- leaves service_role full access and denies anon/authenticated. The
+-- voice-pipeline tables with their own anon policies (voice_requests,
+-- voice_presence) are not in this list; their access is set where they are
+-- created.
 --
 -- `enable row level security` is idempotent, so re-running is safe.
 

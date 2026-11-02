@@ -1,25 +1,13 @@
--- Close the RLS gap on tables created after 00042.
+-- RLS on reports, workset_reports and set_watcher.
 --
--- 00042 enabled RLS on the 38 tables that existed in July. Supabase defaults
--- tables created via SQL migration to RLS OFF, and nothing enforces it on new
--- ones, so three tables added since then were reachable with the anon key:
+-- Supabase creates a table from a SQL migration with RLS off, and the anon key
+-- is public: it ships inside the Workset watch app binary as
+-- CaptureUploader.publishableKey. A table without RLS is reachable with it.
 --
---   reports          (00064)  read + insert + DELETE
---   workset_reports           read + insert + update + DELETE
---   set_watcher      (00045)  read + DELETE
---
--- Verified by querying each of the 67 public tables with the anon key and
--- comparing against the service key. Everything else is already denied;
--- voice_presence is anon-reachable on purpose and 00042 documents why.
---
--- The anon key is genuinely public: it ships inside the Workset watch app
--- binary as CaptureUploader.publishableKey, so this is real exposure, not a
--- theoretical one.
---
--- The blanket fix would break the watch. `SetReporter.swift` needs anon access
--- to two of these tables, so they get RLS *with* policies granting exactly what
--- the app does and nothing more. What that removes in every case is DELETE,
--- which no client uses.
+-- `SetReporter.swift` reaches two of these tables with that key, so they get
+-- RLS *with* policies granting what the app does. No client deletes from any of
+-- them, so none of the policies allows DELETE. Later migrations narrow these
+-- further (00147 for workset_reports, 00151 for set_watcher).
 
 -- reports: nothing but the hub server touches it, and that uses service_role,
 -- which bypasses RLS. No policies -> anon is denied outright.

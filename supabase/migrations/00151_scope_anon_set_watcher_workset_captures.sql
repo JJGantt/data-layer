@@ -1,14 +1,12 @@
--- Scope the anon key (public: it ships inside the Workset watch app, whose source is becoming
--- public) on set_watcher and the workset-captures bucket to exactly what that app does.
+-- Scope the anon key (public: it ships inside the Workset watch app) on set_watcher and the
+-- workset-captures bucket to exactly what that app does.
 --
 -- set_watcher: the watch only needs to know what it is armed to, so its badge can say whether a
--- counted set will be logged. Anon held every table privilege plus two `using (true)` select
--- policies (00045, 00074), so the key could read the last armed exercise, weight and arming times
--- whether or not anything was armed, and subscribe to every change through realtime. Every other
--- reader (the hub, the data MCP) uses the service key. Anon loses the table entirely and gets
--- workset_watcher(): one row, the exercise and weight while set_watcher_is_armed() holds, nulls
--- otherwise. Security definer because anon has no table access to invoke it with; it reads one
--- fixed row and takes no arguments.
+-- counted set will be logged. Every other reader (the hub, the data MCP) uses the service key. Anon
+-- has no access to the table, whose row keeps the last armed exercise, weight and arming times even
+-- when nothing is armed; it calls workset_watcher() instead: one row, the exercise and weight while
+-- set_watcher_is_armed() holds, nulls otherwise. Security definer because anon has no table access
+-- to invoke it with; it reads one fixed row and takes no arguments.
 drop policy if exists "anon reads watcher"      on public.set_watcher;
 drop policy if exists set_watcher_select_anon   on public.set_watcher;
 revoke all on public.set_watcher from anon;

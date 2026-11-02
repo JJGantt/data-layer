@@ -28,6 +28,6 @@ create policy cg_anon_all on restock_items for all to anon using (true) with che
 -- append-only log
 create policy cg_anon_insert on app_logs for insert to anon with check (true);
 
--- The one table left without RLS, which made it open to the anon key. Only the data-layer touches it,
--- with the service key, which bypasses RLS.
+-- RLS on with no policy: only the data-layer touches shopping_items, with the service key, which
+-- bypasses RLS.
 alter table shopping_items enable row level security;
