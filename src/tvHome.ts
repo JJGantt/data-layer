@@ -11,7 +11,7 @@
 //     If the TV is still off after that, the row is answered here with that, so the caller hears it in
 //     seconds instead of waiting out its timeout on a wake that did not happen.
 //
-// Started by data-http when HOME_AGENT=1 (set only in the Pi's unit), so no machine runs a second copy.
+// Started by data-http when HOME_AGENT=1 (the Pi). onInserts claims each row first, so one machine acts on it.
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { homedir } from 'node:os';

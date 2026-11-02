@@ -70,8 +70,10 @@ polls.
 
 It runs inside data-http rather than as its own service, so it costs one realtime socket and no
 extra process; data-http measured 75MB resident with it on (2026-10-30). It is switched on by
-`HOME_AGENT=1` in `/etc/systemd/system/data-http.service.d/home-agent.conf` on the Pi. No other
-machine may set it: two answerers would both act on every power command.
+`HOME_AGENT=1` in `/etc/systemd/system/data-http.service.d/home-agent.conf` on the Pi. Every row is
+claimed before it is acted on (`claimed_by`, set by `onInserts` in `realtime.ts`), so a second machine
+with it set would find each row taken rather than act on it twice; it is still meant for the Pi alone,
+which is the machine on the home network.
 
 ## There is no reminders table, and no notes table
 
