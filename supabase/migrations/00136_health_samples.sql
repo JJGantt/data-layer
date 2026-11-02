@@ -1,4 +1,4 @@
--- HEALTH SAMPLES — everything Apple Health holds for him except sleep, one row per HealthKit sample.
+-- HEALTH SAMPLES — everything Apple Health holds except sleep, one row per HealthKit sample.
 --
 -- The StatusHub iPhone app reads every quantity and category type Health exposes, plus workouts, and
 -- posts new and deleted samples to the hub (/api/health/samples, status-hub docs/HEALTH.md), which
@@ -26,7 +26,7 @@ create table if not exists health_samples (
   label text,
   start_at timestamptz not null,
   end_at timestamptz not null,
-  source text,      -- the writing app/device as Health names it ("Jared's Apple Watch")
+  source text,      -- the writing app/device as Health names it ("<name>'s Apple Watch")
   metadata jsonb,   -- HealthKit's own metadata for the sample, plus `stats` on a workout
   received_at timestamptz not null default now()
 );

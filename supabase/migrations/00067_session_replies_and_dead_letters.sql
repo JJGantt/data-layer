@@ -32,7 +32,7 @@ alter table desk_commands add column if not exists claimed_by text;
 --
 -- Deliberately NOT a retry queue. Work that could not run when it was asked for has usually stopped
 -- being wanted by the time the machine comes back, and a prompt that fires hours late is worse than
--- one that never fired. Retry is a decision Jared makes afterwards, from this list.
+-- one that never fired. Retry is a decision the user makes afterwards, from this list.
 create table if not exists desk_dead_letters (
   id               text primary key,
   command_id       text,                        -- the desk_commands row, when it got that far

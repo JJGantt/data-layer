@@ -1,4 +1,4 @@
--- One row per FINISHED turn of a conversation: what he said, and what the session answered.
+-- One row per FINISHED turn of a conversation: what the user said, and what the session answered.
 --
 -- `desk_sessions` holds only the last turn (`last_prompt`, `last_reply`), and each new turn replaces
 -- it. A surface showing one session wants the few exchanges before that too, because a reply read on
@@ -16,7 +16,7 @@
 create table if not exists desk_turns (
   conversation text        not null,   -- desk_sessions.claude_session_id, or the row id until it has one
   at           timestamptz not null,   -- the turn's reply_at
-  prompt       text,                   -- null when the turn was not started by something he said
+  prompt       text,                   -- null when the turn was not started by something the user said
   reply        text        not null,
   primary key (conversation, at)
 );

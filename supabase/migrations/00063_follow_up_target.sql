@@ -1,6 +1,6 @@
 -- Follow-ups: "send a follow-up that…" goes to the session THIS ASSISTANT most recently dispatched.
 --
--- Deliberately NOT "the most recently active session". Jared may be working at the keyboard in another
+-- Deliberately NOT "the most recently active session". The user may be working at the keyboard in another
 -- session at the same time, and a follow-up dictated by voice must never land there. The pointer moves
 -- only when the MCP starts or resumes a session — nothing a human does at a terminal can steal it.
 --

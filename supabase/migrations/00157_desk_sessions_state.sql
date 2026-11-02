@@ -10,7 +10,7 @@
 --
 -- FOCUS, in order:
 --   1. a pin (`desk_focus.session_id`): the running row of that conversation, else the pinned row
---      itself while it still exists (parked, and still his) — `pinned`;
+--      itself while it still exists (parked, and still the user's) — `pinned`;
 --   2. a dispatch whose session has not opened yet (`desk_focus.command_id`, its command still pending
 --      or running, no row carrying it) — `pending`, no session;
 --   3. otherwise the most recently active running session.

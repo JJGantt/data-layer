@@ -1,9 +1,9 @@
--- WHERE JARED LAST WAS, one row per device that reports a position, kept current from the fix a
+-- THE USER'S LAST KNOWN POSITION, one row per device that reports a position, kept current from the fix a
 -- device sends with a command (trigger in 00129): the watch, or the phone/browser
 -- page. A model reads it on demand through the data MCP's `get_location` rather than having it pasted
 -- into every prompt, so a request that does not need it never sees it.
 --
--- It moves only when he talks to a device that has a fix, so `at` is the age of the answer — the
+-- It moves only when the user talks to a device that has a fix, so `at` is the age of the answer — the
 -- reader has to show it.
 --
 -- RLS on with NO policies: a position is the service role's business only.

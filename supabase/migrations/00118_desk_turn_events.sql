@@ -1,6 +1,6 @@
 -- A finished turn's whole ordered list, not only its first prompt and its reply.
 --
--- A turn is more than one prompt and one answer: he can say something while it is running, and what
+-- A turn is more than one prompt and one answer: the user can say something while it is running, and what
 -- the session did between (tool calls, what it said between them) happened in an order. The hub's
 -- session view is that ordered list, but it holds it in memory and reseeds from this table when it
 -- restarts — and seeded from `prompt` and `reply` alone, a message sent mid-turn is gone and nothing

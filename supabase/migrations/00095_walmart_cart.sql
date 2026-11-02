@@ -2,7 +2,7 @@
 --
 -- Walmart exposes no cart API, so the only way to know what is in the cart is to read /cart in a
 -- signed-in browser. That read is expensive enough that it should not happen on a timer, and the
--- cart only changes at two moments: when a session adds to it, and when Jared checks out.
+-- cart only changes at two moments: when a session adds to it, and at checkout.
 --
 -- So the cart here is written from OBSERVATION, never from arithmetic. A session that touches the
 -- cart reads /cart afterwards and replaces these rows wholesale. It never increments. That

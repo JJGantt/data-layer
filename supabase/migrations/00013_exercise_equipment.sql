@@ -3,7 +3,7 @@
 -- and bases that already name the implement (e.g. "Ring-Assisted Squats").
 alter table exercise_catalog add column if not exists equipment text[] not null default '{}';
 
--- Backfill the existing 26 exercises (Jared uses only dumbbells + gymnastic rings; rest are bodyweight).
+-- Backfill the existing 26 exercises (the equipment is only dumbbells + gymnastic rings; the rest are bodyweight).
 update exercise_catalog set equipment = '{rings}'      where name in ('Rows','Face Pulls','Ring-Assisted Squats','Pull-Ups');
 update exercise_catalog set equipment = '{bodyweight}' where name in ('Push-Ups','Supermans','Leg Raises','Back Extensions');
 update exercise_catalog set equipment = '{dumbbell}'   where name in (

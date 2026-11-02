@@ -1,4 +1,4 @@
--- What a Mac session's idle reaper needs to tell a session Jared used AT the Mac from one the Mac
+-- What a Mac session's idle reaper needs to tell a session used AT the Mac from one the Mac
 -- only hosted (voice-pipeline orchestrator/src/idle.js).
 --
 -- remote_inputs: a fingerprint (first line, first 60 chars) of every prompt the orchestrator itself

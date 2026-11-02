@@ -25,7 +25,7 @@ language sql stable as $$
   group by 1 order by 1
 $$;
 
--- One row per night from sleep_samples, keyed by the date he woke up. A "night" is a run of samples
+-- One row per night from sleep_samples, keyed by the wake date. A "night" is a run of samples
 -- with no gap over three hours, so a nap is its own row rather than part of the night before.
 create or replace function sleep_nights(p_from date, p_to date)
 returns table (night date, bed_at timestamptz, up_at timestamptz, asleep_min double precision,

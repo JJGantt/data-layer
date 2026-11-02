@@ -1,4 +1,4 @@
--- EVERY POSITION HIS DEVICES REPORT, kept at the grain they report it (status-hub docs/LOCATION.md).
+-- EVERY POSITION THE USER'S DEVICES REPORT, kept at the grain they report it (status-hub docs/LOCATION.md).
 -- `locations` (00128) is the latest fix per device; this is the history behind it, so "where was I
 -- yesterday at 3" has an answer. The phone and the watch each record on their own, because they get
 -- separated: rows are keyed by device, and nothing merges them.

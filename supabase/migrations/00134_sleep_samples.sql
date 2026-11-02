@@ -5,7 +5,7 @@
 -- sample's HealthKit UUID, so a re-sent sample upserts instead of duplicating, and a deletion in
 -- Health removes the same row.
 --
--- The watch writes a night's stages only after he wakes, so this is a record of past nights, not a
+-- The watch writes a night's stages only after waking, so this is a record of past nights, not a
 -- live "asleep now" signal.
 create table if not exists sleep_samples (
   id uuid primary key,
@@ -13,7 +13,7 @@ create table if not exists sleep_samples (
   end_at timestamptz not null,
   -- HKCategoryValueSleepAnalysis: in_bed, asleep_unspecified, awake, core, deep, rem
   stage text not null,
-  source text,      -- the writing app/device as Health names it ("Jared's Apple Watch")
+  source text,      -- the writing app/device as Health names it ("<name>'s Apple Watch")
   received_at timestamptz not null default now()
 );
 create index if not exists sleep_samples_start on sleep_samples (start_at desc);
