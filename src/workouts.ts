@@ -164,7 +164,7 @@ export interface SetRow { id: number; occurred_at: string; exercise: string; wei
  * A caller-supplied set time, normalized for the `sets.occurred_at` column.
  *
  * That column is NAIVE LOCAL wall-clock — it is what `now()` writes — so this deliberately does NOT
- * go through `ensureEastern`. That helper reads a bare timestamp as UTC and converts, which would
+ * go through the UTC conversion in helpers. That reads a bare timestamp as UTC and converts, which would
  * silently move a stated "1:51pm" back four hours and file the set under the wrong day. What the
  * clock read is what gets stored.
  *

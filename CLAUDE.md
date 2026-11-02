@@ -58,24 +58,15 @@ reason: anything willing to accept a near miss eventually writes to the wrong li
 looks entirely successful. The trigger raises on a name it cannot resolve, so PostgREST will not do it
 either.
 
-## `ensureEastern()` will shift a time the user stated
+## A time the user stated is stored verbatim
 
 Timestamp columns hold **naive local wall-clock** — `now()` writes `toEastern(new Date())`, with no
-zone on it. `ensureEastern()` is the obvious-looking helper for a caller-supplied time and is the
-wrong one: given a bare string it parses as **UTC** and converts, so a user's "1:51pm" is stored as
-09:51 and the set lands in a different part of the day, or a different day.
-
-It is named for what it does to a string that really is UTC (which is what Claude tends to emit for a
-`date` argument), not for normalizing something a person said. When the value is a wall-clock reading
-the user gave you, validate its shape and store it verbatim — `workouts.normalizeSetTime()` and
-`lists.checkCompletedAt()` are the pattern: strict parse, round-trip through `Date` to reject
-`2026-02-30` and `25:00`, no conversion.
-
-Both exist because a time the user states is usually a time that has already PASSED — a set written
-down afterwards, a task finished at 10:15 and mentioned at two. That is the whole reason those
-overrides are there, so they are also where a shifted value does the most damage: the stated time is
-being compared against something (a rest gap, a deadline), and an offset silently moves the answer
-rather than breaking anything visibly.
+zone on it. When a value is a wall-clock reading the user gave you, validate its shape and store it
+as is: `workouts.normalizeSetTime()` and `lists.checkCompletedAt()` are the pattern — strict parse,
+round-trip through `Date` to reject `2026-02-30` and `25:00`, no conversion. Any conversion moves a
+"1:51pm" by the whole UTC offset, and because a stated time is usually being compared against
+something (a rest gap, a deadline), the shift silently changes the answer rather than breaking
+anything visibly. `helpers.ts` keeps its UTC conversion private for that reason.
 
 ## Upserts null what they omit
 
@@ -153,12 +144,11 @@ enabled only for the restaurant menu app's build on testers' phones; nothing els
 ## Conventions
 
 - Migrations are numbered and append-only. Never edit one that has been applied; add another.
-- **A migration that creates a table must also enable RLS on it.** Supabase defaults tables made
-  this way to RLS *off*, and the client keys are public — the publishable keys ship inside the Workset
-  and restaurant menu apps and act as `anon` — so a table without RLS is readable and writable by anyone
-  holding one. `enable row level security` with no policy is the right default: service_role bypasses
-  RLS, so nothing internal notices. Add policies only for a table a client genuinely reaches with a
-  publishable key, and grant only the verbs that client uses.
+- **A new table in `public` has RLS on from the moment it exists**: the `enable_rls_on_new_table`
+  event trigger (00154) turns it on, because the publishable keys ship inside the Workset and
+  restaurant menu apps and act as `anon`. With no policy that locks out every client key, which is the
+  right default (service_role bypasses RLS). Add policies only for a table a client genuinely reaches
+  with a publishable key, and grant only the verbs that client uses.
 - Apply them with `./migrate.sh`, from whichever machine wrote them.
 - Transport files (`mcp.ts`, `http.ts`) hold no logic — put it in the domain module so the MCP and the
   HTTP API cannot disagree about what a write means.

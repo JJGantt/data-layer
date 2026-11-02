@@ -27,7 +27,7 @@ export function now(): string {
   if (f) {
     try {
       const v = readFileSync(f, 'utf8').trim();
-      if (v && !isNaN(new Date(v).getTime())) return ensureEastern(v);
+      if (v && !isNaN(new Date(v).getTime())) return utcToLocal(v);
     } catch { /* no command in flight, or the file was cleared — fall through to the real clock */ }
   }
   return toEastern(new Date());
@@ -40,16 +40,13 @@ export function toEastern(d: Date): string {
 }
 
 /**
- * Reduce a date string the model gave us to this machine's own wall-clock format.
- * If it looks like an ISO string with Z or +00:00, parse as UTC and convert.
- * If it has no timezone indicator, parse as UTC and convert (since Claude tends to give UTC).
- * For date-only strings (yyyy-MM-dd), return as-is.
+ * A timestamp that IS UTC (the worker's capture_start; what Claude tends to emit for a `date`) as this
+ * machine's wall clock. A bare string is read as UTC, so this is wrong for a time a person stated —
+ * that is stored verbatim (workouts.normalizeSetTime, lists.checkCompletedAt). Not exported for that
+ * reason: a caller with a user's time should not find this first.
  */
-export function ensureEastern(dateStr: string): string {
-  // Date-only: nothing to convert
+function utcToLocal(dateStr: string): string {
   if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return dateStr;
-  // Parse and convert — Date() treats strings without Z as local, so append Z
-  // to force UTC interpretation, since Claude typically sends UTC
   const hasTimezone = /[Zz]|[+-]\d{2}:\d{2}$/.test(dateStr);
   const d = new Date(hasTimezone ? dateStr : dateStr + 'Z');
   if (isNaN(d.getTime())) return dateStr;
@@ -64,9 +61,9 @@ export function today(): string {
   return now().slice(0, 10);
 }
 
-/** Like ensureEastern but returns only the date portion (yyyy-MM-dd). */
+/** A date the model gave us (yyyy-MM-dd, or a UTC timestamp) as this machine's local date. */
 export function ensureEasternDate(dateStr: string): string {
-  return ensureEastern(dateStr).slice(0, 10);
+  return utcToLocal(dateStr).slice(0, 10);
 }
 
 export class ValidationError extends Error {

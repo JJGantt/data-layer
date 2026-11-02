@@ -350,7 +350,7 @@ const STAMP_SKEW_MS = 2 * 60000;
  * TIMEZONE: `completed_at` is scored against `due` as naive wall-clock arithmetic, so a stamp
  * carrying a Z or a +HH:MM is refused rather than converted — converting means guessing an offset,
  * and a guessed offset is how a completion lands an hour from the deadline it is measured against.
- * Deliberately NOT ensureEastern, which reads a bare stamp as UTC: right where a model is naming a
+ * Deliberately not the UTC conversion in helpers, which reads a bare stamp as UTC: right where a model is naming a
  * date, catastrophic here, where the same reading would shift every retroactive completion by the
  * whole offset and quietly turn an on-time one into four hours late.
  *
