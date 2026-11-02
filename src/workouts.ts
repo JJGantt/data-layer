@@ -330,78 +330,27 @@ export async function getExerciseHistory(name: string, limit = 60): Promise<{ da
   }));
 }
 
-export interface MuscleVolume { muscle: string; label: string; group: string; sets: number; }
-
-// A muscle earns at most this many adjusted sets in one BOUT, and a bout is a run of sets with no gap
-// longer than BOUT_GAP_MS. The junk-volume guard, mirroring the hub's server/lib/volume.js.
-const PER_BOUT_CAP = 11;
-const BOUT_GAP_MS = 3 * 60 * 60 * 1000;
+export interface MuscleVolume { muscle: string; label: string; group: string; sets: number; target: number; }
 
 /**
- * Trailing-window fractional set volume per muscle.
- *
- * THE WINDOW AND THE CAP BOTH HAVE TO MATCH THE HUB, or this reports a number the muscle map
- * contradicts — which is exactly what happened on 2026-09-18: this said 14.5 glute sets while the map
- * drew them yellow, because 7.5 of them were on a day the hub does not count. The hub's window is
- * `days` DAY-BUCKETS on the 4am boundary (lib/dates.js lastNTrainingDays), so with `days = 7` it opens
- * at the start of the 4am-day six days back. Subtracting `days * 86400000` from now opens it a whole
- * calendar day earlier than that, and a leg session on that day is pure invention.
- *
- * Duplicated rather than shared because the two repos ship separately — the same bargain the targets
- * below are under, and the same hazard: a change to either rule there has to be made here too.
+ * Trailing-window volume per muscle, from `muscle_volume()` (migration 00156) — the one definition of the
+ * window, the per-bout cap and the targets, which the hub's muscle gauges read too, so this report and
+ * the body map it describes cannot disagree. Here it is only summed and labelled.
  */
 export async function getWeeklyVolume(days = 7): Promise<{ days: number; volumes: MuscleVolume[] }> {
-  // The 4am day: before 4am is still yesterday, so shift the clock back four hours before taking the
-  // date. Then open the window (days - 1) days before it, which makes `days` buckets counting today.
-  // occurred_at is naive Eastern, so the window opens at 04:00 on that day: a set logged between
-  // midnight and 4am belongs to the day before, which is outside the window.
-  const today = toEastern(new Date(Date.now() - 4 * 3600000)).slice(0, 10);
-  const since = new Date(Date.parse(today + 'T12:00:00Z') - (days - 1) * 86400000)
-    .toISOString().slice(0, 10);
-  const { data: setRows } = await getClient().from('sets')
-    .select('occurred_at, exercise, muscles_override').gte('occurred_at', since + 'T04:00:00');
-  const { muscles } = await catalogMaps();
-
-  // Sets in time order, each expanded to the muscles it works.
-  const expanded = (setRows ?? []).map((s: any) => ({
-    ts: new Date(s.occurred_at).getTime(),
-    pairs: s.muscles_override
-      ? Object.entries(s.muscles_override as Record<string, number>)
-          .map(([muscle, contribution]) => ({ muscle, contribution: Number(contribution) }))
-      : (muscles.get(String(s.exercise).toLowerCase()) ?? []),
-  })).sort((a, b) => a.ts - b.ts);
-
-  // Grouped into bouts, then each muscle's contribution within a bout clipped. A second session hours
-  // later is a FRESH bout with its own cap — that is added frequency, not junk volume.
+  const { data, error } = await getClient().rpc('muscle_volume', { p_days: days });
+  if (error) throw new Error(`muscle_volume: ${error.message}`);
+  const vol = data as { bouts: { muscle: string; sets: number }[]; targets: Record<string, number> };
   const totals = new Map<string, number>();
-  let bout: { lastTs: number; raw: Record<string, number> } | null = null;
-  const flush = () => {
-    if (!bout) return;
-    for (const [muscle, raw] of Object.entries(bout.raw)) {
-      totals.set(muscle, (totals.get(muscle) ?? 0) + Math.min(raw, PER_BOUT_CAP));
-    }
-  };
-  for (const e of expanded) {
-    if (!bout || e.ts - bout.lastTs > BOUT_GAP_MS) { flush(); bout = { lastTs: e.ts, raw: {} }; }
-    bout.lastTs = e.ts;
-    for (const mm of e.pairs) bout.raw[mm.muscle] = (bout.raw[mm.muscle] ?? 0) + Number(mm.contribution);
-  }
-  flush();
-
+  for (const b of vol.bouts ?? []) totals.set(b.muscle, (totals.get(b.muscle) ?? 0) + Number(b.sets));
+  const target = (slug: string) => Number(vol.targets?.[slug] ?? vol.targets?._default);
   const volumes = MUSCLE_GROUPS.flatMap(g => g.muscles.map(m => ({
     muscle: m.slug, label: m.label, group: g.group,
     sets: Math.round((totals.get(m.slug) ?? 0) * 10) / 10,
+    target: target(m.slug),
   })));
   return { days, volumes };
 }
-
-// Weekly effective-set target per muscle, mirroring the hub's `server/lib/volume.js` (TARGET_DEFAULT
-// plus its TARGETS overrides). Duplicated rather than shared because the two repos ship separately;
-// if a target moves there it has to move here too, or this report calls a muscle short of a goal the
-// wall says it has met.
-const TARGET_DEFAULT = 14;
-const TARGETS: Record<string, number> = { abs: 8, obliques: 8, erectors: 4, hip_flexors: 8, forearms: 10 };
-const targetFor = (slug: string) => TARGETS[slug] ?? TARGET_DEFAULT;
 
 export function formatWeeklyVolume(result: { days: number; volumes: MuscleVolume[] }): string {
   // The old fixed 10–20 band, re-expressed as a fraction of the target so it tracks a lowered one:
@@ -412,7 +361,7 @@ export function formatWeeklyVolume(result: { days: number; volumes: MuscleVolume
   let lastGroup = '';
   for (const v of result.volumes) {
     if (v.group !== lastGroup) { lines.push('', `_${v.group}_`); lastGroup = v.group; }
-    const t = targetFor(v.muscle);
+    const t = v.target;
     lines.push(`  ${v.label.padEnd(20)} ${String(v.sets).padStart(4)} / ${t}  ${status(v.sets, t)}`);
   }
   lines.push('', '_Smaller muscles (calves, arms, delts) tolerate the upper end; legs/back the middle._');

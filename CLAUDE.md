@@ -73,21 +73,12 @@ anything visibly. `helpers.ts` keeps its UTC conversion private for that reason.
 `Prefer: resolution=merge-duplicates` overwrites every column in the payload — and a column left out
 is set to null, not left alone. Send the columns you want preserved, even unchanged ones.
 
-## Weekly volume is computed twice, and both copies must agree
+## Weekly volume is `muscle_volume()`, in Postgres
 
-`get_weekly_volume` here and `computeVolume` in status-hub's `server/lib/volume.js` answer the same
-question for different surfaces — the spoken report and the muscle map. Three rules have to match, or
-one calls a muscle short of a goal the other says it has met:
-
-- **the window** — `days` DAY-BUCKETS on the 4am boundary, so `days = 7` opens at the start of the
-  4am-day six days back. Subtracting `days * 86400000` from now opens a whole calendar day earlier,
-  which is a day of sets the map does not count.
-- **the per-bout clip** — a muscle earns at most 11 adjusted sets in one bout, where a bout is a run
-  of sets with no gap over 3h. A second session hours later is a fresh bout with its own cap.
-- **the targets** — `TARGET_DEFAULT` and the per-muscle overrides in `TARGETS`.
-
-Duplicated rather than shared because the two repos ship separately. A change to any of the three
-there has to be made here in the same breath.
+The window (training days on the 4am boundary), which muscles a set credits, the per-bout cap and the
+targets (table `muscle_volume_targets`) are one SQL function (00156). `get_weekly_volume` and the hub's
+muscle gauges (status-hub `server/lib/volume.js`) both read it, so a rule changes there and nowhere
+else.
 
 ## The voice worker holds this MCP warm — a rebuild alone does nothing
 
