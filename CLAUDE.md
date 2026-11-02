@@ -116,22 +116,38 @@ recoverable.
 ## API keys: a secret key, sent as `apikey`
 
 Every server-side consumer holds the `servers` secret key (`sb_secret_…`, role service_role) as its
-`SUPABASE_KEY`; apps hold a publishable key (`sb_publishable_…`): `default` in Workset, `apps` for
-the restaurant menu app. A secret key is not a JWT, and the gateway accepts it only in the **`apikey`
+`SUPABASE_KEY`; the restaurant menu app holds the `apps` publishable key (`sb_publishable_…`). The
+Workset watch app holds no Supabase key at all (below). A secret key is not a JWT, and the gateway accepts it only in the **`apikey`
 header** — `Authorization: Bearer` alone is a 401. Sending both (what supabase-js and every raw
 fetch here do) works, and supabase-js 2.106+ and realtime-py 2.31 subscribe with it.
 
 The `default` secret key is what Supabase injects into edge functions as `SUPABASE_SERVICE_ROLE_KEY`
-(voice-fallback runs on it), so deleting it breaks the function; the `default` publishable is injected
-as `SUPABASE_ANON_KEY` and is Workset's. The legacy JWT `anon` / `service_role` keys are still
+(voice-fallback and workset run on it), so deleting it breaks both; the `default` publishable is
+injected as `SUPABASE_ANON_KEY` and ships in no app. The legacy JWT `anon` / `service_role` keys are still
 enabled only for the restaurant menu app's build on testers' phones; nothing else may go back to them.
+
+## The Workset watch writes through the `workset` edge function
+
+The watch app's source is public, so it carries no key. It sends its device token in `X-Device-Token`
+to `supabase/functions/workset`, which accepts a token whose SHA-256 hex is in the function secret
+`WORKSET_DEVICE_SHA256` (comma-separated, one per device) and then files or amends the report, reads
+`workset_watcher()`, or stores a capture with the service role. Anon has no grant on any of these
+(00160), so the function is the only way in and its rules are the access rules: a report takes only
+`reps, occurred_at, session, algorithm`; an amendment only `corrected_reps` / `deleted`, on a report
+from the last two hours; a capture never overwrites.
+
+- Deploy: `supabase functions deploy workset`.
+- A device's token lives in Workset's gitignored `Config/Secrets.xcconfig` (on the Mac that builds
+  it). To add or rotate one, put the new token there and set the secret to the list of digests that
+  should still work: `supabase secrets set --env-file <file holding WORKSET_DEVICE_SHA256=…>`. Never
+  put a token or its digest on the command line or in git.
 
 ## Conventions
 
 - Migrations are numbered and append-only. Never edit one that has been applied; add another.
 - **A new table in `public` has RLS on from the moment it exists**: the `enable_rls_on_new_table`
-  event trigger (00154) turns it on, because the publishable keys ship inside the Workset and
-  restaurant menu apps and act as `anon`. With no policy that locks out every client key, which is the
+  event trigger (00154) turns it on, because a publishable key ships inside the restaurant menu app and
+  acts as `anon`. With no policy that locks out every client key, which is the
   right default (service_role bypasses RLS). Add policies only for a table a client genuinely reaches
   with a publishable key, and grant only the verbs that client uses.
 - Apply them with `./migrate.sh`, from whichever machine wrote them.
