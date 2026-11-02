@@ -8,7 +8,7 @@
 create extension if not exists pg_cron;
 
 select cron.schedule(
-  'capital-grille-restock-clear',
+  'menu-restock-clear',
   '0 10,11 * * *',
   $$delete from public.restock_items
     where extract(hour from now() at time zone 'America/New_York') = 6$$

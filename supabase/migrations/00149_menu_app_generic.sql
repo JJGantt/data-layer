@@ -1,4 +1,4 @@
--- The restaurant menu app (repo CapitalGrilleApp, shown as "Menu") holds no restaurant data in its
+-- The restaurant menu app (repo Menu) holds no restaurant data in its
 -- code: everything it shows or tells the model comes from these tables, and its key is the `apps`
 -- publishable key, which reaches the database as the anon role.
 
