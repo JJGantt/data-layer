@@ -421,32 +421,12 @@ export async function releaseFocusFor(sessionId: string) {
  * always was — `follow_up` only runs when he hands words over ('tell it to…') — not by where the
  * pointer may go.
  *
- * The hub's `/api/sessions` implements the same rule (`pickFocus` in server.js). The two must agree,
- * or the wall shows one session as focused while a follow-up lands in another.
+ * The rule lives in `desk_sessions_state()` (migration 00157), which the hub's `/api/sessions` reads
+ * too, so the wall and a follow-up cannot disagree about which session is focused.
  */
 export async function focusedSession(): Promise<{ session: DeskSession | null; pending: boolean }> {
-  const [{ data: f }, rows] = await Promise.all([
-    getClient().from('desk_focus').select('*').eq('id', 'current').maybeSingle(),
-    listSessions(),
-  ]);
-  const running = rows.filter((r) => r.status === 'resident');
-  if (f?.session_id) {
-    // A pin holds the CONVERSATION, not the row. Eviction is not him closing a session, and a resume
-    // makes a new row for the same transcript — so the pin re-attaches to whichever row is carrying it
-    // now, and survives being parked in between.
-    const pinnedRow = rows.find((r) => r.id === f.session_id);
-    const conv = pinnedRow?.claude_session_id;
-    const hit = running.find((r) => r.id === f.session_id)
-      || (conv ? running.find((r) => r.claude_session_id === conv) : null);
-    if (hit) return { session: hit, pending: false };
-    if (pinnedRow) return { session: pinnedRow, pending: false };   // parked, and still his
-  }
-  if (f?.command_id && !rows.some((r) => r.command_id === f.command_id)) {
-    // Only while it can still become a session: a command that failed or expired never will.
-    const { data: c } = await getClient().from('desk_commands').select('status').eq('id', f.command_id).maybeSingle();
-    if (c && (c.status === 'pending' || c.status === 'running')) return { session: null, pending: true };
-  }
-  return { session: numberSessions(running)[0] ?? null, pending: false };
+  const [{ focus }, rows] = await Promise.all([sessionsState(), listSessions()]);
+  return { session: rows.find((r) => r.id === focus.session_id) ?? null, pending: focus.pending };
 }
 
 /**
@@ -576,26 +556,24 @@ export function sessionHandle(r: DeskSession): string {
   return r.claude_session_id ? `s-${r.claude_session_id.slice(0, 8)}` : r.id;
 }
 
-export function numberSessions(rows: DeskSession[]): (DeskSession & { n: number })[] {
-  // MOST RECENTLY ACTIVE FIRST, running and parked TOGETHER. The number has to be the POSITION IN THE
-  // LIST HE IS LOOKING AT — that is where "the second session" comes from — and every surface draws the
-  // list in this order. Parking is not activity: a session evicted to free the Pi, or replaced by a
-  // dispatch, keeps the place its last turn earned. Grouping running above parked is the attractive
-  // alternative and it is wrong: every eviction would shove a session below everything still open,
-  // however recently it was used. Shared with `/api/sessions` in status-hub; the two must agree.
-  const rank = (r: DeskSession) => (r.status === 'resident' ? 0 : 1);
-  // Rows from before `active_at` existed fall back to their last reply, then to when they started.
-  const activity = (r: DeskSession) => new Date(r.active_at || r.reply_at || r.started).getTime();
-  // ONE ROW PER CONVERSATION: the running one if it runs, else the most recently active. The rows of
-  // earlier stretches stay parked until retention drops them, and listing them too showed one
-  // conversation three times under three numbers.
-  const seen = new Set<string>();
-  return rows
-    .filter((r) => r.status === 'resident' || r.status === 'evicted')
-    .sort((a, b) => rank(a) - rank(b) || activity(b) - activity(a))
-    .filter((r) => { const c = conversationOf(r); if (seen.has(c)) return false; seen.add(c); return true; })
-    .sort((a, b) => activity(b) - activity(a))
-    .map((r, i) => ({ ...r, n: i + 1 }));
+/** `desk_sessions_state()` (migration 00157): the numbering and the focus, the ONE definition of both,
+ *  which the hub's /api/sessions reads too. */
+async function sessionsState(): Promise<{
+  numbers: Record<string, number>; focus: { session_id: string | null; pinned: boolean; pending: boolean } }> {
+  const { data, error } = await getClient().rpc('desk_sessions_state');
+  if (error) throw new Error(`desk_sessions_state: ${error.message}`);
+  return data;
+}
+
+/**
+ * The listed sessions, numbered as every surface numbers them: one row per conversation, most recently
+ * active first, running and parked together (the rule and why are in migration 00157). The number is
+ * the position in the list he is looking at, which is where "the second session" comes from.
+ */
+export async function numberSessions(rows: DeskSession[]): Promise<(DeskSession & { n: number })[]> {
+  const { numbers } = await sessionsState();
+  return rows.filter((r) => numbers[r.id] != null).map((r) => ({ ...r, n: numbers[r.id] }))
+    .sort((a, b) => a.n - b.n);
 }
 
 export async function listSessions(): Promise<DeskSession[]> {
@@ -617,7 +595,7 @@ export async function resolveSession(ref: string): Promise<
   const want = String(ref || '').trim();
   if (!want) return { ok: false, error: 'which session?' };
   const all = await listSessions();
-  const rows = numberSessions(all);
+  const rows = await numberSessions(all);
   if (!rows.length) return { ok: false, error: 'no sessions are running or parked' };
 
   const low = want.toLowerCase();
@@ -854,8 +832,8 @@ export async function turnSummaries(rows: DeskSession[]): Promise<Map<string, st
   return out;
 }
 
-export function formatSessions(rows: DeskSession[], q: any[], summaries: Map<string, string> = new Map()): string {
-  if (!rows.length && !q.length) return 'No sessions running or parked.';
+export function formatSessions(numbered: (DeskSession & { n: number })[], q: any[], summaries: Map<string, string> = new Map()): string {
+  if (!numbered.length && !q.length) return 'No sessions running or parked.';
   const lines: string[] = [];
   // Numbered, because the number is how Jared refers to one out loud, and it has to be the same
   // number the pane shows. The machine is named for the same reason: "move it to the Mac" needs him
@@ -868,7 +846,6 @@ export function formatSessions(rows: DeskSession[], q: any[], summaries: Map<str
   // number reopened two copies of an unrelated session and missed three of the intended ones. An id
   // cannot go stale that way, and `resolveSession` has always accepted one; it simply was not shown
   // anywhere, so nothing could use it.
-  const numbered = numberSessions(rows);
   // AN UNNAMED SESSION IS NOT CALLED "root". `label` is null until something names it — a session
   // Jared opened in a terminal himself is `adopted`, so no dispatch label was ever written, and
   // Claude Code's own generated title does not exist until the first exchange finishes. Falling back

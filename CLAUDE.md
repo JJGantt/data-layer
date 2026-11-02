@@ -111,10 +111,8 @@ there, or check the `validate_safe_tools()` line in the worker's startup log.
 permanent handle `s-<first 8 of claude_session_id>` (`sessionHandle`), which `get_sessions` prints: a
 row id names one stretch of a conversation and is replaced at the next resume. Any of them resolves to
 the conversation's current row, so a stale row id still reaches the session instead of reopening an
-old stretch of it beside the live one. The numbering rule (`numberSessions`: active sessions by last
-turn boundary, `active_at`, **1 is the most recently active**, running and parked interleaved — parking is not activity — one row per conversation) is duplicated in the hub's `/api/sessions`, and so is the focus rule (`focusedSession` and the
-hub's `pickFocus`). Each pair must agree, or the pane and the voice tools disagree about which session
-is which, or the wall shows one session focused while a follow-up lands in another. The number is a position in the current list, never identity — closing one renumbers the
+old stretch of it beside the live one. The numbering rule (active sessions by last
+turn boundary, `active_at`, **1 is the most recently active**, running and parked interleaved — parking is not activity — one row per conversation) and the focus rule are `desk_sessions_state()` (migration 00157); `numberSessions`, `focusedSession` and the hub's `/api/sessions` all read it. Change either rule there. The number is a position in the current list, never identity — closing one renumbers the
 rest, which is what keeps the list 1..N over what is actually open. An
 ambiguous name returns the choices rather than picking one: ending or moving the wrong session is not
 recoverable.

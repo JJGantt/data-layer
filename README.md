@@ -101,16 +101,15 @@ it (`unfocus_session`), or closing that session by hand (`end_session`). Nothing
 
 - **Dispatching work does not.** Sessions are started for every small reason, so a pin any of them
   could take is not a pin. `setFocus` leaves an existing `session_id` alone.
-- **Eviction does not**, and a resume does not lose it: the pin holds the CONVERSATION. `focusedSession`
+- **Eviction does not**, and a resume does not lose it: the pin holds the CONVERSATION. Focus
   matches the pinned row, or any resident row with the same `claude_session_id`, or the pinned row
   itself while it is parked. So a pinned session that is evicted and later resumed is still pinned.
 
 The one thing that does clear it automatically is a pin pointing at a session row that no longer
 exists at all — nothing can release that by hand, so it would block automatic focus for ever.
 
-The hub computes the same thing a second time (`pickFocus` in status-hub's `server/routes/sessions.js`) because it
-serves the surfaces. Both copies have to say the same thing or a wall disagrees with the phone about
-which session is held.
+The rule is `desk_sessions_state()` (migration 00157), which `focusedSession` and the hub's
+`/api/sessions` both read, so a wall and the voice tools cannot disagree about which session is held.
 
 ## A list is addressed by its ID
 

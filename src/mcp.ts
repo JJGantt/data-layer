@@ -570,7 +570,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
     if (name === 'get_sessions') {
       const rows = await desk.listSessions();
-      return text(desk.formatSessions(rows, await desk.queued(), await desk.turnSummaries(rows)));
+      return text(desk.formatSessions(await desk.numberSessions(rows), await desk.queued(), await desk.turnSummaries(rows)));
     }
     if (name === 'bedroom_tv') {
       const op = String(a.op || '') as bedroomTv.Op;
