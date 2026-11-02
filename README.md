@@ -199,6 +199,35 @@ another.
 
     ./migrate.sh            # push, then list what is applied
 
+## Tests
+
+    npm test          # build, then the unit tests (no network, no secrets)
+    npm run test:db   # the SQL tests, against a throwaway Postgres in Docker
+
+Run both before pushing; CI (`.github/workflows/test.yml`) runs both again on every push to main.
+
+They cover only what is easy to break and costly when it is: the ingredient rollup and produce
+totals, recipe and leftover scaling, the 4am eating day, repeat expansion and lateness on dated
+items, which completion times are honoured, the `now()` clock, the HTTP API's token gate, and the two
+SQL functions that hold shared rules, `muscle_volume()` and `desk_sessions_state()`. Transports and
+the Supabase calls themselves are not tested.
+
+The unit tests import `dist/`, the code that actually runs, so `npm test` builds first. They run under
+`TZ=America/New_York`, because the clock and the DST cases are only meaningful in a zone with DST.
+`test/http-auth.test.mjs` starts the real `dist/http.js` with Supabase and the ops responder pointed at
+a closed local port, so nothing it does reaches either.
+
+`bin/test-db` starts Supabase's own Postgres image (`public.ecr.aws/supabase/postgres`, the version
+the project runs, about 1.7GB once pulled), applies every migration in order, runs `test/db/`, and
+removes the container. Each test runs inside a transaction that is rolled back. `TEST_DATABASE_URL`
+points it at an existing fresh database instead (CI's service container); `test/db/db.mjs` refuses
+anything that is not local, because the tests empty whole tables inside their transactions.
+
+About ten migrations do not apply on a fresh database, and `bin/test-db` lists them: they touch
+tables that were made in the dashboard rather than in a migration (`surf_snapshots`, `app_config`,
+`menu_dishes`), or the `storage` schema, which the bare image does not have. Nothing tested depends on
+them. A test that does need one fails on the missing object rather than passing.
+
 ## Backups
 
 Supabase is the only copy of every life table, so `./backup.sh` writes a second one to the Mac:

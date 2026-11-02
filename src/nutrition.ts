@@ -28,7 +28,7 @@ function normalizeOccurredAt(value?: string): string {
 // previous day, so late-night snacks roll into the day you were actually awake
 // for rather than starting a fresh day at midnight.
 const EATING_DAY_BOUNDARY_HOUR = 4;
-function dateFromOccurredAt(value: string): string {
+export function dateFromOccurredAt(value: string): string {
   const m = value.match(/^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2}))?)?/);
   if (!m) return now().slice(0, 10);
   const [y, mo, d, h, mi, s] = m.slice(1).map((v) => (v === undefined ? 0 : Number(v)));
@@ -206,6 +206,32 @@ export function formatStagedList(entries: NutritionEntry[]): string {
   return lines.join('\n');
 }
 
+// The arithmetic of a leftover subtraction, apart from the read and the write: the dish's weight, the
+// fraction eaten, and the ingredients and totals scaled by it.
+export function planLeftovers(ings: NutritionIngredient[], grams: number, totalGOverride: number | undefined, dishName: string) {
+  if (!isFiniteNumber(grams) || grams <= 0) throw new ValidationError('Leftover grams must be a positive number.');
+  if (!ings.length) throw new ValidationError(`Entry '${dishName}' has no ingredients to scale.`);
+  let total: number;
+  if (isFiniteNumber(totalGOverride)) {
+    if (Number(totalGOverride) <= 0) throw new ValidationError('total_g must be a positive number.');
+    total = Number(totalGOverride);
+  } else {
+    const unweighable = ings.filter((g) => ingredientGrams(g) == null).map((g) => g.name || g.food || '?');
+    if (unweighable.length) {
+      throw new ValidationError(
+        `Can't weigh ${unweighable.length === 1 ? 'this ingredient' : 'these ingredients'} of '${dishName}': ${unweighable.join(', ')}. ` +
+        'Their portions are not in grams and are not produce, so the total cooked weight is unknown. ' +
+        'Estimate the whole dish\'s cooked weight and pass it as total_g.');
+    }
+    total = ings.reduce((s, g) => s + (ingredientGrams(g) ?? 0), 0);
+  }
+  if (grams >= total) throw new ValidationError(`Leftover (${grams} g) is not less than the dish's total weight (${round10(total)} g).`);
+
+  const factor = (total - grams) / total;
+  const { ingredients } = normalizeIngredients(scaleIngredients(ings, factor), `Entry '${dishName}'`, false);
+  return { ingredients, nutr: rollup(ingredients), prod: produceRollup(ingredients), total, factor };
+}
+
 // Scale a logged dish down by the weight left uneaten.
 //
 // You cook 432 g of a stir-fry, eat most of it, 92 g goes in the bin — every ingredient should shrink
@@ -223,35 +249,11 @@ export async function subtractLeftovers(idPrefix: string, grams: number, totalGO
   entry: NutritionEntry; total_g: number; eaten_g: number; factor: number; assumedTotal: boolean;
   before: { calories: number | null; protein_g: number | null; carbs_g: number | null; fat_g: number | null };
 } | null> {
-  if (!isFiniteNumber(grams) || grams <= 0) throw new ValidationError('Leftover grams must be a positive number.');
   const sb = getClient();
   const entry = await findEntry(idPrefix);
   if (!entry) return null;
   const ings = (entry.ingredients ?? []) as NutritionIngredient[];
-  if (!ings.length) throw new ValidationError(`Entry '${entry.name}' has no ingredients to scale.`);
-
-  let total: number;
-  if (isFiniteNumber(totalGOverride)) {
-    if (Number(totalGOverride) <= 0) throw new ValidationError('total_g must be a positive number.');
-    total = Number(totalGOverride);
-  } else {
-    const unweighable = ings.filter((g) => ingredientGrams(g) == null).map((g) => g.name || g.food || '?');
-    if (unweighable.length) {
-      throw new ValidationError(
-        `Can't weigh ${unweighable.length === 1 ? 'this ingredient' : 'these ingredients'} of '${entry.name}': ${unweighable.join(', ')}. ` +
-        'Their portions are not in grams and are not produce, so the total cooked weight is unknown. ' +
-        'Estimate the whole dish\'s cooked weight and pass it as total_g.');
-    }
-    total = ings.reduce((s, g) => s + (ingredientGrams(g) ?? 0), 0);
-  }
-  if (grams >= total) throw new ValidationError(`Leftover (${grams} g) is not less than the dish's total weight (${round10(total)} g).`);
-
-  const factor = (total - grams) / total;
-  const scaled = scaleIngredients(ings, factor);
-
-  const { ingredients } = normalizeIngredients(scaled, `Entry '${entry.name}'`, false);
-  const nutr = rollup(ingredients);
-  const prod = produceRollup(ingredients);
+  const { ingredients, nutr, prod, total, factor } = planLeftovers(ings, grams, totalGOverride, entry.name);
   const before = { calories: entry.calories, protein_g: entry.protein_g, carbs_g: entry.carbs_g, fat_g: entry.fat_g };
   const { data } = await sb.from('nutrition_entries').update({
     ingredients, calories: nutr.calories, protein_g: nutr.protein_g, carbs_g: nutr.carbs_g, fat_g: nutr.fat_g,

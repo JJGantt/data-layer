@@ -5,7 +5,9 @@
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
-    "migrate": "node dist/migrate-from-sqlite.js"
+    "migrate": "node dist/migrate-from-sqlite.js",
+    "test": "tsc && TZ=America/New_York node --test 'test/*.test.mjs'",
+    "test:db": "bin/test-db"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",
@@ -15,6 +17,7 @@
   },
   "devDependencies": {
     "@types/node": "^25.4.0",
+    "pg": "^8.23.1",
     "typescript": "^5.9.3"
   }
 }

@@ -1,0 +1,21 @@
+#!/bin/sh
+# The SQL tests (test/db), against a disposable Postgres with every migration applied.
+#
+# With TEST_DATABASE_URL set (CI's service container) it uses that database, which must be fresh.
+# Without it, it starts Supabase's Postgres image in Docker on a random local port and removes it
+# afterwards, whatever happens.
+set -eu
+cd "$(dirname "$0")/.."
+IMAGE=public.ecr.aws/supabase/postgres:17.6.1.121
+
+if [ -z "${TEST_DATABASE_URL:-}" ]; then
+  name="data-layer-test-$$"
+  docker run -d --rm --name "$name" -e POSTGRES_PASSWORD=postgres -p 127.0.0.1::5432 "$IMAGE" >/dev/null
+  trap 'docker rm -f "$name" >/dev/null 2>&1 || true' EXIT INT TERM
+  port=$(docker port "$name" 5432/tcp | head -1 | sed 's/.*://')
+  TEST_DATABASE_URL="postgres://supabase_admin:postgres@127.0.0.1:$port/postgres"
+fi
+export TEST_DATABASE_URL
+
+node test/db/migrate-fresh.mjs
+TZ=America/New_York node --test --test-concurrency=1 'test/db/*.test.mjs'
