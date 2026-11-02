@@ -15,7 +15,7 @@ const TIMEOUT_MS = 15_000;
 const WAKE_TIMEOUT_MS = 45_000;
 const WAKES = new Set<Op>(['power', 'open', 'launch', 'input']);
 
-// Apps by the name he says, to their package (installed on the TV, checked 2026-10-30).
+// Apps by their spoken name, to their package (installed on the TV, checked 2026-10-30).
 export const APPS: Record<string, string> = {
   youtube: 'com.google.android.youtube.tv',
   netflix: 'com.netflix.ninja',
@@ -38,7 +38,7 @@ export const KEYS: Record<string, string> = {
 };
 
 // A level setter reads the level first and answers with it as `before`, so "what was it before?" and
-// "put it back" have an answer however long after the change he asks. The TV reports only the value
+// "put it back" have an answer however long after the change it is asked. The TV reports only the value
 // after a set, and nothing else keeps the old one.
 const LEVELS = new Set<Op>(['volume', 'brightness', 'contrast']);
 

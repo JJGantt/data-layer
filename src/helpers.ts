@@ -5,9 +5,9 @@ import { readFileSync } from 'node:fs';
 // Under the voice worker, now() returns THE MOMENT THE USER STARTED SPEAKING, not the current instant:
 // voice-pipeline's worker.py writes the command's audio-recording start (voice_requests.capture_start)
 // to the file named by DATA_TS_FILE, and now() reads it per call. Deliberate — a
-// set logged by voice has to land at Jared's rest-clock reference, not ~30s later when the command
+// set logged by voice has to land at the user's rest-clock reference, not ~30s later when the command
 // finishes traversing transcription + routing + the model. Every caller below inherits that: `today()`
-// is the day he spoke, and anything stamped with now() is voice-aware whether or not it says so.
+// is the day the command was spoken, and anything stamped with now() is voice-aware whether or not it says so.
 // No file, or an empty one (typed/web commands, direct API callers, no command in flight) → the real
 // machine clock: pure wall clock, no timezone concept at all, whatever this host reads right now.
 // The worker rewrites the file at the START of every command — the capture_start for audio, empty for

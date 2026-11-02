@@ -105,7 +105,7 @@ export async function machinesReady(agent: Agent = 'claude'): Promise<Record<'pi
  * Write a command and wait for its machine to say what happened.
  *
  * An insert into the queue always succeeds, so answering at insert time reports "sent" for commands
- * the machine then refuses — the model repeats that to Jared and the words are lost from his view.
+ * the machine then refuses — the model repeats that to the user and the words are lost from view.
  * The channel is SUBSCRIBED BEFORE the insert, or a consumer that finishes in milliseconds is missed.
  * No verdict within CONFIRM_MS means it is still queued and may yet run: reported as unconfirmed,
  * never as delivered. A refused command is dead-lettered by the consumer that refused it.
@@ -175,7 +175,7 @@ async function followHandoff(id: string, v: Verdict, machine: Machine):
  * Keep a command that could not run.
  *
  * A dispatched prompt is usually minutes of dictated speech that cannot be said again the same way,
- * so nothing is ever dropped — it is parked here with the reason, and retried later only if Jared
+ * so nothing is ever dropped — it is parked here with the reason, and retried later only if the user
  * still wants it. Deliberately not a retry queue: see the migration.
  */
 export async function deadLetter(
@@ -316,8 +316,8 @@ export async function startSession(repo: string | undefined, prompt: string, mac
   // Focus first: a follow-up said while the launch is still being confirmed belongs to this dispatch.
   await setFocus(id, machine);
   // Confirmed, not inserted: a machine short of room QUEUES the session instead of launching it
-  // (pi-desk runQueue), and "started" for a session that is waiting is what he was told on
-  // 2026-10-11 while it sat in the queue for two days.
+  // (pi-desk runQueue), and reporting "started" for a session that is waiting would be wrong for as long as
+  // it sits in the queue, which can be days.
   const f = await followHandoff(id, await dispatchConfirmed(id, 'open_session', payload), machine);
   const v = f.v;
   if (v.state === 'error') return { ok: false as const, error: v.detail };
@@ -351,7 +351,7 @@ async function startLoginRepair(dead: Machine, expired: string, on: Machine, rel
 /**
  * Whether `prompt` is the request the calling session was itself dispatched with. `session` is
  * HUB_SESSION_ID, which only the desk launchers set, so a session opened by hand is never caught.
- * Matched on the head of the new prompt inside the row's: start_session passes his words verbatim
+ * Matched on the head of the new prompt inside the row's: start_session passes the user's words verbatim
  * minus the addressing, so a re-dispatch is the same text with "start a session in X" taken off the
  * front. The row keeps only 500 characters of the prompt, which is why only the head is compared.
  */
@@ -366,8 +366,8 @@ export async function redispatch(session: string | undefined, prompt: string) {
 
 /**
  * Mark the dispatch just made, so a follow-up said before its session exists is held for it rather
- * than landing in whatever was active a moment earlier. It also releases a session Jared had focused by
- * name: starting new work is him turning to it.
+ * than landing in whatever was active a moment earlier. It also releases a session the user had focused by
+ * name: starting new work means turning to it.
  *
  * A command id, not a session id: at this moment the session does not exist yet. The machine creates
  * it a moment later, records command_id on the row and publishes it as the most recently active
@@ -390,7 +390,7 @@ export async function setFocus(commandId: string, machine: Machine) {
   if (f?.session_id) {
     const { data: held } = await getClient().from('desk_sessions')
       .select('id').eq('id', f.session_id).maybeSingle();
-    if (held) return;                       // his pin stands
+    if (held) return;                       // the user's pin stands
   }
   await getClient().from('desk_focus')
     .upsert({ id: 'current', command_id: commandId, session_id: null, machine, updated: new Date().toISOString() },
@@ -410,15 +410,14 @@ export async function releaseFocusFor(sessionId: string) {
 /**
  * The session a spoken follow-up lands in, and the one every surface shows as focused. In order:
  *
- *   1. a session Jared FOCUSED BY NAME (`focus_session`), while it is still running. His explicit
- *      word outranks everything until he focuses another, releases it, or dispatches new work;
+ *   1. a session the user FOCUSED BY NAME (`focus_session`), while it is still running. That explicit
+ *      choice outranks everything until another is focused, releases it, or dispatches new work;
  *   2. a dispatch whose session has not opened yet (`pending`) — words said in that gap are meant for
  *      it, not for whatever was active a moment before;
  *   3. otherwise the MOST RECENTLY ACTIVE running session, on either machine.
  *
- * 3 includes the session he is typing in at his keyboard, which the pointer once excluded on purpose.
- * He chose this: the session he last used is the one he means. Ambient speech is guarded where it
- * always was — `follow_up` only runs when he hands words over ('tell it to…') — not by where the
+ * 3 includes the session the user is typing in at the keyboard, by design: the session last used is
+ * the one meant. Ambient speech is guarded elsewhere — `follow_up` only runs when the user hands words over ('tell it to…') — not by where the
  * pointer may go.
  *
  * The rule lives in `desk_sessions_state()` (migration 00157), which the hub's `/api/sessions` reads
@@ -430,7 +429,7 @@ export async function focusedSession(): Promise<{ session: DeskSession | null; p
 }
 
 /**
- * Pin a session, so what he says next goes there whatever else becomes active — until he pins another,
+ * Pin a session, so what the user says next goes there whatever else becomes active — until another is pinned,
  * releases it (unfocusSession), or closes it by hand. Dispatching work does NOT release it, and neither
  * does eviction: a pin holds the conversation, and re-attaches to it when it is resumed. Unpinned,
  * focus follows activity.
@@ -466,7 +465,7 @@ export async function unfocusSession() {
 }
 
 /**
- * Send a follow-up: to the session he NAMED, or with no name to the focused one (focusedSession).
+ * Send a follow-up: to the session the user NAMED, or with no name to the focused one (focusedSession).
  *
  * A named session gets the words whatever it is doing — running and mid-turn, they are typed in and
  * Claude Code queues them; parked, it is resumed with them. Naming a session routes this one message
@@ -474,7 +473,7 @@ export async function unfocusSession() {
  *
  * With no name it can legitimately have nowhere to go, two ways that mean different things: a dispatch
  * has not opened its session yet (a launch takes a few seconds), or nothing is running at all. Saying
- * which saves Jared guessing whether it worked, and the words are kept either way.
+ * which saves the user guessing whether it worked, and the words are kept either way.
  */
 export async function followUp(prompt: string, ref?: string) {
   if (ref) {
@@ -524,7 +523,7 @@ async function deliverFollowUp(s: DeskSession, prompt: string) {
  * list is always 1..N over what is actually there.
  *
  * ORDERED BY `active_at`, the last TURN BOUNDARY — a prompt sent or a turn finished — because the
- * session he is using is the one he is talking about. Two other orders fail in opposite ways:
+ * session in use is the one being talked about. Two other orders fail in opposite ways:
  * `last_seen` is touched by every reconcile tick, so the list reshuffled every 30s between two reads
  * seconds apart (measured), and `started` never moves, which kept a session in active use below newer
  * idle ones. `active_at` moves only when a session does something, so a number said out loud can still
@@ -568,7 +567,7 @@ async function sessionsState(): Promise<{
 /**
  * The listed sessions, numbered as every surface numbers them: one row per conversation, most recently
  * active first, running and parked together (the rule and why are in migration 00157). The number is
- * the position in the list he is looking at, which is where "the second session" comes from.
+ * the position in the list the user is looking at, which is where "the second session" comes from.
  */
 export async function numberSessions(rows: DeskSession[]): Promise<(DeskSession & { n: number })[]> {
   const { numbers } = await sessionsState();
@@ -625,7 +624,7 @@ export async function resolveSession(ref: string): Promise<
 
   // RUNNING SESSIONS FIRST. Parked ones accumulate for a fortnight and crowd every name — "golf"
   // matched a live session and a closed one from days ago, "status-hub" matched twelve — so a name
-  // that picks out exactly one RUNNING session is not ambiguous in any sense Jared means it. Only
+  // that picks out exactly one RUNNING session is not ambiguous in any sense the user means it. Only
   // when nothing running matches does the whole list come into play, which is what "resume the X one"
   // needs.
   const live = rows.filter((r) => r.status === 'resident').filter(matches);
@@ -696,7 +695,7 @@ export async function queued() {
 
 /**
  * Whether `row` is the session this MCP server belongs to. The desk launchers export the row id as
- * HUB_SESSION_ID on every machine. A session Jared opened by hand at the Mac has no such variable, so
+ * HUB_SESSION_ID on every machine. A session opened by hand at the Mac has no such variable, so
  * there the parent pid decides: this server is a stdio child of the claude process, whose pid is on
  * the row. Only on the Mac, the one darwin machine: on Linux a pid match could be a different box.
  */
@@ -714,8 +713,8 @@ function isSelf(row: DeskSession): boolean {
  * saw the command at all.
  */
 export async function sessionCommand(kind: 'resume_session' | 'end_session', session: string, prompt?: string) {
-  // Takes whatever Jared said — a number, a repo, an id — because these are spoken commands and the
-  // id is the one form he will never use.
+  // Takes whatever the user said — a number, a repo, an id — because these are spoken commands and the
+  // id is the one form nobody says aloud.
   const found = await resolveSession(session);
   if (!found.ok) return { ok: false as const, error: found.error };
   const row = found.row;
@@ -760,7 +759,7 @@ export async function sessionCommand(kind: 'resume_session' | 'end_session', ses
 /**
  * Name a session — and name the SESSION, not just our row.
  *
- * A live session is sent `/rename <name>`, which is the same command Jared types: Claude Code renames
+ * A live session is sent `/rename <name>`, which is the same command typed by hand: Claude Code renames
  * itself, its terminal tab title changes, and it writes the `custom-title` record that the reconcile
  * tick reads back into `label` a moment later. The row is also set here so the pane changes at once
  * rather than a tick later.
@@ -835,28 +834,26 @@ export async function turnSummaries(rows: DeskSession[]): Promise<Map<string, st
 export function formatSessions(numbered: (DeskSession & { n: number })[], q: any[], summaries: Map<string, string> = new Map()): string {
   if (!numbered.length && !q.length) return 'No sessions running or parked.';
   const lines: string[] = [];
-  // Numbered, because the number is how Jared refers to one out loud, and it has to be the same
-  // number the pane shows. The machine is named for the same reason: "move it to the Mac" needs him
-  // to know where it is now.
+  // Numbered, because the number is how the user refers to one out loud, and it has to be the same
+  // number the pane shows. The machine is named for the same reason: "move it to the Mac" needs the
+  // user to know where it is now.
   //
   // THE ID IS PRINTED BESIDE IT, because the number is a position in THIS listing and positions move.
   // Resuming or ending several sessions renumbers the list after each one — every resume makes that
   // session the most recently active, which shifts everything above where it was — so a caller working from one
-  // listing addresses a different session with each call. That happened: a batch of five resumes by
-  // number reopened two copies of an unrelated session and missed three of the intended ones. An id
-  // cannot go stale that way, and `resolveSession` has always accepted one; it simply was not shown
-  // anywhere, so nothing could use it.
+  // listing addresses a different session with each call. An id cannot go stale that way, and
+  // `resolveSession` accepts one.
   // AN UNNAMED SESSION IS NOT CALLED "root". `label` is null until something names it — a session
-  // Jared opened in a terminal himself is `adopted`, so no dispatch label was ever written, and
+  // opened in a terminal by hand is `adopted`, so no dispatch label was ever written, and
   // Claude Code's own generated title does not exist until the first exchange finishes. Falling back
-  // to `repo` printed a dozen rows reading `root (root on the Mac)`, which looks like a name and is
-  // the working directory. Nothing distinguished them from a session actually called that.
+  // to `repo` prints rows reading `root (root on the Mac)`, which looks like a name and is the working
+  // directory, indistinguishable from a session actually called that.
   const shown = (r: DeskSession) => (r as any).label || '(unnamed)';
   const line = (r: DeskSession & { n: number }) =>
     `- **${r.n}.** ${shown(r)} (${r.repo} on the ${NAME[machineOf(r.worker)]}${r.agent === 'codex' ? ', on Codex' : ''}) \`${sessionHandle(r)}\``
     + ` — ${lastSaid(r)}`;
   // WHAT IT LAST SAID is the turn's one-sentence summary — what it did, or the question it ends on —
-  // because a reply cut at a fixed length loses its end, which is where a question for him sits. No
+  // because a reply cut at a fixed length loses its end, which is where a question for the user sits. No
   // summary means the reply is under 200 characters (short enough to show whole) or the summariser
   // failed or has not finished, so the reply itself is shown, still bounded: a dozen long reports
   // would bury the list.
@@ -879,9 +876,9 @@ export function formatSessions(numbered: (DeskSession & { n: number })[], q: any
 // ── Subscription usage gate for new sessions ────────────────────────────────────────────────────────
 // Sessions are what spend the Claude 5-hour and weekly windows; voice turns barely move them, and when a
 // window is exhausted they fall back to API credits anyway (voice-pipeline worker, SDK_CREDITS). So a
-// dispatch is held back at a high reading, leaving the window for voice, unless Jared says to start it
-// anyway. Thresholds are Jared's (2026-11-01): from 75% the session starts and he is told the reading;
-// from 90% it does not start until he confirms. The reading is the newest `claude_usage` row (00144),
+// dispatch is held back at a high reading, leaving the window for voice, unless the user says to start it
+// anyway. Thresholds: from 75% the session starts and the user is told the reading; from 90% it does
+// not start until the user confirms. The reading is the newest `claude_usage` row (00144),
 // written after every turn by the voice worker and by each machine's Stop hook.
 export const USAGE_NOTE_PCT = 75;
 export const USAGE_HOLD_PCT = 90;

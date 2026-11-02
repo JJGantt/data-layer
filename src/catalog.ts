@@ -16,7 +16,7 @@ async function gql(query: string, variables: Record<string, unknown> = {}): Prom
   return j.data;
 }
 
-// Service names he would say → JustWatch's package codes. `technicalName` (in results) is the
+// Spoken service names → JustWatch's package codes. `technicalName` (in results) is the
 // key the TV app map and the subscriptions setting use.
 export const SERVICES: Record<string, { code: string; tv?: string }> = {
   netflix: { code: 'nfx', tv: 'com.netflix.ninja' },
@@ -42,7 +42,7 @@ export const GENRES: Record<string, string> = {
 };
 const GENRE_CODE = Object.fromEntries(Object.entries(GENRES).map(([k, v]) => [v, k]));
 
-/** The services he pays for (app_settings `streaming_services`, a JSON array of the keys above), or
+/** The user's subscribed services (app_settings `streaming_services`, a JSON array of the keys above), or
  *  null when they have not been set. */
 export async function mine(): Promise<string[] | null> {
   const { data } = await getClient().from('app_settings').select('value').eq('key', 'streaming_services').maybeSingle();

@@ -522,11 +522,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return text('Not started: you ARE the session this request was dispatched to. Do the work yourself.');
       }
       // The usage gate (desk.ts USAGE_HOLD_PCT). Refusing is the whole mechanism: the caller is told to
-      // ask, and only his answer earns the override.
+      // ask, and only the user's answer earns the override.
       // Omitted, the agent is this MCP's default (desk.defaultAgent): Codex under the voice worker's Codex
       // and credits fallbacks and inside a Codex session, Claude everywhere else.
       const agent: desk.Agent = a.agent === 'codex' || a.agent === 'claude' ? a.agent : desk.defaultAgent();
-      // Claude's usage says nothing about a Codex session, which runs on Jared's ChatGPT plan.
+      // Claude's usage says nothing about a Codex session, which runs on a ChatGPT plan.
       const usage = agent === 'claude' ? await desk.usageNow() : null;
       const pct = usage ? desk.effectivePct(usage) : 0;
       if (usage && pct >= desk.USAGE_HOLD_PCT && a.override_usage !== true) {
@@ -543,9 +543,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         ? 'Its first reply is posted into the hub conversation when it finishes.'
         : 'It runs on its own; check back with get_sessions.';
       const on = desk.machineName(r.machine);
-      // Said whenever the work is not where the caller asked, so the reply can tell him where it went.
-      // A login repair is started only when a machine of his still works (desk.ts startSession); Fly
-      // gets the caveat instead, since it cannot do what needs his signed-in browser.
+      // Said whenever the work is not where the caller asked, so the reply can say where it went.
+      // A login repair is started only when one of the user's machines still works (desk.ts startSession); Fly
+      // gets the caveat instead, since it cannot do what needs the signed-in browser.
       const moved = r.rerouted
         ? ` It went to the ${on} instead of the machine asked for, because ${r.rerouted}.`
           + (r.machine === 'fly'
@@ -635,7 +635,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const months = Number(a.months);
       const r = await desk.setWall(mode, Number.isInteger(months) && months >= 1 && months <= 12 ? months : undefined);
       // 'home' is a second word for the default and normalises to 'standard' above, so it is never
-      // stored — say the word he used rather than the value written.
+      // stored — say the word the user used rather than the value written.
       const said = raw === 'home' || mode === 'standard' ? 'home' : mode === 'sessions' ? 'session' : mode;
       return text(r.ok ? `TV switched to the ${said} wall.` : r.error);
     }

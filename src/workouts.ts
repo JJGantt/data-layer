@@ -207,7 +207,7 @@ function normalizeNote(value: unknown): string | null {
  */
 export async function logSets(items: { exercise_id: number; weight_lbs: number; reps: number; occurred_at?: string; note?: string }[]): Promise<SetRow[]> {
   const sb = getClient();
-  // now() is voice-aware: for a voice-logged set it resolves to the audio CAPTURE START (when he spoke),
+  // now() is voice-aware: for a voice-logged set it resolves to the audio CAPTURE START (when the user spoke),
   // not the current instant — see helpers.ts. That's what makes rest gaps between sets read true.
   const ts = now();
   // Read once for the whole call rather than per set.
@@ -283,8 +283,8 @@ export async function getDaySets(date?: string): Promise<{ date: string; sets: S
 /**
  * Recent workout days (grouped from sets), newest day first — but WITHIN a day everything runs in
  * the order it was done. The query is newest-first to find the recent days, and reading its rows
- * straight into a list hands a model the day backwards: it then tells him he opened with the
- * triceps he finished on. `start`/`end` are local wall-clock HH:MM, so the order is stated, not implied.
+ * straight into a list hands a model the day backwards: it then reports the day opening with the
+ * exercise it finished on. `start`/`end` are local wall-clock HH:MM, so the order is stated, not implied.
  */
 export async function listWorkoutDays(limit = 10): Promise<{ date: string; start: string; end: string; setCount: number; categories: string[]; exercises: string[] }[]> {
   const { data } = await getClient().from('sets').select('occurred_at, exercise').order('occurred_at', { ascending: false }).limit(2000);

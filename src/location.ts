@@ -1,10 +1,10 @@
 import { getClient } from './client.js';
 
-// Where Jared last was, from `locations` (00128): one row per device, kept by a trigger (00129) from the
+// The user's last known position, from `locations` (00128): one row per device, kept by a trigger (00129) from the
 // fix a device sends with a command. Read on demand by a model that needs it, instead of being pasted
 // into every prompt.
 //
-// The row only moves when he speaks to a device that has a fix, so a position can be hours old. Every
+// The row only moves when the user speaks to a device that has a fix, so a position can be hours old. Every
 // line says how old it is and from which device, and the model judges whether it is still good enough.
 
 function age(at: string): string {

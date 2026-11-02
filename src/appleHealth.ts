@@ -39,7 +39,7 @@ export async function catalogue(): Promise<string> {
   return `type\tunit\tsamples\tspan\n${lines.join('\n')}`;
 }
 
-/** Nights, keyed by the date he woke. */
+/** Nights, keyed by the wake date. */
 export async function sleep(from: string, to: string): Promise<string> {
   const { data, error } = await getClient().rpc('sleep_nights', { p_from: from, p_to: to });
   if (error) throw new Error(error.message);

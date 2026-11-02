@@ -1,6 +1,6 @@
-// JARED'S OWN YouTube: watch history, home recommendations, subscriptions, their new uploads, Watch
-// Later, liked videos, his playlists. Read from YouTube's internal API (`youtubei/v1/browse`), signed in
-// with the cookies of the Pi's automation browser (pi-browser repo), which is logged in to his Google
+// THE OWNER'S OWN YouTube account: watch history, home recommendations, subscriptions, their new
+// uploads, Watch Later, liked videos, playlists. Read from YouTube's internal API (`youtubei/v1/browse`), signed in
+// with the cookies of the Pi's automation browser (pi-browser repo), which is logged in to the owner's Google
 // account. The public API cannot do this: it has had no watch history or recommendations since 2016.
 //
 // Runs ONLY on the Pi, where that browser is. The cookies are read live over its DevTools port on each

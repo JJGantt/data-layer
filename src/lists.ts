@@ -39,15 +39,15 @@ export interface ListItem {
   // 1 important (counts double), 0 normal, -1 EXEMPT — scheduled and notified like anything else,
   // but scored in neither direction and checked off automatically once its moment passes.
   //
-  // ONLY EVER SET FROM WHAT HE ACTUALLY SAID. The tool descriptions deliberately refuse to infer it
-  // from what an item is, even though a work shift is obviously not a chore: a guess here silently
-  // changes what his score does, and nothing on any surface says a guess was made. He asked for the
-  // words to be the trigger — "important", "exempt" — and for everything else to stay 0.
+  // ONLY EVER SET FROM WHAT THE USER ACTUALLY SAID. The tool descriptions deliberately refuse to infer
+  // it from what an item is, even though a work shift is obviously not a chore: a guess here silently
+  // changes the score, and nothing on any surface says a guess was made. The words are the trigger —
+  // "important", "exempt" — and everything else stays 0.
   priority: number;
   // Should it RING rather than notify? An alarm-grade item plays on a loop on the TV and on any open
   // hub page from its moment until someone stops it (status-hub docs/ALARMS.md).
   //
-  // Like `priority`, ONLY EVER SET FROM WHAT HE ACTUALLY SAID, and for a sharper reason: this one
+  // Like `priority`, ONLY EVER SET FROM WHAT THE USER ACTUALLY SAID, and for a sharper reason: this one
   // wakes a room. A soup timer should and an errand at 2am should not, and no property of an item
   // tells you which it is — "alarm", "wake me", "timer" do.
   alarm: boolean;
@@ -260,7 +260,7 @@ export async function addItem(listId: string, text: string, opts: AddOpts = {}):
   // keeping the two apart is what makes a wrong id a rejectable value rather than a new list (00094).
   const list = await requireList(listId || DEFAULT_LIST_ID);
   const n = now();
-  // Omitted means INHERIT the list's default; a number means he said so, and 0 is a real answer.
+  // Omitted means INHERIT the list's default; a number means the user said so, and 0 is a real answer.
   // The distinction has to survive all the way from the tool call, which is why this reads `== null`
   // rather than falsy — `priority: 0` from a caller must override an exempt list, not be ignored.
   const priority = opts.priority == null ? clampPriority(list.default_priority) : clampPriority(opts.priority);
@@ -391,7 +391,7 @@ export function checkCompletedAt(
  *
  * `at` exists because the completion time is the whole input to the score and the caller sometimes
  * knows it better than the clock does. Two different cases: under the voice worker `now()` is
- * already the moment he started speaking, which is the right reference for "I just did it"; `at` is
+ * already the moment the user started speaking, which is the right reference for "I just did it"; `at` is
  * for a completion that is not now at all — "I finished that at 10:15", or finishing a 10am thing a
  * quarter of an hour into it. It takes a local wall-clock reading in the same shape `due` is stored
  * in, and THROWS on one this layer cannot honour rather than storing a stamp the band would then
@@ -546,7 +546,7 @@ async function resolveListItemId(
 }
 
 /**
- * How a completion landed relative to its deadline, in his terms — so the spoken reply can say it.
+ * How a completion landed relative to its deadline, in plain terms — so the spoken reply can say it.
  * Untimed items are due by the end of their day, timed ones at their moment.
  */
 export function lateness(i: ListItem): string | null {
@@ -575,7 +575,7 @@ function line(i: ListItem, withList = false): string {
   const due = i.due ? ` (due: ${i.due})` : '';
   const flag = i.priority > 0 ? ' [important]' : i.priority < 0 ? ' [exempt]' : '';
   // Stated, because it is the one property that changes what an item DOES rather than what it is
-  // worth — a reader who cannot see it cannot tell which of his dated items will wake him.
+  // worth — a reader who cannot see it cannot tell which dated items will ring.
   const rings = i.alarm ? ' [alarm]' : '';
   const done = i.completed_at ? ` [done ${i.completed_at.slice(0, 16).replace('T', ' ')}]` : '';
   const series = i.series_id ? ` [series: ${i.series_id.slice(0, 8)}]` : '';

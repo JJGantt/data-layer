@@ -1,7 +1,7 @@
 import { getClient } from './client.js';
 import { now } from './helpers.js';
 
-// Surf at the break Jared follows, from surf-report's mirror of Surfline: `surf_hours` (one row per
+// Surf at the configured break, from surf-report's mirror of Surfline: `surf_hours` (one row per
 // spot-hour, rebuilt every few hours by the Pi's collector) and `water_readings`. Surfline blocks bots,
 // so this is the only way a model gets it — web search does not reach the forecast.
 //
@@ -120,8 +120,8 @@ export async function setSurfAlarm(dayIn: string, rulesIn: unknown, engaged: boo
   }
   const rules = checkRules(rulesIn);
   // `state` belongs to the hub, which holds the alarm item there. The one thing done to it here: an
-  // item he deleted or completed is forgotten, because the hub never puts one of those back and
-  // re-engaging means he wants a fresh one.
+  // item deleted or completed is forgotten, because the hub never puts one of those back and
+  // re-engaging means a fresh one is wanted.
   const state = { ...(existing?.state ?? {}) };
   if (state.item?.id) {
     const { data: it } = await sb.from('list_items').select('deleted,completed_at').eq('id', state.item.id).maybeSingle();

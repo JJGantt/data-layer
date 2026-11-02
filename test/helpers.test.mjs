@@ -1,4 +1,4 @@
-// The clock. now() is the moment Jared started speaking when the voice worker has written one, and
+// The clock. now() is the moment the user started speaking when the voice worker has written one, and
 // this machine's wall clock otherwise (CLAUDE.md, "`now()` is not the current time").
 import { test, describe, afterEach } from 'node:test';
 import assert from 'node:assert/strict';

@@ -2,7 +2,7 @@
 // their data as JSON (`ytInitialPlayerResponse`, `ytInitialData`) inside a <script>. A generic
 // fetch-to-markdown tool (WebFetch) drops scripts and truncates the 1.5MB page, so it never sees a
 // description, chapters or a real video id; parsing that JSON does, with no API key. Works from the
-// Mac, the Pi and Fly alike. Jared's own account (history, recommendations) is youtubeAccount.ts.
+// Mac, the Pi and Fly alike. The owner's own account (history, recommendations) is youtubeAccount.ts.
 //
 // Transcripts are NOT available this way: the caption URLs in the player response return an empty
 // body, and the transcript endpoint answers FAILED_PRECONDITION, because both now want a token only a
