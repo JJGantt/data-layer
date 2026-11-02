@@ -199,6 +199,10 @@ another.
 
     ./migrate.sh            # push, then list what is applied
 
+`00009_dashboard_tables.sql` is numbered below migrations already applied, so the CLI refuses a plain
+push until it is recorded on the project: `echo y | supabase db push --include-all` applies it (a no-op
+there, every table already exists) and lets `./migrate.sh` work again.
+
 ## Tests
 
     npm test          # build, then the unit tests (no network, no secrets)
@@ -223,10 +227,11 @@ removes the container. Each test runs inside a transaction that is rolled back. 
 points it at an existing fresh database instead (CI's service container); `test/db/db.mjs` refuses
 anything that is not local, because the tests empty whole tables inside their transactions.
 
-About ten migrations do not apply on a fresh database, and `bin/test-db` lists them: they touch
-tables that were made in the dashboard rather than in a migration (`surf_snapshots`, `app_config`,
-`menu_dishes`), or the `storage` schema, which the bare image does not have. Nothing tested depends on
-them. A test that does need one fails on the missing object rather than passing.
+Every migration must apply on a fresh database, or the run fails. The only thing provided first is a
+stub of the `storage` schema (Supabase's storage service owns it, and the bare image does not run
+that service). A table made in the dashboard rather than in a migration breaks this, and also breaks
+rebuilding the schema from migrations; write it down as a migration instead (00009 and 00158 are the
+ones that were).
 
 ## Backups
 
@@ -246,7 +251,8 @@ directory rather than the day's file means the Pi inherits the same retention au
 **Data only — no schema.** That is not an omission: the schema is `supabase/migrations/`, which is
 in git and better protected than a tarball. A restore is `./migrate.sh` to rebuild the schema, then
 load the rows. The gap to know about is anything created in the Supabase dashboard and never written
-as a migration — that exists in no backup at all.
+as a migration — that exists in no backup at all, which is why `bin/test-db` fails on a migration
+that depends on one.
 
 Retention keeps every 1st-of-month dump forever plus the last 14 of anything else, so the archive
 grows about 50MB a year rather than 1GB. The tarball is listed with `tar tzf` before it replaces
