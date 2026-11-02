@@ -323,8 +323,13 @@ export function seriesOccurrences(firstDue: string, every: string, until?: strin
       // Clamp to the month's length rather than rolling into the next one.
       const daysIn = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate();
       dt = new Date(target.getFullYear(), target.getMonth(), Math.min(d, daysIn), hh, mi, 0);
+    } else if (unit === 'day' || unit === 'week') {
+      // Calendar days, not 24-hour steps: across a DST change a 24h step lands an hour off the
+      // wall-clock time asked for (8:00 becomes 7:00 in November), and a date-only item lands on the
+      // same date twice.
+      dt = new Date(y, mo - 1, d + (unit === 'week' ? 7 : 1) * step * k, hh, mi, 0);
     } else {
-      const ms = { minute: 60000, hour: 3600000, day: 86400000, week: 604800000 }[unit] as number;
+      const ms = unit === 'hour' ? 3600000 : 60000;
       dt = new Date(new Date(y, mo - 1, d, hh, mi, 0).getTime() + step * k * ms);
     }
     const s = fmt(dt);
