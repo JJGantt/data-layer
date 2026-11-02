@@ -10,27 +10,24 @@ effect, check that first.
 
 ## `now()` is not the current time
 
-Under the voice worker it returns **the moment Jared started speaking** — `voice-pipeline`'s
+Under the voice worker it returns **the moment the user started speaking** — `voice-pipeline`'s
 `worker.py` writes `voice_requests.capture_start` to the file named by `DATA_TS_FILE` at the start of
 every command, and `helpers.now()` re-reads it per call. That is deliberate: a set logged by voice
-belongs at his rest-clock reference, not thirty seconds later once transcription and routing have
+belongs at the user's rest-clock reference, not thirty seconds later once transcription and routing have
 finished.
 
-It is a file rather than an env value because the worker's MCP session is warm (below). Passing the
-timestamp in the environment froze it at the first command's value and stamped 29 hours of writes with
-one moment before that was caught, on 2026-09-01.
+It is a file rather than an env value because the worker's MCP session is warm (below): a value in the
+environment freezes at the first command's timestamp and stamps every later write with it.
 
 **Always use `helpers.now()` and `helpers.today()`.** A module with its own clock helper skips the
-override and stamps voice-logged data late, which is exactly how nutrition disagreed with every other
-table until it was fixed.
+override and stamps voice-logged data late, so that table disagrees with every other.
 
 ## An exercise is named by its id, never by a string
 
 `log_set`, `update_set` and `set_rep_watcher` take `exercise_id` from `get_workout_catalog`. There is
-no name matching anywhere and none should be added: the name WAS the identity until 00075, so an
-exact comparison decided whether an exercise existed and a plural read as an unknown movement. The
-fix for that is not a looser comparison — anything willing to accept a near miss will eventually
-write a set against the wrong exercise, and every volume figure derives from that association.
+no name matching anywhere and none should be added: anything willing to accept a near miss will
+eventually write a set against the wrong exercise, and every volume figure derives from that
+association.
 
 `upsert_catalog_exercise` is the one place a string names an exercise, because naming is what it is
 for; it matches exactly, and returns the new id to log against.
@@ -48,10 +45,9 @@ that can be edited without moving a row. Write `list_id` and nothing else — `l
 the `list_items_resolve_list` trigger, the same arrangement as `sets.exercise` and `exercise_id`, and
 sending both is how the two get a chance to disagree.
 
-`add_to_list` will NOT create a list, and that is the point rather than an omission. When the name was
-the key, an unrecognised name was the only way to express "start a new list", so it had to be accepted
-and a typo forked silently. Creation is `create_list` alone, which leaves `list_id` a closed set the
-tool schema ships as an `enum`.
+`add_to_list` will NOT create a list, deliberately: if an unrecognised name could mean "start a new
+list", a typo would fork one silently. Creation is `create_list` alone, which leaves `list_id` a closed
+set the tool schema ships as an `enum`.
 
 Do not add name matching to get around this. It is the `exercise_id` rule again, and for the same
 reason: anything willing to accept a near miss eventually writes to the wrong list, and the write
@@ -82,11 +78,11 @@ else.
 
 ## The voice worker holds this MCP warm — a rebuild alone does nothing
 
-The worker's fast path (`SdkRunner`, primary since 2026-08-30) is one long-lived process holding the
+The worker's fast path (`SdkRunner`) is one long-lived process holding the
 data MCP as a **warm stdio session**, started once per worker lifetime. So `npm run build` gives voice
 nothing: new tools stay invisible and changed schemas stay stale until the worker reconnects. Restart
 it — `launchctl kickstart -k gui/$(id -u)/com.jaredgantt.voice-worker` on the Mac, `sudo systemctl
-restart voice-worker` on the Pi. Both machines' `pull-repos` now do this on a data-layer change; a
+restart voice-worker` on the Pi. Both machines' `pull-repos` do this on a data-layer change; a
 build you run by hand still needs it.
 
 The same process lifetime is why nothing per-command may live in that subprocess's **environment** —
@@ -107,7 +103,7 @@ there, or check the `validate_safe_tools()` line in the worker's startup log.
 
 ## A session is named by number, not by id
 
-`resolveSession` takes what Jared actually says — "3", "status-hub" — or an id. The id to SAVE is the
+`resolveSession` takes what the user actually says — "3", "status-hub" — or an id. The id to SAVE is the
 permanent handle `s-<first 8 of claude_session_id>` (`sessionHandle`), which `get_sessions` prints: a
 row id names one stretch of a conversation and is replaced at the next resume. Any of them resolves to
 the conversation's current row, so a stale row id still reaches the session instead of reopening an

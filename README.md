@@ -1,6 +1,6 @@
 # data-layer
 
-Everything that reads or writes Jared's life data goes through here. Supabase is the store; this is
+Everything that reads or writes the personal life data (workouts, nutrition, lists, health) goes through here. Supabase is the store; this is
 the only thing that talks to it directly, so behaviour lives in one place rather than in each caller.
 
 Two entry points over the same modules:
@@ -30,28 +30,14 @@ both call, which is why the MCP and the API can never disagree about what a writ
 | `health.ts` | profile, height, weight |
 | `recipes.ts` | saved recipes — see below |
 | `ingredients.ts` | the ingredient itself: validation, produce rules, rollup, scaling |
-
-`shopping_items` is the saved retailer catalogue: `retailer, item_id, name, default_qty,
-last_verified`. Three MCP tools cover it — `get_shopping_items` (read it whole; it is small and has
-no search), `build_walmart_cart_url` (ids + quantities -> one URL that fills the cart in a single
-navigation), and `save_shopping_item`. Quantities ADD to the cart, so pass deltas. The catalogue
-holds only what Jared has actually bought: an item found by search and put in a cart is not saved,
-so `build_walmart_cart_url` refuses it and the affiliate URL is built by hand.
-
-Amazon has no cart URL — its documented `/gp/aws/cart/add.html` was tested and adds nothing — so an
-Amazon row saves the search, not the session.
-
-`url` takes ids because reading `list` and choosing one is the step that picks the right product.
-An earlier version matched on names and had to reject "milk" as ambiguous against a milkshake
-cereal — a failure mode that only existed because of the matcher.
 | `reviews.ts` | as named |
 | `surf.ts` | the forecast read (`get_surf`) and a surf alarm's conditions (`set_surf_alarm`, table `surf_alarms`). It only stores them: the hub decides and owns the alarm — status-hub `docs/ALARMS.md` |
-| `location.ts` | where he last was (`get_location`, table `locations`), one row per device, kept by a trigger from the fix a command carries |
+| `location.ts` | the user's last known location (`get_location`, table `locations`), one row per device, kept by a trigger from the fix a command carries |
 | `desk.ts` | dispatching Claude sessions to a machine, and the follow-up pointer |
 | `reports.ts` | the HTML write-ups a dispatched session publishes |
 | `bedroomTv.ts` | the bedroom TV (`bedroom_tv`, table `tv_commands`): inserts a command and awaits the TV's answer. The hub relays it to the TV's app; google-tv `docs/VOICE.md` |
 | `youtube.ts` | public YouTube (`youtube` search / video / related / channel), parsed from the JSON YouTube embeds in its pages |
-| `youtubeAccount.ts` | Jared's own YouTube (`youtube` history / home / subscriptions / …), signed in with the Pi browser's cookies. Runs only on the Pi |
+| `youtubeAccount.ts` | the owner's YouTube account (`youtube` history / home / subscriptions / …), signed in with the Pi browser's cookies. Runs only on the Pi |
 | `ytParse.ts` | YouTube's renderer JSON, old and new shapes, flattened to rows; shared by the two above |
 | `catalog.ts` | what is streaming where (`catalog`), from JustWatch, with Android TV deep links |
 | `homeRequests.ts` | reads only the Pi can answer (table `home_requests`): any machine asks, data-http on the Pi answers |
@@ -60,16 +46,29 @@ cereal — a failure mode that only existed because of the matcher.
 | `helpers.ts` | ids, validation, and the clock — read it before using `now()` |
 | `client.ts` | the Supabase client and where its key comes from |
 
+`shopping_items` is the saved retailer catalogue: `retailer, item_id, name, default_qty,
+last_verified`. Three MCP tools cover it — `get_shopping_items` (read it whole; it is small and has
+no search), `build_walmart_cart_url` (ids + quantities -> one URL that fills the cart in a single
+navigation), and `save_shopping_item`. Quantities ADD to the cart, so pass deltas. The catalogue
+holds only items that have actually been bought: an item found by search and put in a cart is not
+saved, so `build_walmart_cart_url` refuses it and the affiliate URL is built by hand.
+
+Amazon has no cart URL — its documented `/gp/aws/cart/add.html` adds nothing — so an Amazon row saves
+the search, not the session.
+
+The cart URL takes ids, not names, because reading the list and choosing one is the step that picks
+the right product; a name matcher has to reject "milk" as ambiguous against a milkshake cereal.
+
 ## The Pi's home-network jobs
 
 Some things only a machine on the home network can do: wake the bedroom TV (Wake-on-LAN, adb), or read
-Jared's own YouTube through the Pi's signed-in automation browser. The voice worker usually runs on
+the owner's YouTube account through the Pi's signed-in automation browser. The voice worker usually runs on
 Fly, which can do neither. So the caller writes a row (`tv_commands`, `home_requests`) and data-http
 on the Pi, subscribed to inserts, does the work and fills in the answer. Realtime both ways; nothing
 polls.
 
 It runs inside data-http rather than as its own service, so it costs one realtime socket and no
-extra process; data-http measured 75MB resident with it on (2026-10-30). It is switched on by
+extra process; data-http measures about 75MB resident with it on. It is switched on by
 `HOME_AGENT=1` in `/etc/systemd/system/data-http.service.d/home-agent.conf` on the Pi. Every row is
 claimed before it is acted on (`claimed_by`, set by `onInserts` in `realtime.ts`), so a second machine
 with it set would find each row taken rather than act on it twice; it is still meant for the Pi alone,
@@ -88,14 +87,14 @@ infers it — not priority, not wording — because a soup timer should wake the
 should not.
 
 `add_to_list` takes `alarm`, `set_alarm` turns it on or off afterwards, and every list line prints
-`[alarm]` so a reader can tell which dated items will wake him. Both tool descriptions refuse to infer
+`[alarm]` so a reader can tell which dated items will ring. Both tool descriptions refuse to infer
 it, the same way `priority` does and for a sharper reason: a wrong guess here wakes a room, and
 nothing on any surface says a guess was made. The hub's `POST /api/todos/alarm` is the same switch
 from the other side.
 
 ## A pin is released by hand, and by nothing else
 
-`desk_focus` holds one row. `session_id` on it is a PIN Jared set (`focus_session`); `command_id` is
+`desk_focus` holds one row. `session_id` on it is a PIN the user set (`focus_session`); `command_id` is
 automatic focus following a dispatch. Three things release a pin — pinning another session, releasing
 it (`unfocus_session`), or closing that session by hand (`end_session`). Nothing else does:
 
@@ -116,12 +115,9 @@ The rule is `desk_sessions_state()` (migration 00157), which `focusedSession` an
 `lists.id` is the key ('l_grocery'), and `list_items.list_id` is the reference. The name is a label:
 editable, and not what anything points at. Renaming a list moves no rows.
 
-That exists to make a wrong list REJECTABLE. While the name was the key, `add_to_list` had to accept
-any string, because "a name not in the table" was the only way to say "start a new list" — so a typo
-and an intention were the same request and the server always resolved it as create. `groceries`
-against a stored `grocery` silently forked, and the items went somewhere nobody looks.
-
-Two verbs now, and the split is the fix:
+That exists to make a wrong list REJECTABLE. If a name were the key, "a name not in the table" would
+be the only way to say "start a new list", so a typo (`groceries` against `grocery`) would silently
+fork a list. Two verbs keep the two requests apart:
 
 | | |
 |---|---|
@@ -150,8 +146,8 @@ id and RAISES when it cannot, so a fork is not reachable even by writing to Post
 A note is a list item with a BODY: an undated row on the `notes` list, its short name in `title` and
 its full text in `text` (migration 00092). It has no tools of its own either. `get_lists` prints an
 item's `text` indented under the label whenever the two differ, so reading a note back is just
-reading the list — and any other item carrying a body, like an Amazon row with a part number, stopped
-hiding it at the same time.
+reading the list — and any other item carrying a body, like an Amazon row with a part number, shows it
+the same way.
 
 Recurrence is materialised rather than stored (migration 00085). `repeat_every` on `add_to_list` is
 an instruction executed once: it writes one dated row per occurrence out to `repeat_until`, all
@@ -162,8 +158,8 @@ COMPLETING a dated item is the scoring event, and deleting one is not. `complete
 `completed_at` and the row stays as a record of something that happened; `remove_from_list` takes it
 away and is worth nothing in either direction. The hub reads `completed_at` off the row to draw the
 gold band on its health bar: on time earns, late earns less and eventually costs, and anything left
-sitting overdue drains for as long as it sits. Nothing mediates that — `task_events` and its trigger
-were dropped in `00089` once a completed row became its own record.
+sitting overdue drains for as long as it sits. Nothing mediates that: the completed row is its own
+record.
 
 Because the completion TIME is the whole input to it, `complete_item` takes `at` for one being
 reported after the fact — "I finished that at 10:15", or a 10am thing finished a quarter of an hour
@@ -262,8 +258,8 @@ anything, because a truncated backup nobody opens until they need it is worse th
 this goes through PostgREST with the service key that is already on disk.
 
 `backup.sh` widens `PATH` before calling node. launchd starts jobs with only
-`/usr/bin:/bin:/usr/sbin:/sbin`, and node lives in `/usr/local/bin` — the agent failed every run with
-`exec: node: not found` while the same script worked by hand. Check `~/supabase-backups/backup.log`
+`/usr/bin:/bin:/usr/sbin:/sbin`, and node lives in `/usr/local/bin`; without the widening the agent
+fails with `exec: node: not found` while the script works by hand. Check `~/supabase-backups/backup.log`
 rather than assuming the agent is fine; a failed run leaves yesterday's tarball sitting there looking
 current.
 
