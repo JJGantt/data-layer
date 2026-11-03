@@ -531,13 +531,18 @@ async function deliverFollowUp(s: DeskSession, prompt: string) {
  * session was living on to talk to it.
  *
  * Null when it cannot move — a Codex session (not mirrored), one with no transcript, or no machine
- * awake to take it — and the caller falls back to saving the words.
+ * that will take it, Fly included — and the caller falls back to saving the words.
  */
 async function followUpElsewhere(row: DeskSession, prompt: string) {
   const source = machineOf(row.worker);
   if (!row.claude_session_id || row.agent === 'codex') return null;
-  const dest: Machine = source === 'pi' ? 'mac' : 'pi';
-  if (!(await machineAwake(dest))) return null;
+  // The other home machine first, then Fly, the last resort as for new work (startSession): waking it
+  // is the slow check, so it is asked only when both home machines are out.
+  const order: Machine[] = (source === 'mac' ? ['pi'] : source === 'pi' ? ['mac'] : ['pi', 'mac']);
+  if (source !== 'fly') order.push('fly');
+  let dest: Machine | null = null;
+  for (const m of order) if (await machineAwake(m)) { dest = m; break; }
+  if (!dest) return null;
   const r = await resumeMirrored(row, source, dest, { prompt });
   if (!r.ok) return { ok: false as const, error: r.error };
   return { ok: true as const, id: r.id, repo: row.repo, session: sessionHandle(row), moved: dest,
