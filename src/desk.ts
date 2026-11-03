@@ -266,7 +266,7 @@ export async function knownRepo(name: string): Promise<{ path: string; name: str
  * conversation that started it, and the Mac sleeps. Choose 'mac' when the work wants the Mac
  * specifically — iOS, where compiling locally is the whole advantage.
  */
-export async function startSession(repo: string | undefined, prompt: string, machine: Machine = 'pi', report = false, label?: string, relay = false, repair = false, agent: Agent = 'claude') {
+export async function startSession(repo: string | undefined, prompt: string, machine: Machine = 'pi', report = false, label?: string, relay = false, repair = false, agent: Agent = 'claude', needsRead = false) {
   // No repo named, or one that matches nothing, lands in the home directory. A request the router
   // could not pin to a project still gets sent somewhere it can act — refusing it would be worse,
   // and the session can find its own way from there.
@@ -278,7 +278,9 @@ export async function startSession(repo: string | undefined, prompt: string, mac
   // their report directive on this flag alone, so an ordinary dispatch stays a plain session.
   // `relay` asks the machine to post the session's first finished reply back into the hub thread
   // (voice-pipeline orchestrator/src/relay.js). Only a dispatch from the hub conversation sets it.
-  const payload = { path: target.path, name: target.name, target: machine, ...(prompt ? { prompt } : {}), ...(report ? { report: true } : {}), ...(label ? { label: label.slice(0, 60) } : {}), ...(relay ? { relay: true } : {}), ...(agent === 'codex' ? { agent } : {}) };
+  // `needs_read` beside it files that reply in the answers inbox (status-hub docs/WATCH.md); the
+  // orchestrator decides it at dispatch, since most dispatched jobs need no answer read.
+  const payload = { path: target.path, name: target.name, target: machine, ...(prompt ? { prompt } : {}), ...(report ? { report: true } : {}), ...(label ? { label: label.slice(0, 60) } : {}), ...(relay ? { relay: true, ...(needsRead ? { needs_read: true } : {}) } : {}), ...(agent === 'codex' ? { agent } : {}) };
   // The machine has to be able to run it NOW: beating, and signed in. Writing the command anyway is the
   // silent failure this guards — nobody claims it, or it launches a session that cannot authenticate,
   // and the reply already said a session had started. The one asked for first, then the other.
