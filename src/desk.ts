@@ -566,7 +566,8 @@ async function resumeMirrored(row: DeskSession, source: Machine, dest: Machine, 
 /**
  * Sessions with a NUMBER, which is how they get talked about out loud.
  *
- * **1 is the most recently active.** Only ACTIVE sessions (resident or evicted) are numbered, so the
+ * **1 is the PINNED session, else the most recently active** (migration 00163), so a pin puts it at the
+ * top of every surface's list. Only ACTIVE sessions (resident or evicted) are numbered, so the
  * list is always 1..N over what is actually there.
  *
  * ORDERED BY `active_at`, the last TURN BOUNDARY — a prompt sent or a turn finished — because the
