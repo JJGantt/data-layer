@@ -24,12 +24,29 @@ const OUT  = process.argv[2] || path.join(process.env.HOME, 'supabase-backups');
 if (!URL_ || !KEY) { console.error('need SUPABASE_URL and SUPABASE_KEY'); process.exit(1); }
 const H = { apikey: KEY, Authorization: `Bearer ${KEY}` };
 
+// It runs before dawn on a Mac that is usually asleep, so it often starts in a dark wake before the network
+// is steady. A dropped connection or a 5xx is retried with backoff rather than failing the night.
+async function fetchRetry(url, opts) {
+  const waits = [2000, 5000, 15000, 30000];
+  for (let i = 0; ; i++) {
+    try {
+      const res = await fetch(url, opts);
+      if (res.status < 500 || i >= waits.length) return res;
+      console.warn(`  ${url}: HTTP ${res.status} (will retry)`);
+    } catch (e) {
+      if (i >= waits.length) throw e;
+      console.warn(`  ${url}: ${e.message}${e.cause ? ` (${e.cause.code || e.cause.message})` : ''} (will retry)`);
+    }
+    await new Promise(r => setTimeout(r, waits[i]));
+  }
+}
+
 const stamp = new Date().toISOString().slice(0, 10);
 const work  = path.join(OUT, `.work-${stamp}`);
 await mkdir(work, { recursive: true });
 
 // The OpenAPI root lists exactly what the service key can read.
-const spec = await (await fetch(`${URL_}/rest/v1/`, { headers: H })).json();
+const spec = await (await fetchRetry(`${URL_}/rest/v1/`, { headers: H })).json();
 const tables = Object.keys(spec.paths || {})
   .filter(p => p !== '/' && !p.includes('{') && !p.startsWith('/rpc/'))
   .map(p => p.slice(1)).sort();
@@ -38,7 +55,7 @@ let totalRows = 0; const summary = [];
 for (const t of tables) {
   const lines = [];
   for (let from = 0; ; from += 1000) {
-    const res = await fetch(`${URL_}/rest/v1/${t}?select=*`, {
+    const res = await fetchRetry(`${URL_}/rest/v1/${t}?select=*`, {
       headers: { ...H, Range: `${from}-${from + 999}`, 'Range-Unit': 'items' } });
     if (!res.ok) { console.error(`  ${t}: HTTP ${res.status} — skipped`); break; }
     const batch = await res.json();
