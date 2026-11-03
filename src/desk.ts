@@ -481,6 +481,11 @@ export async function followUp(prompt: string, ref?: string) {
     if (!found.ok) return { ok: false as const, error: found.error };
     const row = found.row;
     if (row.status !== 'resident') {
+      // Parked on a machine that is asleep: resume it somewhere awake rather than wait for the lid.
+      if (!(await machineAwake(machineOf(row.worker)))) {
+        const moved = await followUpElsewhere(row, prompt);
+        if (moved) return moved;
+      }
       const r = await sessionCommand('resume_session', row.id, prompt);
       return r.ok ? { ...r, repo: row.repo, session: row.id } : r;
     }
@@ -503,6 +508,8 @@ export async function followUp(prompt: string, ref?: string) {
 async function deliverFollowUp(s: DeskSession, prompt: string) {
   const machine = machineOf(s.worker);
   if (!(await machineAwake(machine))) {
+    const moved = await followUpElsewhere(s, prompt);
+    if (moved) return moved;
     const saved = await deadLetter('follow_up', { session: s.id, prompt, target: machine }, machine,
                                    `the ${NAME[machine]} is not responding`);
     return { ok: false as const, saved,
@@ -514,6 +521,46 @@ async function deliverFollowUp(s: DeskSession, prompt: string) {
     return { ok: false as const, error: `The ${s.repo} session did not get it (${v.detail}). It is saved and can be retried.` };
   }
   return { ok: true as const, id, repo: s.repo, session: s.id, confirmed: v.state === 'done' };
+}
+
+/**
+ * A follow-up for a session whose machine is ASLEEP goes to the session, not to the machine: the
+ * conversation is moved to a machine that is awake (as transferSession does with the source down,
+ * from what was mirrored as of the last completed turn) and resumed there with the words as its next
+ * prompt. A closed laptop is the ordinary case, and the user should not have to know which machine a
+ * session was living on to talk to it.
+ *
+ * Null when it cannot move — a Codex session (not mirrored), one with no transcript, or no machine
+ * awake to take it — and the caller falls back to saving the words.
+ */
+async function followUpElsewhere(row: DeskSession, prompt: string) {
+  const source = machineOf(row.worker);
+  if (!row.claude_session_id || row.agent === 'codex') return null;
+  const dest: Machine = source === 'pi' ? 'mac' : 'pi';
+  if (!(await machineAwake(dest))) return null;
+  const r = await resumeMirrored(row, source, dest, { prompt });
+  if (!r.ok) return { ok: false as const, error: r.error };
+  return { ok: true as const, id: r.id, repo: row.repo, session: sessionHandle(row), moved: dest,
+           note: `the ${NAME[source]} is not responding, so the session was moved to the ${NAME[dest]} with its whole conversation and the follow-up sent there` };
+}
+
+/**
+ * Resume a session's mirrored conversation on `dest` and mark the old row handed over, so `source`
+ * closes that session if it ever comes back with it still open. Only for a source that is NOT
+ * responding: an awake source must close and flush first (transferSession's live path).
+ */
+async function resumeMirrored(row: DeskSession, source: Machine, dest: Machine, extra: { prompt?: string } = {}) {
+  const id = uuid();
+  const { error } = await getClient().from('desk_commands').insert({
+    id, kind: 'resume_mirrored',
+    payload: { target: dest, claude_session_id: row.claude_session_id, repo: row.repo,
+               label: (row as any).label ?? null, origin: (row as any).origin ?? 'dispatched', from: source,
+               ...(extra.prompt ? { prompt: extra.prompt } : {}) },
+  });
+  if (error) return { ok: false as const, error: error.message };
+  await getClient().from('desk_sessions')
+    .update({ status: 'transferred', ended: new Date().toISOString(), working: false }).eq('id', row.id);
+  return { ok: true as const, id };
 }
 
 /**
@@ -674,18 +721,10 @@ export async function transferSession(ref: string, machine: Machine) {
     return { ok: true as const, id, repo: row.repo, machine, live: true };
   }
 
-  // Source unreachable: go straight to the destination with what was mirrored, and mark the old row
-  // handed over so the source closes that session if it ever comes back with it still open.
-  const id = uuid();
-  const { error } = await getClient().from('desk_commands').insert({
-    id, kind: 'resume_mirrored',
-    payload: { target: machine, claude_session_id: row.claude_session_id, repo: row.repo,
-               label: (row as any).label ?? null, origin: (row as any).origin ?? 'dispatched', from: source },
-  });
-  if (error) return { ok: false as const, error: error.message };
-  await getClient().from('desk_sessions')
-    .update({ status: 'transferred', ended: new Date().toISOString(), working: false }).eq('id', row.id);
-  return { ok: true as const, id, repo: row.repo, machine, live: false };
+  // Source unreachable: go straight to the destination with what was mirrored.
+  const r = await resumeMirrored(row, source, machine);
+  if (!r.ok) return { ok: false as const, error: r.error };
+  return { ok: true as const, id: r.id, repo: row.repo, machine, live: false };
 }
 
 export async function queued() {

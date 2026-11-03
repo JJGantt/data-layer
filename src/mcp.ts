@@ -565,6 +565,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (name === 'follow_up') {
       const r = await desk.followUp(String(a.prompt || ''), a.session ? String(a.session) : undefined);
       return text(!r.ok ? r.error
+        : 'moved' in r ? `Sent to the ${r.repo} session — ${r.note}.`
         : r.confirmed ? `Delivered to the ${r.repo} session.`
         : `Queued for the ${r.repo} session, but its machine has not confirmed delivery yet.`);
     }
