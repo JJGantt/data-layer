@@ -214,8 +214,6 @@ export async function retryDeadLetter(id: string) {
   if (error) return { ok: false as const, error: error.message };
   await getClient().from('desk_dead_letters')
     .update({ retried: new Date().toISOString(), retry_command_id: cmdId }).eq('id', id);
-  // A re-sent dispatch is the thing being talked to again, exactly as a fresh one would be.
-  if (row.kind === 'open_session' || row.kind === 'resume_session') await setFocus(cmdId, machine);
   return { ok: true as const, id: cmdId };
 }
 
@@ -313,16 +311,12 @@ export async function startSession(repo: string | undefined, prompt: string, mac
   // The repair session needs a shell on the other machine (the runbook drives the Pi's login from the
   // Mac), so it is started only where one of the two still works, never on Fly.
   if (!fail.ok && fail.login && !repair && machine !== 'fly' && agent === 'claude') await startLoginRepair(asked, fail.login, machine, relay);
-  // Focus first: a follow-up said while the launch is still being confirmed belongs to this dispatch.
-  await setFocus(id, machine);
   // Confirmed, not inserted: a machine short of room QUEUES the session instead of launching it
   // (pi-desk runQueue), and reporting "started" for a session that is waiting would be wrong for as long as
   // it sits in the queue, which can be days.
   const f = await followHandoff(id, await dispatchConfirmed(id, 'open_session', payload), machine);
   const v = f.v;
   if (v.state === 'error') return { ok: false as const, error: v.detail };
-  // The launch now belongs to the Mac's command, which is the one its session row will carry.
-  if (f.handedOff) await setFocus(f.id, 'mac');
   const state = v.state === 'unconfirmed' ? 'unconfirmed' as const
     : /^queued\b/.test(v.detail) ? 'queued' as const : 'launched' as const;
   return { ok: true as const, id: f.id, repo: target.name, machine: f.machine, matched: !!hit || !want, state,
@@ -365,144 +359,64 @@ export async function redispatch(session: string | undefined, prompt: string) {
 }
 
 /**
- * Mark the dispatch just made, so a follow-up said before its session exists is held for it rather
- * than landing in whatever was active a moment earlier. It also releases a session the user had focused by
- * name: starting new work means turning to it.
- *
- * A command id, not a session id: at this moment the session does not exist yet. The machine creates
- * it a moment later, records command_id on the row and publishes it as the most recently active
- * session, which is what focus follows from then on (see focusedSession).
+ * PINS. Any number of conversations can be pinned; a pin holds a session at the top of every list (the
+ * numbering in `desk_sessions_state()`, migration 00164), most recently pinned first. The SHOWN session —
+ * the wall's reply column and footer, the watch's default — is the most recently pinned one, else the most
+ * recently active running session. A pin is on the CONVERSATION, so it survives every resume and every
+ * move between machines. Only an explicit unpin or closing the session by hand releases it; dispatching
+ * other work never does.
  */
-/**
- * Point automatic focus at a dispatch — WITHOUT disturbing a pin.
- *
- * A pin is released by exactly three things: pinning another session, releasing it (unfocusSession),
- * or closing the pinned session by hand. Starting work is not one of them. Sessions are dispatched for
- * every small reason — a Walmart cart, a lookup — and a pin that any of those can silently take is not
- * a pin; the surfaces then disagree about which session is held, which is how this was noticed.
- *
- * The one exception is a pin pointing at a session that no longer exists at all. Nothing can release
- * that by hand, so it would block automatic focus for ever.
- */
-export async function setFocus(commandId: string, machine: Machine) {
-  const { data: f } = await getClient().from('desk_focus')
-    .select('session_id').eq('id', 'current').maybeSingle();
-  if (f?.session_id) {
-    const { data: held } = await getClient().from('desk_sessions')
-      .select('id').eq('id', f.session_id).maybeSingle();
-    if (held) return;                       // the user's pin stands
-  }
-  await getClient().from('desk_focus')
-    .upsert({ id: 'current', command_id: commandId, session_id: null, machine, updated: new Date().toISOString() },
-            { onConflict: 'id' });
+export async function pinSession(ref: string) {
+  const found = await resolveSession(ref);
+  if (!found.ok) return { ok: false as const, error: found.error };
+  const row = found.row;
+  const { error } = await getClient().from('desk_pins')
+    .upsert({ conv: conversationOf(row), pinned_at: new Date().toISOString() }, { onConflict: 'conv' });
+  if (error) return { ok: false as const, error: error.message };
+  return { ok: true as const, session: sessionHandle(row), repo: row.repo, label: (row as any).label ?? null };
 }
 
-/** Release the pin if it is on this session — what closing one by hand means. */
-export async function releaseFocusFor(sessionId: string) {
-  const { data: f } = await getClient().from('desk_focus')
-    .select('session_id').eq('id', 'current').maybeSingle();
-  if (f?.session_id !== sessionId) return;
-  await getClient().from('desk_focus').upsert(
-    { id: 'current', session_id: null, command_id: null, machine: null, updated: new Date().toISOString() },
-    { onConflict: 'id' });
+export async function unpinSession(ref: string) {
+  const found = await resolveSession(ref);
+  if (!found.ok) return { ok: false as const, error: found.error };
+  const row = found.row;
+  const { data, error } = await getClient().from('desk_pins').delete().eq('conv', conversationOf(row)).select('conv');
+  if (error) return { ok: false as const, error: error.message };
+  return { ok: true as const, session: sessionHandle(row), repo: row.repo, label: (row as any).label ?? null,
+           was: !!data?.length };
+}
+
+/** Closing a session by hand releases its pin. */
+async function unpinRow(sessionId: string) {
+  const { data: row } = await getClient().from('desk_sessions')
+    .select('id, claude_session_id').eq('id', sessionId).maybeSingle();
+  if (!row) return;
+  const { error } = await getClient().from('desk_pins').delete().eq('conv', row.claude_session_id || row.id);
+  if (error) console.error(`[desk] unpin ${sessionId}: ${error.message}`);
 }
 
 /**
- * The session a spoken follow-up lands in, and the one every surface shows as focused. In order:
+ * Send a follow-up to the session the caller NAMED. There is no default: the caller (the orchestrator)
+ * has the conversation and knows which session the words are for, and a guess at "the focused one" is
+ * how words land in the wrong session.
  *
- *   1. a session the user FOCUSED BY NAME (`focus_session`), while it is still running. That explicit
- *      choice outranks everything until another is focused, releases it, or dispatches new work;
- *   2. a dispatch whose session has not opened yet (`pending`) — words said in that gap are meant for
- *      it, not for whatever was active a moment before;
- *   3. otherwise the MOST RECENTLY ACTIVE running session, on either machine.
- *
- * 3 includes the session the user is typing in at the keyboard, by design: the session last used is
- * the one meant. Ambient speech is guarded elsewhere — `follow_up` only runs when the user hands words over ('tell it to…') — not by where the
- * pointer may go.
- *
- * The rule lives in `desk_sessions_state()` (migration 00157), which the hub's `/api/sessions` reads
- * too, so the wall and a follow-up cannot disagree about which session is focused.
+ * A named session gets the words whatever it is doing — running and mid-turn, they are typed in and
+ * Claude Code queues them; parked, it is resumed with them; on a machine that is asleep, it moves.
  */
-export async function focusedSession(): Promise<{ session: DeskSession | null; pending: boolean }> {
-  const [{ focus }, rows] = await Promise.all([sessionsState(), listSessions()]);
-  return { session: rows.find((r) => r.id === focus.session_id) ?? null, pending: focus.pending };
-}
-
-/**
- * Pin a session, so what the user says next goes there whatever else becomes active — until another is pinned,
- * releases it (unfocusSession), or closes it by hand. Dispatching work does NOT release it, and neither
- * does eviction: a pin holds the conversation, and re-attaches to it when it is resumed. Unpinned,
- * focus follows activity.
- *
- * "Focus the latest session" is a pin like any other: of whichever session is newest NOW, which then
- * stays put while others become newer. Going back to automatic is a separate verb on purpose — when one
- * tool did both, "latest" could be read either way.
- */
-export async function focusSession(ref: string) {
+export async function followUp(prompt: string, ref: string) {
   const found = await resolveSession(ref);
   if (!found.ok) return { ok: false as const, error: found.error };
   const row = found.row;
   if (row.status !== 'resident') {
-    return { ok: false as const, error: `that session is not running — resume it first` };
-  }
-  const machine = machineOf(row.worker);
-  await getClient().from('desk_focus').upsert(
-    { id: 'current', session_id: row.id, command_id: null, machine, updated: new Date().toISOString() },
-    { onConflict: 'id' });
-  return { ok: true as const, session: row.id, repo: row.repo, label: (row as any).label ?? null, machine };
-}
-
-/**
- * Release the pin: follow-ups go to whichever session is most recently active again. Returns that
- * session, so the answer can say where they go now.
- */
-export async function unfocusSession() {
-  await getClient().from('desk_focus').upsert(
-    { id: 'current', session_id: null, command_id: null, machine: null, updated: new Date().toISOString() },
-    { onConflict: 'id' });
-  const { session: s } = await focusedSession();
-  return { session: s?.id ?? null, repo: s?.repo ?? null, label: (s as any)?.label ?? null };
-}
-
-/**
- * Send a follow-up: to the session the user NAMED, or with no name to the focused one (focusedSession).
- *
- * A named session gets the words whatever it is doing — running and mid-turn, they are typed in and
- * Claude Code queues them; parked, it is resumed with them. Naming a session routes this one message
- * and leaves the pin alone.
- *
- * With no name it can legitimately have nowhere to go, two ways that mean different things: a dispatch
- * has not opened its session yet (a launch takes a few seconds), or nothing is running at all. Saying
- * which saves the user guessing whether it worked, and the words are kept either way.
- */
-export async function followUp(prompt: string, ref?: string) {
-  if (ref) {
-    const found = await resolveSession(ref);
-    if (!found.ok) return { ok: false as const, error: found.error };
-    const row = found.row;
-    if (row.status !== 'resident') {
-      // Parked on a machine that is asleep: resume it somewhere awake rather than wait for the lid.
-      if (!(await machineAwake(machineOf(row.worker)))) {
-        const moved = await followUpElsewhere(row, prompt);
-        if (moved) return moved;
-      }
-      const r = await sessionCommand('resume_session', row.id, prompt);
-      return r.ok ? { ...r, repo: row.repo, session: row.id } : r;
+    // Parked on a machine that is asleep: resume it somewhere awake rather than wait for the lid.
+    if (!(await machineAwake(machineOf(row.worker)))) {
+      const moved = await followUpElsewhere(row, prompt);
+      if (moved) return moved;
     }
-    return deliverFollowUp(row, prompt);
+    const r = await sessionCommand('resume_session', row.id, prompt);
+    return r.ok ? { ...r, repo: row.repo, session: row.id } : r;
   }
-  const { session: s, pending } = await focusedSession();
-  if (!s) {
-    const reason = pending ? 'the last dispatch has not opened its session yet' : 'no session is running';
-    let machine: Machine | null = null;
-    if (pending) {
-      const { data: f } = await getClient().from('desk_focus').select('machine').eq('id', 'current').maybeSingle();
-      machine = asMachine(f?.machine);
-    }
-    const saved = await deadLetter('follow_up', { session: null, prompt, ...(machine ? { target: machine } : {}) }, machine, reason);
-    return { ok: false as const, saved, error: `${reason} — nothing was sent. The follow-up is saved and can be retried.` };
-  }
-  return deliverFollowUp(s, prompt);
+  return deliverFollowUp(row, prompt);
 }
 
 async function deliverFollowUp(s: DeskSession, prompt: string) {
@@ -608,10 +522,10 @@ export function sessionHandle(r: DeskSession): string {
   return r.claude_session_id ? `s-${r.claude_session_id.slice(0, 8)}` : r.id;
 }
 
-/** `desk_sessions_state()` (migration 00157): the numbering and the focus, the ONE definition of both,
+/** `desk_sessions_state()` (migration 00164): the numbering, the pins and the shown session, the ONE definition,
  *  which the hub's /api/sessions reads too. */
 async function sessionsState(): Promise<{
-  numbers: Record<string, number>; focus: { session_id: string | null; pinned: boolean; pending: boolean } }> {
+  numbers: Record<string, number>; pins: string[]; focus: { session_id: string | null; pinned: boolean; pending: boolean } }> {
   const { data, error } = await getClient().rpc('desk_sessions_state');
   if (error) throw new Error(`desk_sessions_state: ${error.message}`);
   return data;
@@ -622,9 +536,10 @@ async function sessionsState(): Promise<{
  * active first, running and parked together (the rule and why are in migration 00157). The number is
  * the position in the list the user is looking at, which is where "the second session" comes from.
  */
-export async function numberSessions(rows: DeskSession[]): Promise<(DeskSession & { n: number })[]> {
-  const { numbers } = await sessionsState();
-  return rows.filter((r) => numbers[r.id] != null).map((r) => ({ ...r, n: numbers[r.id] }))
+export async function numberSessions(rows: DeskSession[]): Promise<(DeskSession & { n: number; pinned: boolean })[]> {
+  const { numbers, pins } = await sessionsState();
+  const pinned = new Set(pins || []);
+  return rows.filter((r) => numbers[r.id] != null).map((r) => ({ ...r, n: numbers[r.id], pinned: pinned.has(r.id) }))
     .sort((a, b) => a.n - b.n);
 }
 
@@ -779,7 +694,7 @@ export async function sessionCommand(kind: 'resume_session' | 'end_session', ses
     const { error } = await getClient().from('desk_sessions')
       .update({ close_after_turn: new Date().toISOString() }).eq('id', row.id);
     if (error) return { ok: false as const, error: `could not mark ${session} to close: ${error.message}` };
-    await releaseFocusFor(session);
+    await unpinRow(session);
     return { ok: true as const, self: true as const, id: row.id, machine };
   }
   const payload = { session, target: machine, ...(prompt ? { prompt } : {}) };
@@ -792,11 +707,8 @@ export async function sessionCommand(kind: 'resume_session' | 'end_session', ses
   const f = await followHandoff(sent, await dispatchConfirmed(sent, kind, payload), machine);
   const v = f.v;
   if (v.state === 'error') return { ok: false as const, error: `${session}: ${v.detail}` };
-  // Closing a session BY HAND is one of the three things that release a pin — the others being pinning
-  // another and unfocusing. Anything automatic (eviction, a dispatch) leaves it alone.
-  if (kind === 'end_session') await releaseFocusFor(session);
-  // Resuming makes that session the one you are talking to again, so follow-ups should go there.
-  if (kind === 'resume_session') await setFocus(f.id, f.machine);
+  // Closing a session BY HAND releases its pin, as unpinning does. Eviction and dispatches leave pins alone.
+  if (kind === 'end_session') await unpinRow(session);
   return { ok: true as const, id: f.id, machine: f.machine, confirmed: v.state === 'done', detail: v.detail,
            queued: v.state === 'done' && /^queued\b/.test(v.detail), handedOff: f.handedOff };
 }
@@ -876,7 +788,7 @@ export async function turnSummaries(rows: DeskSession[]): Promise<Map<string, st
   return out;
 }
 
-export function formatSessions(numbered: (DeskSession & { n: number })[], q: any[], summaries: Map<string, string> = new Map()): string {
+export function formatSessions(numbered: (DeskSession & { n: number; pinned?: boolean })[], q: any[], summaries: Map<string, string> = new Map()): string {
   if (!numbered.length && !q.length) return 'No sessions running or parked.';
   const lines: string[] = [];
   // Numbered, because the number is how the user refers to one out loud, and it has to be the same
@@ -894,7 +806,7 @@ export function formatSessions(numbered: (DeskSession & { n: number })[], q: any
   // to `repo` prints rows reading `root (root on the Mac)`, which looks like a name and is the working
   // directory, indistinguishable from a session actually called that.
   const shown = (r: DeskSession) => (r as any).label || '(unnamed)';
-  const line = (r: DeskSession & { n: number }) =>
+  const line = (r: DeskSession & { n: number; pinned?: boolean }) =>
     `- **${r.n}.** ${shown(r)} (${r.repo} on the ${NAME[machineOf(r.worker)]}${r.agent === 'codex' ? ', on Codex' : ''}) \`${sessionHandle(r)}\``
     + ` — ${lastSaid(r)}`;
   // WHAT IT LAST SAID is the turn's one-sentence summary — what it did, or the question it ends on —
@@ -909,7 +821,7 @@ export function formatSessions(numbered: (DeskSession & { n: number })[], q: any
   if (numbered.length) {
     const nRes = numbered.filter((r) => r.status === 'resident').length;
     lines.push(`**Sessions** (${nRes} running, ${numbered.length - nRes} parked — a parked one resumes with full context):`);
-    for (const r of numbered) lines.push(line(r) + (r.status === 'resident' ? '' : ' _(parked)_'));
+    for (const r of numbered) lines.push(line(r) + (r.status === 'resident' ? '' : ' _(parked)_') + (r.pinned ? ' _(pinned)_' : ''));
   }
   if (q.length) {
     lines.push(`**Queued** (${q.length}, waiting for a slot):`);

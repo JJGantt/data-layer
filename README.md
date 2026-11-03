@@ -92,23 +92,18 @@ it, the same way `priority` does and for a sharper reason: a wrong guess here wa
 nothing on any surface says a guess was made. The hub's `POST /api/todos/alarm` is the same switch
 from the other side.
 
-## A pin is released by hand, and by nothing else
+## Pins are a set, released only by hand
 
-`desk_focus` holds one row. `session_id` on it is a PIN the user set (`focus_session`); `command_id` is
-automatic focus following a dispatch. Three things release a pin — pinning another session, releasing
-it (`unfocus_session`), or closing that session by hand (`end_session`). Nothing else does:
+`desk_pins` holds one row per pinned CONVERSATION (`claude_session_id`, else the row id) with when it
+was pinned, so a pin survives eviction, resume and a move between machines. Any number can be pinned
+(`pin_session`). `desk_sessions_state()` numbers pinned sessions first, most recently pinned on top,
+which is the order every surface lists them in, and the most recently pinned one is the SHOWN session
+(`focus`: the wall's reply column and footer); with nothing pinned it is the most recently active running
+session. Only `unpin_session` or closing the session by hand (`end_session`) removes a pin — dispatching
+work never does, since sessions are started for every small reason.
 
-- **Dispatching work does not.** Sessions are started for every small reason, so a pin any of them
-  could take is not a pin. `setFocus` leaves an existing `session_id` alone.
-- **Eviction does not**, and a resume does not lose it: the pin holds the CONVERSATION. Focus
-  matches the pinned row, or any resident row with the same `claude_session_id`, or the pinned row
-  itself while it is parked. So a pinned session that is evicted and later resumed is still pinned.
-
-The one thing that does clear it automatically is a pin pointing at a session row that no longer
-exists at all — nothing can release that by hand, so it would block automatic focus for ever.
-
-The rule is `desk_sessions_state()` (migration 00157), which `focusedSession` and the hub's
-`/api/sessions` both read, so a wall and the voice tools cannot disagree about which session is held.
+`follow_up` has no default target: it always names its session, because the orchestrator holds the
+conversation and a guess at "the focused one" puts words in the wrong session.
 
 ## A list is addressed by its ID
 
