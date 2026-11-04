@@ -278,7 +278,7 @@ export async function startSession(repo: string | undefined, prompt: string, mac
   // their report directive on this flag alone, so an ordinary dispatch stays a plain session.
   // `relay` asks the machine to post the session's first finished reply back into the hub thread
   // (voice-pipeline orchestrator/src/relay.js). Only a dispatch from the hub conversation sets it.
-  // `needs_read` beside it files that reply in the answers inbox (status-hub docs/WATCH.md); the
+  // `needs_read` beside it files that reply in the inbox (status-hub docs/WATCH.md); the
   // orchestrator decides it at dispatch, since most dispatched jobs need no answer read.
   const payload = { path: target.path, name: target.name, target: machine, ...(prompt ? { prompt } : {}), ...(report ? { report: true } : {}), ...(label ? { label: label.slice(0, 60) } : {}), ...(relay ? { relay: true, ...(needsRead ? { needs_read: true } : {}) } : {}), ...(agent === 'codex' ? { agent } : {}) };
   // The machine has to be able to run it NOW: beating, and signed in. Writing the command anyway is the
