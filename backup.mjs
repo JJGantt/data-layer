@@ -51,17 +51,38 @@ const tables = Object.keys(spec.paths || {})
   .filter(p => p !== '/' && !p.includes('{') && !p.startsWith('/rpc/'))
   .map(p => p.slice(1)).sort();
 
+// Each table is paged by its primary key: the next page is the rows after the last key seen, which the
+// database answers from the index. Paging by offset instead makes page N re-read the N*1000 rows before
+// it, so a table of millions costs billions of row reads and drains the database's disk I/O budget.
+// A table with no primary key is small and paged by offset.
+const pkOf = (t) => Object.entries(spec.definitions?.[t]?.properties || {})
+  .filter(([, p]) => (p.description || '').includes('<pk/>')).map(([c]) => c);
+const lit = (v) => `"${String(v).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+// Rows strictly after `last` in (c1, c2, ...) order, as a PostgREST `or` filter.
+const after = (pk, last) => 'or=' + encodeURIComponent(`(${pk.map((c, i) => {
+  const eqs = pk.slice(0, i).map((p) => `${p}.eq.${lit(last[p])}`);
+  const gt = `${c}.gt.${lit(last[c])}`;
+  return eqs.length ? `and(${[...eqs, gt].join(',')})` : gt;
+}).join(',')})`);
+
 let totalRows = 0; const summary = [];
 for (const t of tables) {
   const lines = [];
+  const pk = pkOf(t);
+  let last = null;
   for (let from = 0; ; from += 1000) {
-    const res = await fetchRetry(`${URL_}/rest/v1/${t}?select=*`, {
-      headers: { ...H, Range: `${from}-${from + 999}`, 'Range-Unit': 'items' } });
-    if (!res.ok) { console.error(`  ${t}: HTTP ${res.status} — skipped`); break; }
+    const q = pk.length
+      ? `${URL_}/rest/v1/${t}?select=*&order=${pk.map((c) => `${c}.asc`).join(',')}&limit=1000`
+        + (last ? `&${after(pk, last)}` : '')
+      : `${URL_}/rest/v1/${t}?select=*&limit=1000&offset=${from}`;
+    const res = await fetchRetry(q, { headers: H });
+    // A table cut short would look complete in the archive, so any failure fails the whole backup.
+    if (!res.ok) throw new Error(`${t}: HTTP ${res.status} ${await res.text()}`);
     const batch = await res.json();
     if (!Array.isArray(batch)) break;
     for (const r of batch) lines.push(JSON.stringify(r));
     if (batch.length < 1000) break;
+    last = batch[batch.length - 1];
   }
   await writeFile(path.join(work, `${t}.jsonl`), lines.join('\n') + (lines.length ? '\n' : ''));
   totalRows += lines.length; summary.push(`${t}\t${lines.length}`);
