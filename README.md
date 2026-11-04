@@ -102,9 +102,6 @@ which is the order every surface lists them in, and the most recently pinned one
 session. Only `unpin_session` or closing the session by hand (`end_session`) removes a pin — dispatching
 work never does, since sessions are started for every small reason.
 
-`desk_focus`, the single pin slot this replaced, is still in the database and inert: nothing reads or
-writes it. Do not wire it back in; it is waiting to be dropped.
-
 `follow_up` has no default target: it always names its session, because the orchestrator holds the
 conversation and a guess at "the focused one" puts words in the wrong session.
 
