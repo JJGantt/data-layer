@@ -4,6 +4,8 @@
 // reach the home network. So the Pi, subscribed to the same tv_commands inserts as the hub, does what
 // only a machine beside the TV can, through google-tv's bin/tv:
 //   - `power`: the whole command (Wake-on-LAN or adb), answered here; the hub leaves these rows alone.
+//   - `sleep`: a sleep timer, `bin/tv sleep` (a one-shot systemd timer on the Pi), answered here; the
+//     hub leaves these rows alone.
 //   - `key`: a remote button over adb (an app on the TV cannot inject keys), answered here; the hub
 //     leaves these rows alone too. A TV that is off answers that it is off rather than being woken.
 //   - `open` / `launch` / `input`: `bin/tv power on` (Wake-on-LAN resent until the TV reports Awake, then adb),
@@ -75,6 +77,26 @@ async function handle(row: any): Promise<void> {
       result = { ok: true, key: row.args.key };
     } catch (e: any) {
       result = { ok: false, error: String(e.stderr || e.message).trim() };
+    }
+    return answer(row.id, result);
+  }
+  if (row.op === 'sleep') {
+    // bin/tv sleep holds the timer in the Pi's systemd, so it outlives this process; it prints when it
+    // fires, or `none`. Setting one on a TV that is off is refused, like any op but a wake.
+    const m = row.args?.minutes;
+    let result: Record<string, unknown>;
+    try {
+      if (m !== undefined && Number(m) > 0) {
+        const { stdout } = await run(TV, ['power'], { timeout: 20_000 });
+        if (stdout.trim() !== 'on') return answer(row.id, { ok: false, error: 'the TV is off' });
+      }
+      const arg = m === undefined ? [] : Number(m) > 0 ? [String(Number(m))] : ['off'];
+      const { stdout } = await run(TV, ['sleep', ...arg], { timeout: 20_000 });
+      const at = stdout.trim().split('\n').pop();
+      result = { ok: true, at: at === 'none' ? null : at };
+    } catch (e: any) {
+      result = { ok: false, error: String(e.stderr || e.message).trim() };
+      console.error('[tv] sleep', result.error);
     }
     return answer(row.id, result);
   }

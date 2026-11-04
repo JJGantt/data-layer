@@ -6,7 +6,7 @@
 import { randomUUID } from 'crypto';
 import { getClient } from './client.js';
 
-export const OPS = ['power', 'brightness', 'contrast', 'night', 'volume', 'open', 'launch', 'sidebar', 'overlay', 'now', 'media', 'key', 'input'] as const;
+export const OPS = ['power', 'brightness', 'contrast', 'night', 'volume', 'open', 'launch', 'sidebar', 'overlay', 'now', 'media', 'key', 'input', 'sleep'] as const;
 export type Op = (typeof OPS)[number];
 
 // Long enough for a volume walk of many key steps. An op that may wake the TV first gets longer: the
