@@ -10,6 +10,10 @@
 //     harmless when the TV is on. The hub holds the row until the app reconnects and does the rest.
 //     If the TV is still off after that, the row is answered here with that, so the caller hears it in
 //     seconds instead of waiting out its timeout on a wake that did not happen.
+//   - an `open` / `launch` of Prime Video: `bin/tv profile prime` once the TV is awake. A cold-started
+//     Prime stops on "Who's watching?" before the link, and only a key press (adb) gets past it.
+//     The picker shows nothing an event could carry, so this reads the screen for up to 20 s after the
+//     open and presses OK only on the words "Who's watching?" (google-tv docs/WATCHING.md).
 //
 // Started by data-http when HOME_AGENT=1 (the Pi). onInserts claims each row first, so one machine acts on it.
 import { execFile } from 'node:child_process';
@@ -22,12 +26,25 @@ import { KEYS } from './bedroomTv.js';
 const run = promisify(execFile);
 const TV = process.env.TV_BIN || `${homedir()}/repos/google-tv/bin/tv`;
 const WAKE_OPS = new Set(['open', 'launch', 'input']);
+// An open or launch that lands in Prime Video: its package, or a catalog link to watch.amazon.com.
+const PRIME = /com\.amazon\.amazonvideo\.livingroom|watch\.amazon\.com|primevideo\.com/;
 
 async function answer(id: string, result: Record<string, unknown>): Promise<void> {
   // Only a row nobody has answered: when the wake worked the app may already have done the command.
   const { error } = await getClient().from('tv_commands')
     .update({ done_at: new Date().toISOString(), result }).eq('id', id).is('done_at', null);
   if (error) console.error('[tv] answer failed', error.message);
+}
+
+// Pressing OK is the outcome checked: bin/tv reads the screen again afterwards and exits non-zero if the
+// picker is still there, or if every capture was blank so the picker could not have been seen.
+async function passProfilePicker(): Promise<void> {
+  try {
+    const { stdout } = await run(TV, ['profile', 'prime', '20'], { timeout: 90_000 });
+    console.log(`[tv] prime: ${stdout.trim()}`);
+  } catch (e: any) {
+    console.error('[tv] prime profile picker:', String(e.stderr || e.message).trim());
+  }
 }
 
 async function handle(row: any): Promise<void> {
@@ -43,7 +60,8 @@ async function handle(row: any): Promise<void> {
       return;
     }
     console.log(`[tv] ${row.op}: TV ${now}`);
-    if (now === 'off') await answer(row.id, { ok: false, error: 'the TV is off and did not wake' });
+    if (now === 'off') return answer(row.id, { ok: false, error: 'the TV is off and did not wake' });
+    if (row.op !== 'input' && PRIME.test(JSON.stringify(row.args || {}))) await passProfilePicker();
     return;
   }
   if (row.op === 'key') {
