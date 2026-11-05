@@ -431,8 +431,10 @@ async function deliverFollowUp(s: DeskSession, prompt: string) {
     return { ok: false as const, saved,
              error: `The ${NAME[machine]} is not responding, so the follow-up was not sent. It is saved and can be retried.` };
   }
-  const id = uuid();
-  const v = await dispatchConfirmed(id, 'follow_up', { session: s.id, prompt, target: machine });
+  const id0 = uuid();
+  // A session handed to the Mac a moment before the words arrive forwards them there (pi-desk moved.js)
+  // and answers in the handoff form; the Mac's verdict on the forwarded command is the one reported.
+  const { id, v } = await followHandoff(id0, await dispatchConfirmed(id0, 'follow_up', { session: s.id, prompt, target: machine }), machine);
   if (v.state === 'error') {
     return { ok: false as const, error: `The ${s.repo} session did not get it (${v.detail}). It is saved and can be retried.` };
   }
