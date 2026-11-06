@@ -53,13 +53,23 @@ export async function mine(): Promise<string[] | null> {
 const OFFER = `offers(country: US, platform: WEB) { monetizationType presentationType retailPrice(language: "en") standardWebURL deeplinkURL(platform: ANDROID_TV) package { technicalName clearName } }`;
 const CONTENT = `content(${LANG}) { title originalReleaseYear shortDescription runtime ageCertification genres { shortName } scoring { imdbScore imdbVotes } }`;
 
-/** A deep link the TV can open: JustWatch's Android TV one, given the app's package when it lacks it. */
-function tvLink(o: any): string | undefined {
-  const pkg = SERVICES[o.package.technicalName]?.tv;
+const TV_APPS = new Set(Object.values(SERVICES).map((s) => s.tv).filter(Boolean));
+// Stores that are not a service he subscribes to but sell through an app the TV has.
+const STORE_APPS: Record<string, string> = { itunes: SERVICES.appletvplus.tv!, amazon: SERVICES.amazonprime.tv! };
+
+/** A deep link the TV can open: JustWatch's Android TV one, given the app's package when it lacks it.
+ *  None for a service with no app on the TV (Plex, Peacock, ...): its link names no package, so the
+ *  TV hands the https URL to the TCL browser and nothing plays. A link carrying an installed app's
+ *  package is kept whatever service it is filed under (Amazon channels name the Prime Video app). */
+export function tvLink(o: any): string | undefined {
+  const pkg = SERVICES[o.package.technicalName]?.tv || STORE_APPS[o.package.technicalName];
   let link: string | undefined = o.deeplinkURL;
   if (link && pkg && !/;package=/.test(link)) link = link.replace(/;end$/, `;package=${pkg};end`);
   if (!link && pkg && o.standardWebURL) link = o.standardWebURL;
-  return link;
+  if (!link) return undefined;
+  if (pkg) return link;
+  const named = link.match(/;package=([^;]+)/)?.[1];
+  return named && TV_APPS.has(named) ? link : undefined;
 }
 
 /** One line per service, best offer kind first: subscription, free, ads, then rent and buy with price. */
