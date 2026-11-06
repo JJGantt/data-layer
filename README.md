@@ -39,7 +39,7 @@ both call, which is why the MCP and the API can never disagree about what a writ
 | `youtube.ts` | public YouTube (`youtube` search / video / related / channel), parsed from the JSON YouTube embeds in its pages |
 | `youtubeAccount.ts` | the owner's YouTube account (`youtube` history / home / subscriptions / …), signed in with the Pi browser's cookies. Runs only on the Pi |
 | `ytParse.ts` | YouTube's renderer JSON, old and new shapes, flattened to rows; shared by the two above |
-| `tvPicks.ts` | the bedroom TV's picks screen (`tv_picks`, tables `tv_shelves` and `tv_shelf_items`): titled shelves of items, read by the TV through the hub's `/api/tv/picks`; google-tv `docs/PICKS.md` |
+| `tvGuide.ts` | the bedroom TV's TV Guide (`tv_guide`, tables `tv_shelves` and `tv_shelf_items`): titled shelves of items, read by the TV through the hub's `/api/tv/guide`; google-tv `docs/GUIDE.md` |
 | `catalog.ts` | what is streaming where (`catalog`), from JustWatch, with Android TV deep links |
 | `homeRequests.ts` | reads only the Pi can answer (table `home_requests`): any machine asks, data-http on the Pi answers |
 | `tvHome.ts` | the bedroom TV's home-network end on the Pi: power over Wake-on-LAN and adb, remote keys over adb, and a wake before `open` / `launch` / `input` |

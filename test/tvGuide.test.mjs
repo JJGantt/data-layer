@@ -1,7 +1,7 @@
-// The picks screen's shelves: what an item opens in, and where a new or moved row lands.
+// The TV Guide's shelves: what an item opens in, and where a new or moved row lands.
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { resolveItem, positionsAt } from '../dist/tvPicks.js';
+import { resolveItem, positionsAt } from '../dist/tvGuide.js';
 
 describe('resolveItem', () => {
   test('a YouTube URL opens in the YouTube app with its thumbnail derived', () => {

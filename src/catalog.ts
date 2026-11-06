@@ -109,7 +109,7 @@ export async function title(id: string): Promise<string> {
   const cast = (n.content.credits || []).filter((c: any) => c.role === 'ACTOR').slice(0, 8).map((c: any) => c.name).join(', ');
   const directors = (n.content.credits || []).filter((c: any) => c.role === 'DIRECTOR').slice(0, 3).map((c: any) => c.name).join(', ');
   // JustWatch's image paths are templates; s640 is its 640px-wide size. A backdrop is landscape, which is
-  // the shape of a picks-screen card (tv_picks); the poster is the fallback.
+  // the shape of a TV Guide card (tv_guide); the poster is the fallback.
   const art = n.content.backdrops?.[0]?.backdropUrl || n.content.posterUrl;
   const image = art ? `https://images.justwatch.com${art.replace('{profile}', 's640').replace('{format}', 'jpg')}` : '';
   return [head(n), '', n.content.shortDescription || '',

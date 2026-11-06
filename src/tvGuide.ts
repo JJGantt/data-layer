@@ -1,10 +1,10 @@
-// THE BEDROOM TV'S PICKS SCREEN — shelves of thumbnails, each item opening a video or show in its app
-// (google-tv repo, docs/PICKS.md). Tables from 00171; the TV reads them through the hub's /api/tv/picks.
+// THE BEDROOM TV'S TV GUIDE — shelves of thumbnails, each item opening a video or show in its app
+// (google-tv repo, docs/GUIDE.md). Tables from 00171; the TV reads them through the hub's /api/tv/guide.
 //
 // Nothing here changes a shelf the caller did not name: every write is scoped to one shelf or to
 // named item ids, and `replace` is the only way a shelf's contents go wholesale.
 //
-// Every write records the whole screen as it stands afterwards in tv_picks_history (00172), so any
+// Every write records the whole screen as it stands afterwards in tv_guide_history (00172), so any
 // earlier state can be viewed and restored, whole or one shelf of it. A restore is itself a write and
 // is recorded too, so it can be undone the same way.
 import { randomBytes } from 'crypto';
@@ -74,7 +74,7 @@ async function state(): Promise<Shelf[]> {
 }
 
 function format(ss: Shelf[]): string {
-  if (!ss.length) return 'The picks screen has no shelves.';
+  if (!ss.length) return 'The TV Guide has no shelves.';
   const out: string[] = [];
   for (const s of ss) {
     out.push(`${s.id} "${s.title}" (${s.items.length})`);
@@ -92,7 +92,7 @@ const when = (iso: string) => new Date(iso).toLocaleString('en-US', { timeZone: 
 
 /** Recent changes, newest first: each a version id, when, what changed, and the shelves afterwards. */
 async function history(limit = 20): Promise<string> {
-  const rows = check(await getClient().from('tv_picks_history').select('id,at,summary,state')
+  const rows = check(await getClient().from('tv_guide_history').select('id,at,summary,state')
     .order('id', { ascending: false }).limit(Math.max(1, Math.min(200, limit)))) as any[];
   if (!rows.length) return 'No history yet.';
   return rows.map((r) => `v${r.id} ${when(r.at)}: ${r.summary}\n    after: ${(r.state as Shelf[]).map((s) => `"${s.title}" (${s.items.length})`).join(', ') || 'no shelves'}`).join('\n');
@@ -101,14 +101,14 @@ async function history(limit = 20): Promise<string> {
 async function version(v: unknown): Promise<{ id: number; at: string; summary: string; state: Shelf[] }> {
   const id = Number(String(v ?? '').replace(/^v/, ''));
   if (!Number.isInteger(id) || id <= 0) throw new Error('version is a history id, e.g. v12');
-  const r = check(await getClient().from('tv_picks_history').select('id,at,summary,state').eq('id', id).maybeSingle()) as any;
+  const r = check(await getClient().from('tv_guide_history').select('id,at,summary,state').eq('id', id).maybeSingle()) as any;
   if (!r) throw new Error(`no version v${id}; history lists them`);
   return r;
 }
 
 /** Record the screen as it now stands. Exported so a state written outside run() can be captured. */
 export async function record(summary: string): Promise<void> {
-  check(await getClient().from('tv_picks_history').insert({ summary, state: await state() }));
+  check(await getClient().from('tv_guide_history').insert({ summary, state: await state() }));
 }
 
 const rows = (shelf: Shelf) => shelf.items.map((it) => ({ ...it, shelf_id: shelf.id }));
@@ -134,12 +134,12 @@ async function restore(to: Shelf[], shelfId?: string): Promise<void> {
   }
 }
 
-/** Tell the TV app the shelves changed, so a picks screen already open redraws. Not awaited for an
+/** Tell the TV app the shelves changed, so a TV Guide already open redraws. Not awaited for an
  *  answer: a TV that is off or showing something else has nothing to redraw, and the screen reads the
  *  shelves fresh whenever it opens. */
 async function refresh(): Promise<void> {
-  const { error } = await getClient().from('tv_commands').insert({ op: 'picks_refresh', args: {} });
-  if (error) console.error('[tv_picks] refresh', error.message);
+  const { error } = await getClient().from('tv_commands').insert({ op: 'guide_refresh', args: {} });
+  if (error) console.error('[tv_guide] refresh', error.message);
 }
 
 export async function run(op: Op, a: Record<string, any>): Promise<string> {
