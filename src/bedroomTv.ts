@@ -27,6 +27,8 @@ export const APPS: Record<string, string> = {
   appletv: 'com.apple.atve.androidtv.appletv',
   youtubemusic: 'com.google.android.youtube.tvmusic',
   youtubetv: 'com.google.android.youtube.tvunplugged',
+  // The picks screen, in the TV's own companion app (google-tv docs/PICKS.md; tvPicks.ts).
+  picks: 'com.jaredgantt.tvcompanion',
 };
 
 // `media` actions, done on whatever is playing through its media session (google-tv TvLink).

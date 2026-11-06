@@ -102,13 +102,18 @@ export async function search(query: string, opts: { type?: string; limit?: numbe
 export async function title(id: string): Promise<string> {
   const my = await mine();
   const d = await gql(`query($id: ID!) { node(id: $id) { id ... on MovieOrShow { objectType content(${LANG}) { title originalReleaseYear shortDescription runtime ageCertification
-    genres { shortName } scoring { imdbScore imdbVotes } credits { role name characterName } } ${OFFER} }
+    genres { shortName } scoring { imdbScore imdbVotes } credits { role name characterName } backdrops { backdropUrl } posterUrl } } ${OFFER} }
     ... on Show { totalSeasonCount seasons { id totalEpisodeCount content(${LANG}) { seasonNumber } } } } }`, { id });
   const n = d.node;
   if (!n?.content) return `No title ${id}.`;
   const cast = (n.content.credits || []).filter((c: any) => c.role === 'ACTOR').slice(0, 8).map((c: any) => c.name).join(', ');
   const directors = (n.content.credits || []).filter((c: any) => c.role === 'DIRECTOR').slice(0, 3).map((c: any) => c.name).join(', ');
+  // JustWatch's image paths are templates; s640 is its 640px-wide size. A backdrop is landscape, which is
+  // the shape of a picks-screen card (tv_picks); the poster is the fallback.
+  const art = n.content.backdrops?.[0]?.backdropUrl || n.content.posterUrl;
+  const image = art ? `https://images.justwatch.com${art.replace('{profile}', 's640').replace('{format}', 'jpg')}` : '';
   return [head(n), '', n.content.shortDescription || '',
+    image ? `Image: ${image}` : '',
     cast ? `\nCast: ${cast}` : '', directors ? `Directed by: ${directors}` : '',
     n.seasons?.length ? `\nSeasons:\n${n.seasons.map((s: any) => `  ${s.id} season ${s.content.seasonNumber}: ${s.totalEpisodeCount} episodes`).join('\n')}` : '',
     `\nWhere (${my ? '"his" = a service he has' : 'his services are not set'}):`, ...where(n.offers, my, true)].filter((x) => x !== '').join('\n');
