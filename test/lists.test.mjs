@@ -2,7 +2,7 @@
 // Times are naive local wall clock throughout (CLAUDE.md, "A time the user stated is stored verbatim").
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { seriesOccurrences, checkCompletedAt, isExpired, lateness, SERIES_DEFAULT_HORIZON_DAYS } from '../dist/lists.js';
+import { seriesOccurrences, normalizeDue, checkCompletedAt, isExpired, lateness, SERIES_DEFAULT_HORIZON_DAYS } from '../dist/lists.js';
 
 describe('seriesOccurrences', () => {
   test('daily, first occurrence included, through the until date', () => {
@@ -54,6 +54,24 @@ describe('seriesOccurrences', () => {
 
   test('a tiny interval is capped rather than flooding the list', () => {
     assert.equal(seriesOccurrences('2026-06-01T00:00', '1 minute', '2026-06-30').length, 366);
+  });
+  test('a first occurrence with seconds keeps them on every occurrence', () => {
+    assert.deepEqual(seriesOccurrences('2026-06-01T08:00:30', '1 day', '2026-06-02'),
+      ['2026-06-01T08:00:30', '2026-06-02T08:00:30']);
+  });
+});
+
+describe('normalizeDue', () => {
+  test('keeps the precision given, seconds included', () => {
+    assert.equal(normalizeDue('2026-11-06T10:59:29'), '2026-11-06T10:59:29');
+    assert.equal(normalizeDue('2026-11-06T10:59'), '2026-11-06T10:59');
+    assert.equal(normalizeDue('2026-11-06'), '2026-11-06');
+    assert.equal(normalizeDue('2026-11-06 10:59:29'), '2026-11-06T10:59:29');
+  });
+  test('rejects a zone, a malformed shape and an impossible moment', () => {
+    for (const bad of ['2026-11-06T10:59:29Z', '2026-11-06T10:59:29-05:00', '10:59', '2026-02-30', '2026-11-06T25:00', '2026-11-06T10:59:60']) {
+      assert.throws(() => normalizeDue(bad), /due/);
+    }
   });
 });
 

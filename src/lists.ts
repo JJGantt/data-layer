@@ -268,17 +268,18 @@ export async function addItem(listId: string, text: string, opts: AddOpts = {}):
 
   // A recurrence with no first occurrence has nothing to recur from, so it is only read alongside a
   // due — anything else is a one-off however it was asked for.
-  const every = opts.due ? (opts.repeat_every?.trim() || '') : '';
+  const due = opts.due ? normalizeDue(opts.due) : null;
+  const every = due ? (opts.repeat_every?.trim() || '') : '';
   const occurrences = every
-    ? seriesOccurrences(opts.due as string, every, opts.repeat_until)
-    : [opts.due || null];
+    ? seriesOccurrences(due as string, every, opts.repeat_until)
+    : [due];
   const seriesId = every ? uuid() : null;
 
   // `list_name` is left to the trigger: it is derived from `list_id`, and sending both is how the two
   // get a chance to disagree.
   // An alarm with no moment to ring at is not an alarm, so the flag only survives alongside a due —
   // the same rule `repeat_every` follows two lines up, and for the same reason.
-  const alarm = !!opts.alarm && !!opts.due;
+  const alarm = !!opts.alarm && !!due;
   const rows = occurrences.map(due => ({
     id: uuid(), list_id: list.id, text, title,
     due, scheduled_at: due, priority, alarm, series_id: seriesId,
@@ -297,6 +298,22 @@ export async function addItem(listId: string, text: string, opts: AddOpts = {}):
  * item anchored on the 31st would degrade to the 28th permanently — the wart migration 00060 was
  * written to retire. Stepping k intervals from the anchor keeps the intended day of month forever.
  */
+/**
+ * A due date as stored: 'YYYY-MM-DD', 'YYYY-MM-DDTHH:MM' or 'YYYY-MM-DDTHH:MM:SS', local wall clock,
+ * kept to the precision given. Seconds matter: a timer set "for six minutes" at 10:53:29 is due at
+ * 10:59:29, and the ringers ring on the second, so truncating to the minute rings it up to 59s early.
+ * Strict, like `checkCompletedAt`: no zone, and a round trip rejects 2026-02-30 and 25:00.
+ */
+export function normalizeDue(value: string): string {
+  const raw = String(value ?? '').trim().replace(' ', 'T');
+  const m = /^(\d{4}-\d{2}-\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2}))?)?$/.exec(raw);
+  if (!m) throw new ValidationError(`due must be local wall clock YYYY-MM-DD, YYYY-MM-DDTHH:MM or YYYY-MM-DDTHH:MM:SS with no timezone, got '${raw}'`);
+  const full = m[2] == null ? `${m[1]}T00:00:00` : `${m[1]}T${m[2]}:${m[3]}:${m[4] ?? '00'}`;
+  const t = Date.parse(`${full}Z`);
+  if (isNaN(t) || new Date(t).toISOString().slice(0, 19) !== full) throw new ValidationError(`due is not a real date/time: '${raw}'`);
+  return raw;
+}
+
 export function seriesOccurrences(firstDue: string, every: string, until?: string): string[] {
   const spec = /^(\d+)\s*(minute|hour|day|week|month|year)s?$/.exec(String(every).trim().toLowerCase());
   if (!spec) return [firstDue];
@@ -306,31 +323,32 @@ export function seriesOccurrences(firstDue: string, every: string, until?: strin
   const timed = /T\d/.test(firstDue);
   const [datePart, timePart = '00:00'] = firstDue.split('T');
   const [y, mo, d] = datePart.split('-').map(Number);
-  const [hh, mi] = timePart.split(':').map(Number);
+  const [hh, mi, ss = 0] = timePart.split(':').map(Number);
+  const withSeconds = timePart.split(':').length > 2;
 
   const horizon = new Date(`${datePart}T00:00:00`);
   if (until) { const u = new Date(`${until.slice(0, 10)}T00:00:00`); if (!isNaN(u.getTime())) horizon.setTime(u.getTime()); }
   else horizon.setDate(horizon.getDate() + SERIES_DEFAULT_HORIZON_DAYS);
   const lastDay = toEastern(horizon).slice(0, 10);
 
-  const fmt = (dt: Date) => (timed ? toEastern(dt).slice(0, 16) : toEastern(dt).slice(0, 10));
+  const fmt = (dt: Date) => toEastern(dt).slice(0, timed ? (withSeconds ? 19 : 16) : 10);
   const out: string[] = [];
   for (let k = 0; out.length < SERIES_MAX_OCCURRENCES; k++) {
     let dt: Date;
     if (unit === 'month' || unit === 'year') {
       const months = (unit === 'year' ? 12 : 1) * step * k;
-      const target = new Date(y, (mo - 1) + months, 1, hh, mi, 0);
+      const target = new Date(y, (mo - 1) + months, 1, hh, mi, ss);
       // Clamp to the month's length rather than rolling into the next one.
       const daysIn = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate();
-      dt = new Date(target.getFullYear(), target.getMonth(), Math.min(d, daysIn), hh, mi, 0);
+      dt = new Date(target.getFullYear(), target.getMonth(), Math.min(d, daysIn), hh, mi, ss);
     } else if (unit === 'day' || unit === 'week') {
       // Calendar days, not 24-hour steps: across a DST change a 24h step lands an hour off the
       // wall-clock time asked for (8:00 becomes 7:00 in November), and a date-only item lands on the
       // same date twice.
-      dt = new Date(y, mo - 1, d + (unit === 'week' ? 7 : 1) * step * k, hh, mi, 0);
+      dt = new Date(y, mo - 1, d + (unit === 'week' ? 7 : 1) * step * k, hh, mi, ss);
     } else {
       const ms = unit === 'hour' ? 3600000 : 60000;
-      dt = new Date(new Date(y, mo - 1, d, hh, mi, 0).getTime() + step * k * ms);
+      dt = new Date(new Date(y, mo - 1, d, hh, mi, ss).getTime() + step * k * ms);
     }
     const s = fmt(dt);
     if (s.slice(0, 10) > lastDay) break;
@@ -447,10 +465,11 @@ export async function setDue(
   idPrefix: string,
   patch: { due?: string | null },
 ): Promise<ListItem | null> {
+  const due = patch.due ? normalizeDue(patch.due) : null;
   const id = await resolveListItemId(listId, idPrefix);
   if (!id) return null;
   const update: Record<string, unknown> = { updated: now() };
-  if ('due' in patch) { update.due = patch.due || null; update.scheduled_at = patch.due || null; }
+  if ('due' in patch) { update.due = due; update.scheduled_at = due; }
   await getClient().from('list_items').update(update).eq('id', id);
   const { data } = await getClient().from('list_items').select('*').eq('id', id).single();
   return data as ListItem;
