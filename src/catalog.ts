@@ -102,7 +102,7 @@ export async function search(query: string, opts: { type?: string; limit?: numbe
 export async function title(id: string): Promise<string> {
   const my = await mine();
   const d = await gql(`query($id: ID!) { node(id: $id) { id ... on MovieOrShow { objectType content(${LANG}) { title originalReleaseYear shortDescription runtime ageCertification
-    genres { shortName } scoring { imdbScore imdbVotes } credits { role name characterName } backdrops { backdropUrl } posterUrl } } ${OFFER} }
+    genres { shortName } scoring { imdbScore imdbVotes } credits { role name characterName } backdrops { backdropUrl } posterUrl } ${OFFER} }
     ... on Show { totalSeasonCount seasons { id totalEpisodeCount content(${LANG}) { seasonNumber } } } } }`, { id });
   const n = d.node;
   if (!n?.content) return `No title ${id}.`;
