@@ -792,6 +792,28 @@ export async function turnSummaries(rows: DeskSession[]): Promise<Map<string, st
   return out;
 }
 
+/**
+ * A session's recent conversation: its last `limit` finished turns from `desk_turns` (what was said to
+ * it and what it answered), oldest first, so the orchestrator can find what the user "was talking
+ * about" there. get_sessions carries only one sentence per session, which rarely names the thing.
+ * `desk_turns` keeps 20 turns a conversation (00105), so that is the most there is to read.
+ */
+export async function sessionTurns(ref: string, limit = 3): Promise<string> {
+  const r = await resolveSession(ref);
+  if (!r.ok) return r.error;
+  const n = Math.min(Math.max(Math.trunc(limit) || 3, 1), 20);
+  const { data, error } = await getClient().from('desk_turns').select('at,prompt,reply')
+    .eq('conversation', conversationOf(r.row)).order('at', { ascending: false }).limit(n);
+  if (error) throw new Error(`desk_turns: ${error.message}`);
+  const turns = (data ?? []).reverse();
+  const head = `${(r.row as any).label || '(unnamed)'} \`${sessionHandle(r.row)}\``;
+  if (!turns.length) return `${head}: no finished turns recorded.`;
+  const when = (at: string) => new Date(at).toLocaleString('en-US', { timeZone: 'America/New_York',
+    month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  return [head, ...turns.map((t: any) =>
+    `--- ${when(t.at)}\nJared: ${t.prompt || '(no prompt: a background task or resumed context)'}\nSession: ${t.reply}`)].join('\n\n');
+}
+
 export function formatSessions(numbered: (DeskSession & { n: number; pinned?: boolean })[], q: any[], summaries: Map<string, string> = new Map()): string {
   if (!numbered.length && !q.length) return 'No sessions running or parked.';
   const lines: string[] = [];
