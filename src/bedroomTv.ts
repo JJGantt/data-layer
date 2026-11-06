@@ -99,8 +99,10 @@ export async function command(op: Op, args: Record<string, unknown>): Promise<Re
     if (!r.ok) return r;
     const play = op === 'media' && args.action === 'play';
     // `play` on an Apple TV title page means its Play button, which only a key press reaches; a pause is
-    // read a moment later, once the last of the sound has gone out.
-    const c = await answer('check', { apple: APPLE.test(String(r.package || '')), play, wait: play ? 5 : 0, delay: op === 'media' && !play ? 1 : 0 });
+    // read a moment later, once the last of the sound has gone out. The title page's trailer reports no
+    // length and the film does, so a length rules the page out and spares reading the screen (seconds).
+    const apple = APPLE.test(String(r.package || '')) && (play || !r.duration_s);
+    const c = await answer('check', { apple, play, wait: play ? 5 : 0, delay: op === 'media' && !play ? 1 : 0 });
     return judge(r, c);
   }
   if (!LEVELS.has(op) || args.value === undefined) return answer(op, args);
