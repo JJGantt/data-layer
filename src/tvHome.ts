@@ -19,10 +19,10 @@
 //       Prime: a cold-started Prime stops on "Who's watching?" before the link, and only a key press
 //       gets past it. The picker shows nothing an event could carry, so `bin/tv profile prime` reads
 //       the screen for up to 20 s and presses OK only on the words "Who's watching?".
-//       Apple TV: a link stops on the title page, and `bin/tv appletv play` presses Play there when
-//       nothing on the page is sold (google-tv docs/WATCHING.md).
-//       Playing: `bin/tv playing`, the app's sound actually reaching the output, because a media
-//       session reports only what its app claims. These are bounded waits for an outcome (each gives up
+//       Apple TV and playing: `bin/tv check`. A link stops on Apple TV's title page, and Play is
+//       pressed there when nothing on the page is sold (google-tv docs/WATCHING.md). Playing is the
+//       app's sound actually reaching the output, because a media session reports only what its app
+//       claims. These are bounded waits for an outcome (each gives up
 //       after 15-20 s), not a standing poll: none of these states raises an event the Pi can hear.
 //   - `check`: the same Apple TV and playing reads on demand, answered here; the hub leaves these rows
 //     alone. bedroomTv.ts sends it after `now` and `media`, whose own answers come from the app's media
@@ -63,27 +63,15 @@ async function passProfilePicker(): Promise<string> {
   }
 }
 
-// One JSON line from bin/tv (appletv, playing).
-async function tvJson(args: string[]): Promise<Record<string, any>> {
-  const { stdout } = await run(TV, args, { timeout: 60_000 });
-  return JSON.parse(stdout.trim().split('\n').pop() || '{}');
-}
-
-/** What is really on the TV: Apple TV's title page if `apple` (pressing Play on it if `play`), then
- *  whether the foreground app is sending sound, waiting up to `wait` seconds for it to start, after
- *  `delay` seconds (for a pause, whose last sound is still going out as it answers). */
+/** What is really on the TV (`bin/tv check`, one adb connection): Apple TV's title page if `apple`
+ *  (pressing Play on it if `play`), then whether the foreground app is sending sound, waiting up to
+ *  `wait` seconds for it to start, after `delay` seconds (for a pause, whose last sound is still going
+ *  out as it answers). */
 export async function inspect(o: { apple: boolean; play: boolean; wait: number; delay?: number }): Promise<Record<string, unknown>> {
-  const out: Record<string, unknown> = {};
-  if (o.delay) await new Promise((r) => setTimeout(r, o.delay! * 1000));
-  if (o.apple) {
-    const a = await tvJson(['appletv', o.play ? 'play' : 'check', '15']);
-    if (a.title_page !== undefined) out.title_page = a.title_page;
-    if (a.action) out.button = a.action;
-    if (a.sells) out.sells = true;
-    if (a.pressed) out.pressed = a.pressed;
-  }
-  const p = await tvJson(['playing', String(o.wait)]);
-  return { ...out, foreground: p.foreground, playing: !!p.playing };
+  const { stdout } = await run(TV, ['check', o.apple ? '1' : '0', o.play ? '1' : '0', String(o.wait), String(o.delay || 0)], { timeout: 60_000 });
+  const c = JSON.parse(stdout.trim().split('\n').pop() || '{}');
+  if (c.title_page === false) delete c.title_page;
+  return { ...c, playing: !!c.playing };
 }
 
 async function check(id: string, outcome: Record<string, unknown>): Promise<void> {
