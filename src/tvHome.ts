@@ -12,14 +12,21 @@
 //     harmless when the TV is on. The hub holds the row until the app reconnects and does the rest.
 //     If the TV is still off after that, the row is answered here with that, so the caller hears it in
 //     seconds instead of waiting out its timeout on a wake that did not happen.
-//   - `appletv`: what the Apple TV app is showing, `bin/tv appletv` (its accessibility tree over adb),
-//     answered here; the hub leaves these rows alone. With `play` it presses Play on a title page that
-//     sells nothing. bedroomTv.ts sends it after an Apple TV `open`, `now` or `media`, because that app's
-//     media session reports its title page's trailer as playing (google-tv docs/WATCHING.md).
-//   - an `open` / `launch` of Prime Video: `bin/tv profile prime` once the TV is awake. A cold-started
-//     Prime stops on "Who's watching?" before the link, and only a key press (adb) gets past it.
-//     The picker shows nothing an event could carry, so this reads the screen for up to 20 s after the
-//     open and presses OK only on the words "Who's watching?" (google-tv docs/WATCHING.md).
+//   - every `open`, whoever wrote it (the bedroom_tv tool, the phone's TV Guide), gets the same
+//     follow-up here, and its result is the row's `outcome` + `checked_at` (00176), which is what
+//     bedroomTv.ts waits for: Prime's profile picker passed, Apple TV's Play pressed, then whether the
+//     app is sending sound. A `launch` of Prime gets the profile step only.
+//       Prime: a cold-started Prime stops on "Who's watching?" before the link, and only a key press
+//       gets past it. The picker shows nothing an event could carry, so `bin/tv profile prime` reads
+//       the screen for up to 20 s and presses OK only on the words "Who's watching?".
+//       Apple TV: a link stops on the title page, and `bin/tv appletv play` presses Play there when
+//       nothing on the page is sold (google-tv docs/WATCHING.md).
+//       Playing: `bin/tv playing`, the app's sound actually reaching the output, because a media
+//       session reports only what its app claims. These are bounded waits for an outcome (each gives up
+//       after 15-20 s), not a standing poll: none of these states raises an event the Pi can hear.
+//   - `check`: the same Apple TV and playing reads on demand, answered here; the hub leaves these rows
+//     alone. bedroomTv.ts sends it after `now` and `media`, whose own answers come from the app's media
+//     session. With `play` it presses Play on an Apple TV title page that sells nothing.
 //
 // Started by data-http when HOME_AGENT=1 (the Pi). onInserts claims each row first, so one machine acts on it.
 import { execFile } from 'node:child_process';
@@ -34,6 +41,7 @@ const TV = process.env.TV_BIN || `${homedir()}/repos/google-tv/bin/tv`;
 const WAKE_OPS = new Set(['open', 'launch', 'input']);
 // An open or launch that lands in Prime Video: its package, or a catalog link to watch.amazon.com.
 const PRIME = /com\.amazon\.amazonvideo\.livingroom|watch\.amazon\.com|primevideo\.com/;
+const APPLE = /com\.apple\.atve\.androidtv\.appletv|tv\.apple\.com/;
 
 async function answer(id: string, result: Record<string, unknown>): Promise<void> {
   // Only a row nobody has answered: when the wake worked the app may already have done the command.
@@ -44,13 +52,59 @@ async function answer(id: string, result: Record<string, unknown>): Promise<void
 
 // Pressing OK is the outcome checked: bin/tv reads the screen again afterwards and exits non-zero if the
 // picker is still there, or if every capture was blank so the picker could not have been seen.
-async function passProfilePicker(): Promise<void> {
+async function passProfilePicker(): Promise<string> {
   try {
     const { stdout } = await run(TV, ['profile', 'prime', '20'], { timeout: 90_000 });
-    console.log(`[tv] prime: ${stdout.trim()}`);
+    return stdout.trim();
   } catch (e: any) {
-    console.error('[tv] prime profile picker:', String(e.stderr || e.message).trim());
+    const err = String(e.stderr || e.message).trim();
+    console.error('[tv] prime profile picker:', err);
+    return `failed: ${err}`;
   }
+}
+
+// One JSON line from bin/tv (appletv, playing).
+async function tvJson(args: string[]): Promise<Record<string, any>> {
+  const { stdout } = await run(TV, args, { timeout: 60_000 });
+  return JSON.parse(stdout.trim().split('\n').pop() || '{}');
+}
+
+/** What is really on the TV: Apple TV's title page if `apple` (pressing Play on it if `play`), then
+ *  whether the foreground app is sending sound, waiting up to `wait` seconds for it to start, after
+ *  `delay` seconds (for a pause, whose last sound is still going out as it answers). */
+export async function inspect(o: { apple: boolean; play: boolean; wait: number; delay?: number }): Promise<Record<string, unknown>> {
+  const out: Record<string, unknown> = {};
+  if (o.delay) await new Promise((r) => setTimeout(r, o.delay! * 1000));
+  if (o.apple) {
+    const a = await tvJson(['appletv', o.play ? 'play' : 'check', '15']);
+    if (a.title_page !== undefined) out.title_page = a.title_page;
+    if (a.action) out.button = a.action;
+    if (a.sells) out.sells = true;
+    if (a.pressed) out.pressed = a.pressed;
+  }
+  const p = await tvJson(['playing', String(o.wait)]);
+  return { ...out, foreground: p.foreground, playing: !!p.playing };
+}
+
+async function check(id: string, outcome: Record<string, unknown>): Promise<void> {
+  const { error } = await getClient().from('tv_commands')
+    .update({ checked_at: new Date().toISOString(), outcome }).eq('id', id);
+  if (error) console.error('[tv] outcome write failed', error.message);
+}
+
+async function followUp(row: any): Promise<void> {
+  const args = JSON.stringify(row.args || {});
+  const outcome: Record<string, unknown> = {};
+  if (PRIME.test(args)) outcome.profile = await passProfilePicker();
+  if (row.op !== 'open') return;
+  try {
+    Object.assign(outcome, await inspect({ apple: APPLE.test(args), play: true, wait: 15 }));
+  } catch (e: any) {
+    outcome.error = String(e.stderr || e.message).trim();
+    console.error('[tv] open follow-up', outcome.error);
+  }
+  if (!outcome.playing) console.error(`[tv] open: nothing playing afterwards ${JSON.stringify(outcome)} for ${args}`);
+  await check(row.id, outcome);
 }
 
 async function handle(row: any): Promise<void> {
@@ -67,7 +121,7 @@ async function handle(row: any): Promise<void> {
     }
     console.log(`[tv] ${row.op}: TV ${now}`);
     if (now === 'off') return answer(row.id, { ok: false, error: 'the TV is off and did not wake' });
-    if (row.op !== 'input' && PRIME.test(JSON.stringify(row.args || {}))) await passProfilePicker();
+    if (row.op !== 'input') await followUp(row);
     return;
   }
   if (row.op === 'key') {
@@ -84,14 +138,13 @@ async function handle(row: any): Promise<void> {
     }
     return answer(row.id, result);
   }
-  if (row.op === 'appletv') {
+  if (row.op === 'check') {
     let result: Record<string, unknown>;
     try {
-      const { stdout } = await run(TV, ['appletv', row.args?.play ? 'play' : 'check', '15'], { timeout: 40_000 });
-      result = { ok: true, ...JSON.parse(stdout.trim().split('\n').pop() || '{}') };
+      result = { ok: true, ...await inspect({ apple: !!row.args?.apple, play: !!row.args?.play, wait: Number(row.args?.wait) || 0, delay: Number(row.args?.delay) || 0 }) };
     } catch (e: any) {
       result = { ok: false, error: String(e.stderr || e.message).trim() };
-      console.error('[tv] appletv', result.error);
+      console.error('[tv] check', result.error);
     }
     return answer(row.id, result);
   }
