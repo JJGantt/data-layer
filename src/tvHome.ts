@@ -12,6 +12,10 @@
 //     harmless when the TV is on. The hub holds the row until the app reconnects and does the rest.
 //     If the TV is still off after that, the row is answered here with that, so the caller hears it in
 //     seconds instead of waiting out its timeout on a wake that did not happen.
+//   - `appletv`: what the Apple TV app is showing, `bin/tv appletv` (its accessibility tree over adb),
+//     answered here; the hub leaves these rows alone. With `play` it presses Play on a title page that
+//     sells nothing. bedroomTv.ts sends it after an Apple TV `open`, `now` or `media`, because that app's
+//     media session reports its title page's trailer as playing (google-tv docs/WATCHING.md).
 //   - an `open` / `launch` of Prime Video: `bin/tv profile prime` once the TV is awake. A cold-started
 //     Prime stops on "Who's watching?" before the link, and only a key press (adb) gets past it.
 //     The picker shows nothing an event could carry, so this reads the screen for up to 20 s after the
@@ -77,6 +81,17 @@ async function handle(row: any): Promise<void> {
       result = { ok: true, key: row.args.key };
     } catch (e: any) {
       result = { ok: false, error: String(e.stderr || e.message).trim() };
+    }
+    return answer(row.id, result);
+  }
+  if (row.op === 'appletv') {
+    let result: Record<string, unknown>;
+    try {
+      const { stdout } = await run(TV, ['appletv', row.args?.play ? 'play' : 'check', '15'], { timeout: 40_000 });
+      result = { ok: true, ...JSON.parse(stdout.trim().split('\n').pop() || '{}') };
+    } catch (e: any) {
+      result = { ok: false, error: String(e.stderr || e.message).trim() };
+      console.error('[tv] appletv', result.error);
     }
     return answer(row.id, result);
   }
