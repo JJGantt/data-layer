@@ -69,3 +69,10 @@ async function send(op: Op, args: Record<string, unknown>): Promise<Record<strin
   });
   return answered;
 }
+
+/** What the sidebar's content view shows (the hub's tv_sidebar_content setting). */
+export async function sidebarContent(): Promise<string> {
+  const { data, error } = await getClient().from('app_settings').select('value').eq('key', 'tv_sidebar_content').maybeSingle();
+  if (error) throw new Error(error.message);
+  return String(data?.value ?? '');
+}
