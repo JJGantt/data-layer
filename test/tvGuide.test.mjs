@@ -1,13 +1,13 @@
 // The TV Guide's shelves: what an item opens in, and where a new or moved row lands.
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { resolveItem, positionsAt } from '../dist/tvGuide.js';
+import { resolveItem, positionsAt, cleanNote } from '../dist/tvGuide.js';
 
 describe('resolveItem', () => {
   test('a YouTube URL opens in the YouTube app with its thumbnail derived', () => {
     assert.deepEqual(resolveItem({ title: ' Quantum ', url: 'https://www.youtube.com/watch?v=KfODG5REyss' }), {
       title: 'Quantum', url: 'https://www.youtube.com/watch?v=KfODG5REyss',
-      package: 'com.google.android.youtube.tv', image: 'https://i.ytimg.com/vi/KfODG5REyss/hqdefault.jpg' });
+      package: 'com.google.android.youtube.tv', image: 'https://i.ytimg.com/vi/KfODG5REyss/hqdefault.jpg', note: null });
     assert.equal(resolveItem({ title: 'x', url: 'https://youtu.be/KfODG5REyss' }).package, 'com.google.android.youtube.tv');
   });
 
@@ -28,6 +28,18 @@ describe('resolveItem', () => {
     assert.throws(() => resolveItem({ title: '', url: 'https://youtu.be/KfODG5REyss' }));
     assert.throws(() => resolveItem({ title: 'x', url: '' }));
     assert.throws(() => resolveItem({ title: 'x', url: 'https://youtu.be/KfODG5REyss', app: 'nope' }));
+  });
+});
+
+describe('cleanNote', () => {
+  test('trims, and blank or missing means no note', () => {
+    assert.equal(cleanNote(' 93% '), '93%');
+    assert.equal(cleanNote('   '), null);
+    assert.equal(cleanNote(undefined), null);
+    assert.equal(cleanNote(null), null);
+  });
+  test('an item carries its note through resolveItem', () => {
+    assert.equal(resolveItem({ title: 'x', url: 'https://youtu.be/KfODG5REyss', note: ' 4h 20m' }).note, '4h 20m');
   });
 });
 
