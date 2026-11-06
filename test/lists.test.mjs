@@ -2,7 +2,7 @@
 // Times are naive local wall clock throughout (CLAUDE.md, "A time the user stated is stored verbatim").
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { seriesOccurrences, normalizeDue, checkCompletedAt, isExpired, lateness, SERIES_DEFAULT_HORIZON_DAYS } from '../dist/lists.js';
+import { seriesOccurrences, normalizeDue, ringFlags, checkCompletedAt, isExpired, lateness, SERIES_DEFAULT_HORIZON_DAYS } from '../dist/lists.js';
 
 describe('seriesOccurrences', () => {
   test('daily, first occurrence included, through the until date', () => {
@@ -72,6 +72,18 @@ describe('normalizeDue', () => {
     for (const bad of ['2026-11-06T10:59:29Z', '2026-11-06T10:59:29-05:00', '10:59', '2026-02-30', '2026-11-06T25:00', '2026-11-06T10:59:60']) {
       assert.throws(() => normalizeDue(bad), /due/);
     }
+  });
+});
+
+describe('ringFlags', () => {
+  test('a timer is an alarm too, so every ringer rings it', () => {
+    assert.deepEqual(ringFlags('alarm'), { alarm: true, timer: false });
+    assert.deepEqual(ringFlags('timer'), { alarm: true, timer: true });
+    assert.deepEqual(ringFlags('none'), { alarm: false, timer: false });
+    assert.deepEqual(ringFlags(undefined), { alarm: false, timer: false });
+  });
+  test('an unknown tier is refused rather than read as none', () => {
+    assert.throws(() => ringFlags('loud'), /ring must be/);
   });
 });
 

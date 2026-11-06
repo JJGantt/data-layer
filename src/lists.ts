@@ -51,6 +51,9 @@ export interface ListItem {
   // wakes a room. A soup timer should and an errand at 2am should not, and no property of an item
   // tells you which it is — "alarm", "wake me", "timer" do.
   alarm: boolean;
+  // The gentle tier of a ringing item, set only with `alarm`: the hub ends a timer about ten seconds
+  // after its moment by completing it, where an alarm rings until it is stopped (00173).
+  timer: boolean;
   series_id: string | null;  // set on every occurrence one scheduling request produced
   // When it was DONE. Null means outstanding. A timestamp rather than a flag because the score needs
   // to know how late it was, and a boolean beside the time is a field that can contradict it.
@@ -63,6 +66,8 @@ export const ACTIVE = 'deleted=false,completed_at=null';
 
 /** Where an item goes when the caller didn't name a list. An ID, like every other list reference. */
 export const DEFAULT_LIST_ID = 'l_todo';
+/** Where an alarm or timer goes when no list is named: exempt by default, because a timer is not a task. */
+export const ALARMS_LIST_ID = 'l_alarms';
 
 /** Nothing is owed on an exempt item, so it scores nothing and closes itself when its moment goes. */
 export const PRIORITY_EXEMPT = -1;
@@ -241,8 +246,8 @@ export interface AddOpts {
   due?: string;
   /** Omit to inherit the list's default. A number here is an explicit override, 0 included. */
   priority?: number;
-  /** True makes it RING on the TV and any open hub page rather than notify. Requires `due` to mean anything. */
-  alarm?: boolean;
+  /** 'alarm' rings until stopped, 'timer' rings briefly; omitted only notifies. Requires `due`. */
+  ring?: Ring;
   /** '<n> <unit>' — makes this a series. Requires `due`, which is the first occurrence. */
   repeat_every?: string;
   /** Last date a series occurrence may fall on. Defaults to SERIES_DEFAULT_HORIZON_DAYS out. */
@@ -279,10 +284,10 @@ export async function addItem(listId: string, text: string, opts: AddOpts = {}):
   // get a chance to disagree.
   // An alarm with no moment to ring at is not an alarm, so the flag only survives alongside a due —
   // the same rule `repeat_every` follows two lines up, and for the same reason.
-  const alarm = !!opts.alarm && !!due;
+  const { alarm, timer } = ringFlags(due ? opts.ring : undefined);
   const rows = occurrences.map(due => ({
     id: uuid(), list_id: list.id, text, title,
-    due, scheduled_at: due, priority, alarm, series_id: seriesId,
+    due, scheduled_at: due, priority, alarm, timer, series_id: seriesId,
     deleted: false, created: n, updated: n,
   }));
   const { data } = await sb.from('list_items').insert(rows).select();
@@ -493,8 +498,20 @@ export async function setPriority(
   return data as ListItem;
 }
 
+/** How a dated item answers its moment: ring until stopped, ring briefly, or just notify. */
+export type Ring = 'alarm' | 'timer' | 'none';
+export const RINGS: Ring[] = ['alarm', 'timer', 'none'];
+
+/** The stored pair for a ring tier. A timer is an alarm too, so every ringer that reads `alarm` rings it. */
+export function ringFlags(ring: string | undefined): { alarm: boolean; timer: boolean } {
+  if (ring === 'alarm') return { alarm: true, timer: false };
+  if (ring === 'timer') return { alarm: true, timer: true };
+  if (ring == null || ring === 'none') return { alarm: false, timer: false };
+  throw new ValidationError(`ring must be one of ${RINGS.join(', ')}, got '${ring}'`);
+}
+
 /**
- * Turn an existing item into an alarm, or back into an ordinary dated item.
+ * Make an existing item an alarm or a timer, or back into an ordinary dated item.
  *
  * Separate from setPriority even though the shape is identical: these are different questions and a
  * combined verb would invite answering one while meaning the other. Important is about SCORE; alarm
@@ -503,11 +520,12 @@ export async function setPriority(
 export async function setAlarm(
   listId: string | null,
   idPrefix: string,
-  alarm: boolean,
+  ring: Ring,
 ): Promise<ListItem | null> {
+  const flags = ringFlags(ring);
   const id = await resolveListItemId(listId, idPrefix);
   if (!id) return null;
-  await getClient().from('list_items').update({ alarm, updated: now() }).eq('id', id);
+  await getClient().from('list_items').update({ ...flags, updated: now() }).eq('id', id);
   const { data } = await getClient().from('list_items').select('*').eq('id', id).single();
   return data as ListItem;
 }
@@ -595,7 +613,7 @@ function line(i: ListItem, withList = false): string {
   const flag = i.priority > 0 ? ' [important]' : i.priority < 0 ? ' [exempt]' : '';
   // Stated, because it is the one property that changes what an item DOES rather than what it is
   // worth — a reader who cannot see it cannot tell which dated items will ring.
-  const rings = i.alarm ? ' [alarm]' : '';
+  const rings = i.timer ? ' [timer]' : i.alarm ? ' [alarm]' : '';
   const done = i.completed_at ? ` [done ${i.completed_at.slice(0, 16).replace('T', ' ')}]` : '';
   const series = i.series_id ? ` [series: ${i.series_id.slice(0, 8)}]` : '';
   const head = `- ${itemLabel(i)}${where}${due}${flag}${rings}${done}${series}  [id: ${i.id.slice(0, 8)}]`;
