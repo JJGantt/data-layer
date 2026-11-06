@@ -3,12 +3,13 @@
 Everything that reads or writes the personal life data (workouts, nutrition, lists, health) goes through here. Supabase is the store; this is
 the only thing that talks to it directly, so behaviour lives in one place rather than in each caller.
 
-Two entry points over the same modules:
+Three entry points over the same modules:
 
 | | what | who runs it |
 |---|---|---|
 | `dist/mcp.js` | the MCP tools | every Claude session, Mac and Pi, via `~/.claude.json` |
 | `dist/http.js` | JSON API on `127.0.0.1:27186` (`DATA_HTTP_HOST` to widen; bearer `DATA_HTTP_TOKEN` on every request, JSON bodies only), and with `HOME_AGENT=1` the Pi's home-network jobs (below) | `data-http.service` on the Pi; its one caller is gmail-watcher's Walmart handler |
+| `dist/homeAgent.js` | the Mac's fallback for those home-network jobs | launchd `com.jaredgantt.home-agent` on the Mac (`launchd/`) |
 
 Both run from `dist/`; `pull-repos` rebuilds after pulling, so a change made on one machine reaches
 the other's sessions within about fifteen minutes. `CLAUDE.md` covers what to know before editing.
@@ -37,13 +38,13 @@ both call, which is why the MCP and the API can never disagree about what a writ
 | `reports.ts` | the HTML write-ups a dispatched session publishes |
 | `bedroomTv.ts` | the bedroom TV (`bedroom_tv`, table `tv_commands`): inserts a command and awaits the TV's answer. The hub relays it to the TV's app; google-tv `docs/VOICE.md` |
 | `youtube.ts` | public YouTube (`youtube` search / video / related / channel), parsed from the JSON YouTube embeds in its pages |
-| `youtubeAccount.ts` | the owner's YouTube account (`youtube` history / home / subscriptions / …), signed in with the Pi browser's cookies. Runs only on the Pi |
+| `youtubeAccount.ts` | the owner's YouTube account (`youtube` history / home / subscriptions / …), signed in with a browser's cookies: the Pi's automation browser, or the Mac's on-demand one |
 | `ytParse.ts` | YouTube's renderer JSON, old and new shapes, flattened to rows; shared by the two above |
 | `tvGuide.ts` | the bedroom TV's TV Guide (`tv_guide`, tables `tv_shelves` and `tv_shelf_items`): titled shelves of items, read by the TV through the hub's `/api/tv/guide`; google-tv `docs/GUIDE.md` |
 | `catalog.ts` | what is streaming where (`catalog`), from JustWatch, with Android TV deep links |
-| `homeRequests.ts` | reads only the Pi can answer (table `home_requests`): any machine asks, data-http on the Pi answers |
-| `tvHome.ts` | the bedroom TV's home-network end on the Pi: power over Wake-on-LAN and adb, remote keys over adb, and a wake before `open` / `launch` / `input` |
-| `realtime.ts` | `onInserts`, the reconnecting INSERT subscription both Pi jobs run on |
+| `homeRequests.ts` | reads only a machine at home can answer (table `home_requests`): any machine asks, the Pi answers, the Mac if the Pi does not |
+| `tvHome.ts` | the bedroom TV's home-network end (the Pi, the Mac as fallback): power over Wake-on-LAN and adb, remote keys over adb, and a wake before `open` / `launch` / `input` |
+| `realtime.ts` | `onInserts`, the reconnecting INSERT subscription the home jobs run on, with the fallback's deferred claim |
 | `helpers.ts` | ids, validation, and the clock — read it before using `now()` |
 | `client.ts` | the Supabase client and where its key comes from |
 
@@ -60,20 +61,42 @@ the search, not the session.
 The cart URL takes ids, not names, because reading the list and choosing one is the step that picks
 the right product; a name matcher has to reject "milk" as ambiguous against a milkshake cereal.
 
-## The Pi's home-network jobs
+## The home-network jobs
 
 Some things only a machine on the home network can do: wake the bedroom TV (Wake-on-LAN, adb), or read
-the owner's YouTube account through the Pi's signed-in automation browser. The voice worker usually runs on
-Fly, which can do neither. So the caller writes a row (`tv_commands`, `home_requests`) and data-http
-on the Pi, subscribed to inserts, does the work and fills in the answer. Realtime both ways; nothing
-polls.
+the owner's YouTube account through a browser signed in as him. The voice worker usually runs on Fly,
+which can do neither. So the caller writes a row (`tv_commands`, `home_requests`) and a machine at
+home, subscribed to inserts, does the work and fills in the answer. Realtime both ways; nothing polls.
 
-It runs inside data-http rather than as its own service, so it costs one realtime socket and no
-extra process; data-http measures about 75MB resident with it on. It is switched on by
-`HOME_AGENT=1` in `/etc/systemd/system/data-http.service.d/home-agent.conf` on the Pi. Every row is
-claimed before it is acted on (`claimed_by`, set by `onInserts` in `realtime.ts`), so a second machine
-with it set would find each row taken rather than act on it twice; it is still meant for the Pi alone,
-which is the machine on the home network.
+**The Pi answers; the Mac answers what the Pi does not.** Every row is claimed before it is acted on
+(`claimed_by`, set by `onInserts` in `realtime.ts`). The Pi claims at once. The Mac's home agent
+(`dist/homeAgent.js`) waits `HOME_DEFER_MS` (4 s) before claiming, so while the Pi is up it always finds
+the row taken and does nothing; a row it does win means the Pi is down, and it reports that as an
+error. The Mac answers only while it is awake.
+
+- **Pi**: inside data-http, so it costs one realtime socket and no extra process; data-http measures
+  about 75MB resident with it on. Switched on by `HOME_AGENT=1` in
+  `/etc/systemd/system/data-http.service.d/home-agent.conf`.
+- **Mac**: launchd `com.jaredgantt.home-agent`, from `launchd/com.jaredgantt.home-agent.plist`
+  (copy it to `~/Library/LaunchAgents` and `launchctl bootstrap gui/$(id -u)` it). Log
+  `~/Library/Logs/home-agent.log`; it reports to the ops responder as `mac/home-agent`.
+  `pull-repos` restarts it after a data-layer rebuild.
+
+Every TV job works the same from the Mac (`bin/tv` reaches the TV over wireless adb from either
+machine) except `sleep`, whose timer is a systemd unit: the Mac answers that one with an error.
+
+YouTube on the Mac is a **dedicated Chrome profile**, `~/browser-profiles/youtube`, not his everyday
+Chrome: that one's cookies are encrypted under the login keychain, and reading them means reaching
+into every site he is signed in to. The profile was signed in to his Google account once by hand.
+The agent starts it headless on demand (DevTools on `127.0.0.1:9225`, `--use-mock-keychain` so its
+cookies never touch the keychain) and quits it after ten idle minutes. To sign in again, quit that
+headless Chrome and open the profile with a window:
+
+    open -na "Google Chrome" --args --user-data-dir="$HOME/browser-profiles/youtube" --use-mock-keychain \
+      --remote-debugging-port=9225 --no-first-run https://accounts.google.com/
+
+Only one Chrome can hold the profile at a time, so while that window is open the agent uses it rather
+than starting its own.
 
 ## There is no reminders table, and no notes table
 

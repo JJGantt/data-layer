@@ -28,7 +28,9 @@
 //     alone. bedroomTv.ts sends it after `now` and `media`, whose own answers come from the app's media
 //     session. With `play` it presses Play on an Apple TV title page that sells nothing.
 //
-// Started by data-http when HOME_AGENT=1 (the Pi). onInserts claims each row first, so one machine acts on it.
+// Started by data-http when HOME_AGENT=1 (the Pi), and by the Mac's home agent (homeAgent.ts) as the
+// fallback: onInserts claims each row first, and the Mac waits before claiming, so it acts only on rows
+// the Pi did not take. bin/tv works the same from either machine except `sleep`, whose timer is systemd.
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { homedir } from 'node:os';
@@ -137,6 +139,7 @@ async function handle(row: any): Promise<void> {
     return answer(row.id, result);
   }
   if (row.op === 'sleep') {
+    if (process.platform !== 'linux') return answer(row.id, { ok: false, error: 'the sleep timer runs only on the Pi, which is not answering' });
     // bin/tv sleep holds the timer in the Pi's systemd, so it outlives this process; it prints when it
     // fires, or `none`. Setting one on a TV that is off is refused, like any op but a wake.
     const m = row.args?.minutes;
@@ -169,4 +172,4 @@ async function handle(row: any): Promise<void> {
   await answer(row.id, result);
 }
 
-export const start = () => onInserts('tv_commands', handle);
+export const start = (deferMs = 0) => onInserts('tv_commands', handle, deferMs);

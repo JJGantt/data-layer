@@ -306,7 +306,8 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-// The Pi's home-network jobs (tvHome.ts, homeRequests.ts); set only in the Pi's unit.
+// The home-network jobs (tvHome.ts, homeRequests.ts); set only in the Pi's unit. The Mac runs them as the
+// fallback from homeAgent.ts instead.
 if (process.env.HOME_AGENT === '1') { tvHome.start(); homeRequests.start(); }
 
 // Errors and the heartbeat go to the ops responder (health/responder). ops_report.cjs is a copy of its

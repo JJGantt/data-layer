@@ -1,5 +1,6 @@
-// Reads only the Pi can answer (migration 00138). `ask` is the caller's side, from any machine;
-// `start` is the Pi's, run by data-http when HOME_AGENT=1. Realtime both ways, like tv_commands.
+// Reads only a machine at home can answer (migration 00138). `ask` is the caller's side, from any
+// machine; `start` is the answering side: data-http on the Pi (HOME_AGENT=1), and the Mac's home agent
+// (homeAgent.ts) as the fallback, which claims only what the Pi has not. Realtime both ways, like tv_commands.
 import { randomUUID } from 'crypto';
 import { getClient } from './client.js';
 import { onInserts } from './realtime.js';
@@ -25,7 +26,7 @@ export async function ask(kind: string, args: Record<string, unknown>): Promise<
         const { error } = await sb.from('home_requests').insert({ id, kind, args });
         if (error) { sb.removeChannel(ch); resolve(`Failed: ${error.message}`); }
       });
-    setTimeout(() => { sb.removeChannel(ch); resolve('Failed: the Pi did not answer in 60s (data-http down, or its browser).'); }, TIMEOUT_MS);
+    setTimeout(() => { sb.removeChannel(ch); resolve('Failed: nothing answered in 60s — neither the Pi (data-http) nor the Mac (home agent), or their browser hung.'); }, TIMEOUT_MS);
   });
 }
 
@@ -44,4 +45,4 @@ async function answer(row: any): Promise<void> {
   if (error) console.error('[home] answer failed', error.message);
 }
 
-export const start = () => onInserts('home_requests', answer);
+export const start = (deferMs = 0) => onInserts('home_requests', answer, deferMs);
