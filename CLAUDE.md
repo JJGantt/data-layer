@@ -94,12 +94,13 @@ value in the schema that worker is holding — voice cannot add to it until the 
 server sends `notifications/tools/list_changed` on `create_list` and `delete_list`, but whether a
 client re-fetches on it is the client's business, so treat a restart as the reliable path.
 
-## A new tool is invisible to voice until it is allow-listed
+## A new tool reaches voice only after the worker is redeployed
 
-The voice router runs with an explicit `--allowedTools` list in `voice-pipeline/worker/worker.py`. A
-tool missing from it stays visible in the schema and is refused when called, which is what makes
-escalation to Opus work — so the omission looks like a model failure, not a config gap. Add the tool
-there, or check the `validate_safe_tools()` line in the worker's startup log.
+The voice router's allow-list (`ALL_TOOLS` in `voice-pipeline/worker/voice_worker/config.py`) admits the
+whole `mcp__data` server, so a new data tool needs no entry there — unless it is session-only, in which
+case it goes in `SESSION_TOOLS`. But Fly's `jared-voice-worker` claims first and bakes a copy of this
+`src/` into its image, so a new tool is invisible to most voice turns until `voice-pipeline/fly-worker/deploy.sh`
+runs.
 
 ## A session is named by number, not by id
 
