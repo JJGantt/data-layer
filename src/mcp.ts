@@ -15,6 +15,7 @@ import * as shopping from './shopping.js';
 import * as surf from './surf.js';
 import * as location from './location.js';
 import * as bedroomTv from './bedroomTv.js';
+import * as feeder from './feeder.js';
 import * as youtube from './youtube.js';
 import * as catalog from './catalog.js';
 import * as tvGuide from './tvGuide.js';
@@ -71,6 +72,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
   return {
   tools: [
     { name: 'get_health_profile', description: 'Returns height, recent weight log entries, and current nutrition targets (calories, protein, carbs, fat).', inputSchema: { type: 'object' as const, properties: {} } },
+    { name: 'feed_cats', description: "Feed the cats: dispense food from the cat feeder now. One portion unless he names a number. It answers once the feeder has confirmed the dispense (about half a minute), or says it failed or went unconfirmed — say which.", inputSchema: { type: 'object' as const, properties: { portions: { type: 'number', description: 'How many portions, default 1, at most 12.' } } } },
     { name: 'get_location', description: "Where Jared last was: a lat/lon fix per device (watch, web), each with how old it is. Call it only when a request depends on where he is — 'near me', directions, a ride, local hours, the weather here — and never otherwise. It updates when he speaks to a device that has a fix, so check the age: hours old may no longer be where he is. Nothing here names the place; the coordinates are the answer.", inputSchema: { type: 'object' as const, properties: {} } },
     { name: 'get_surf', description: "The surf forecast at Jared's break (Mayport Poles) from Surfline — rating, wave size, wind and swell at three-hour steps, when the forecast was captured, and the water temperature. Use this for surf there rather than web search: Surfline blocks bots, so the web does not have it.", inputSchema: { type: 'object' as const, properties: { days: { type: 'number', description: 'How many days ahead, 1-10. Omit for 2.' } } } },
     { name: 'set_height', description: 'Set or update height in inches.', inputSchema: { type: 'object' as const, properties: { height_in: { type: 'number', description: 'Height in inches (e.g. 72 for 6\'0").' } }, required: ['height_in'] } },
@@ -159,6 +161,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   try {
+    if (name === 'feed_cats') return text(await feeder.feed(a.portions === undefined ? 1 : Number(a.portions)));
     if (name === 'get_location') return text(await location.lastLocation());
     if (name === 'get_surf') return text(await surf.surfReport(Number(a.days) || 2));
     if (name === 'get_health_data') return text(await appleHealth.getHealthData(a as any));

@@ -37,6 +37,7 @@ both call, which is why the MCP and the API can never disagree about what a writ
 | `desk.ts` | dispatching Claude sessions to a machine, and the follow-up pointer |
 | `reports.ts` | the HTML write-ups a dispatched session publishes |
 | `bedroomTv.ts` | the bedroom TV (`bedroom_tv`, table `tv_commands`): inserts a command and awaits the TV's answer. The hub relays it to the TV's app; google-tv `docs/VOICE.md` |
+| `feeder.ts` | the cat feeder (`feed_cats`, table `feeder_commands`): inserts a feed and awaits the Pi's `petlibro-collector` marking it done or failed. The feeder is LAN-only, so this relay is how a worker off the LAN (Fly) feeds; petlibro-mcp `CLAUDE.md` |
 | `youtube.ts` | public YouTube (`youtube` search / video / related / channel), parsed from the JSON YouTube embeds in its pages |
 | `youtubeAccount.ts` | the owner's YouTube account (`youtube` history / home / subscriptions / …), signed in with a browser's cookies: the Pi's automation browser, or the Mac's on-demand one |
 | `ytParse.ts` | YouTube's renderer JSON, old and new shapes, flattened to rows; shared by the two above |
