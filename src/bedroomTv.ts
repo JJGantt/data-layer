@@ -55,12 +55,30 @@ const LEVELS = new Set<Op>(['volume', 'brightness', 'contrast']);
 // the Pi whoever wrote it (the phone's TV Guide too), so the tool waits for that row's `outcome`.
 const APPLE = /com\.apple\.atve\.androidtv\.appletv|tv\.apple\.com/;
 
-/** The app's answer `r`, corrected by the Pi's look at the TV `c` (tvHome.ts inspect). */
+/** The app an `open` is meant to land in: the `app` it was given, else the package an `intent:` link
+ *  names. Null for a bare URL with no app, which any app may handle. */
+export function openTarget(args: Record<string, unknown>): string | null {
+  if (args.package) return String(args.package);
+  const m = /;package=([^;]+)/.exec(String(args.url || ''));
+  return m ? m[1] : null;
+}
+
+/** The app's answer `r`, corrected by the Pi's look at the TV `c` (tvHome.ts inspect). For an open,
+ *  `c.target` is the app it was meant to land in, and anything else in front is a failed open however
+ *  much sound it is making: a cast YouTube video takes the screen back from the app it opened. */
 export function judge(r: Record<string, any>, c: Record<string, any>): Record<string, any> {
   if (!r.ok) return r;
   if (!c.ok) return { ...r, verified: false, verify_error: c.error };
   const out: Record<string, any> = { ...r, playing: !!c.playing };
   if (c.foreground) out.foreground = c.foreground;
+  if (c.target && c.foreground && c.foreground !== c.target) {
+    out.ok = false;
+    out.playing = false;
+    out.state = 'not in front';
+    delete out.position_s;
+    out.error = `opened, but ${c.foreground} is in front instead of ${c.target}${c.reopened ? ', even after stopping it and opening again' : ''}`;
+    return out;
+  }
   if (c.profile) out.profile = c.profile;
   if (c.pressed) out.pressed = c.pressed;
   if (c.title_page) {
@@ -116,9 +134,10 @@ async function answer(op: Op | 'check', args: Record<string, unknown>): Promise<
   return row ? row.result || { ok: false } : { ok: false, error: `no answer from the TV in ${timeout(op) / 1000}s` };
 }
 
-// The open's follow-up on the Pi: Prime's picker (up to 20 s), Apple TV's title page and its Play (up
-// to 20 s), then sound starting (up to 15 s), after a wake.
-const OPEN_TIMEOUT_MS = 110_000;
+// The open's follow-up on the Pi: the app staying in front (4 s, or 10 s when it has to be opened again),
+// Prime's picker (up to 20 s), Apple TV's title page and its Play (up to 20 s), then sound starting (up
+// to 15 s), after a wake.
+const OPEN_TIMEOUT_MS = 125_000;
 const timeout = (op: string) => op === 'open' ? OPEN_TIMEOUT_MS : op === 'check' ? CHECK_TIMEOUT_MS : WAKES.has(op) ? WAKE_TIMEOUT_MS : TIMEOUT_MS;
 
 /** Writes the command and resolves with its row once `done` holds for it, or with the last row seen

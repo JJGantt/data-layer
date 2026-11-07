@@ -2,10 +2,12 @@
 // look at the TV (whether the app is sending sound, and Apple TV's title page).
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { judge } from '../dist/bedroomTv.js';
+import { judge, openTarget } from '../dist/bedroomTv.js';
 
 const APPLE = 'com.apple.atve.androidtv.appletv';
 const YT = 'com.google.android.youtube.tv';
+const PRIME = 'com.amazon.amazonvideo.livingroom';
+const PRIME_LINK = `intent://watch.amazon.com/watch?asin=B0HHTB4CPT&time=0&territory=US#Intent;package=${PRIME};scheme=https;end`;
 
 describe('judge', () => {
   test('a session that says playing while no sound comes out is not playing, and its position is dropped', () => {
@@ -59,5 +61,27 @@ describe('judge', () => {
   test('a failed command is passed through untouched', () => {
     const r = { ok: false, error: 'the TV is off' };
     assert.deepEqual(judge(r, { ok: true, playing: true }), r);
+  });
+
+  test('an open that ends with another app in front fails, even while that app is making sound', () => {
+    const r = judge({ ok: true }, { ok: true, target: PRIME, foreground: YT, playing: true, reopened: true });
+    assert.equal(r.ok, false);
+    assert.equal(r.playing, false);
+    assert.equal(r.state, 'not in front');
+    assert.match(r.error, /youtube.*instead of com\.amazon.*opening again/);
+  });
+
+  test('an open with its app in front and sound coming out is playing', () => {
+    const r = judge({ ok: true }, { ok: true, target: PRIME, foreground: PRIME, playing: true });
+    assert.equal(r.ok, true);
+    assert.equal(r.state, 'playing');
+  });
+});
+
+describe('openTarget', () => {
+  test('the app given wins; else the package an intent link names; else none', () => {
+    assert.equal(openTarget({ url: 'https://youtu.be/x', package: YT }), YT);
+    assert.equal(openTarget({ url: PRIME_LINK }), PRIME);
+    assert.equal(openTarget({ url: 'https://example.com/' }), null);
   });
 });

@@ -36,7 +36,7 @@ import { promisify } from 'node:util';
 import { homedir } from 'node:os';
 import { getClient } from './client.js';
 import { onInserts } from './realtime.js';
-import { KEYS } from './bedroomTv.js';
+import { KEYS, openTarget } from './bedroomTv.js';
 
 const run = promisify(execFile);
 const TV = process.env.TV_BIN || `${homedir()}/repos/google-tv/bin/tv`;
@@ -82,9 +82,32 @@ async function check(id: string, outcome: Record<string, unknown>): Promise<void
   if (error) console.error('[tv] outcome write failed', error.message);
 }
 
+/** `bin/tv front`: whether the open's app is in front a few seconds on, and if something else took the
+ *  screen (a Cast session does, about a second after being covered), its playback stopped and the link
+ *  opened again from here. */
+async function bringToFront(target: string, url: string): Promise<Record<string, unknown>> {
+  try {
+    const { stdout } = await run(TV, ['front', target, url], { timeout: 40_000 });
+    const f = JSON.parse(stdout.trim().split('\n').pop() || '{}');
+    if (!f.front) console.error(`[tv] open: ${f.foreground} is in front instead of ${target}`, JSON.stringify(f));
+    return f;
+  } catch (e: any) {
+    const err = String(e.stderr || e.message).trim();
+    console.error('[tv] open: bringing it to the front failed', err);
+    return { target, front_error: err };
+  }
+}
+
 async function followUp(row: any): Promise<void> {
   const args = JSON.stringify(row.args || {});
   const outcome: Record<string, unknown> = {};
+  const target = row.op === 'open' ? openTarget(row.args || {}) : null;
+  if (target) {
+    const f = await bringToFront(target, String(row.args.url));
+    outcome.target = target;
+    if (f.reopened) outcome.reopened = true;
+    if (f.displaced_by) outcome.displaced_by = f.displaced_by;
+  }
   if (PRIME.test(args)) outcome.profile = await passProfilePicker();
   if (row.op !== 'open') return;
   try {
