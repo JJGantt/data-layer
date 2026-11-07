@@ -75,6 +75,12 @@ home, subscribed to inserts, does the work and fills in the answer. Realtime bot
 the row taken and does nothing; a row it does win means the Pi is down, and it reports that as an
 error. The Mac answers only while it is awake.
 
+**A row nobody claims is reported.** Every row is claimed by whichever machine answers it, so one still
+unclaimed after a minute means no machine heard it: the realtime channel went deaf, or every agent was
+down. Each agent sweeps for those every 10 minutes (`sweepMissed` in `realtime.ts`), claims each as
+`<host>:missed` so it is reported once, and reports it as an error. It never acts on them; a TV command
+minutes late is worse than none.
+
 - **Pi**: inside data-http, so it costs one realtime socket and no extra process; data-http measures
   about 75MB resident with it on. Switched on by `HOME_AGENT=1` in
   `/etc/systemd/system/data-http.service.d/home-agent.conf`.

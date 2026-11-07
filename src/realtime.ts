@@ -17,7 +17,12 @@ async function claim(table: string, row: any): Promise<boolean> {
  *
  *  `deferMs` makes this machine the fallback: it waits that long before claiming, so a primary that is
  *  up has always claimed the row first and this one finds it taken. A row it does win is one the
- *  primary never took, which is reported as an error, since it means the primary is down. */
+ *  primary never took, which is reported as an error, since it means the primary is down.
+ *
+ *  Behind the subscription, a slow backstop (`sweepMissed`, every MISSED_SWEEP_MS) finds rows nobody
+ *  claimed — every row is claimed by whichever machine answers it, so an unclaimed one means no machine
+ *  heard it — and reports each once. It does not act on them: a TV command or a read minutes late is
+ *  worse than none, and its caller has already given up. */
 export function onInserts(table: string, handle: (row: any) => Promise<void>, deferMs = 0): void {
   const take = async (row: any) => {
     if (deferMs) await new Promise((r) => setTimeout(r, deferMs));
@@ -43,4 +48,29 @@ export function onInserts(table: string, handle: (row: any) => Promise<void>, de
       });
   };
   connect();
+  setInterval(() => sweepMissed(table).catch((e) => console.error(`[${table}] missed-row sweep failed`, e.message)), MISSED_SWEEP_MS);
+}
+
+// Minutes, as a backstop must be. A row is "missed" once it is older than any claim could take (the Mac
+// defers 4 s), and rows older than the window were already swept or predate this process.
+const MISSED_SWEEP_MS = 10 * 60_000;
+const MISSED_AFTER_MS = 60_000;
+const MISSED_WINDOW_MS = MISSED_SWEEP_MS + 5 * 60_000;
+
+export async function sweepMissed(table: string, now = Date.now()): Promise<number> {
+  const sb = getClient();
+  const { data, error } = await sb.from(table).select('id, created_at').is('claimed_by', null)
+    .lt('created_at', new Date(now - MISSED_AFTER_MS).toISOString())
+    .gt('created_at', new Date(now - MISSED_WINDOW_MS).toISOString());
+  if (error) throw new Error(error.message);
+  let n = 0;
+  for (const row of data || []) {
+    // Claimed as missed, so it is reported once whichever machines sweep, and never acted on later.
+    const { data: won } = await sb.from(table).update({ claimed_by: `${hostname()}:missed` })
+      .eq('id', row.id).is('claimed_by', null).select('id');
+    if (!won?.length) continue;
+    n++;
+    console.error(`[${table}] ${row.id} from ${row.created_at} was never claimed: no machine heard it (realtime deaf or every agent down)`);
+  }
+  return n;
 }
