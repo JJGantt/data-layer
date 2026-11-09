@@ -81,6 +81,12 @@ down. Each agent sweeps for those every 10 minutes (`sweepMissed` in `realtime.t
 `<host>:missed` so it is reported once, and reports it as an error. It never acts on them; a TV command
 minutes late is worse than none.
 
+**A channel that hears nothing is recycled.** A realtime channel can report SUBSCRIBED and deliver
+nothing, and a deaf Mac behind a healthy Pi leaves no unclaimed row to find. So each agent's sweep also
+lists the rows inserted since its channel subscribed and compares them with the ids it actually received
+(`sweepUnheard`); any it never got is reported as `channel deaf while SUBSCRIBED` and the channel is torn
+down and rejoined.
+
 - **Pi**: inside data-http, so it costs one realtime socket and no extra process; data-http measures
   about 75MB resident with it on. Switched on by `HOME_AGENT=1` in
   `/etc/systemd/system/data-http.service.d/home-agent.conf`.

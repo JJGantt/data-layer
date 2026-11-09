@@ -24,7 +24,12 @@ async function claim(table: string, row: any): Promise<boolean> {
  *  heard it — and reports each once. It does not act on them: a TV command or a read minutes late is
  *  worse than none, and its caller has already given up. */
 export function onInserts(table: string, handle: (row: any) => Promise<void>, deferMs = 0): void {
+  // Ids this process received, by when, so the sweep can tell a deaf channel from a quiet table.
+  const heard = new Map<string, number>();
+  let subscribedAt = 0;
+  let recycle: (() => void) | null = null;
   const take = async (row: any) => {
+    heard.set(row.id, Date.now());
     if (deferMs) await new Promise((r) => setTimeout(r, deferMs));
     if (!(await claim(table, row))) return;
     if (deferMs) console.error(`[${table}] ${row.id} (${row.op || row.kind}) unclaimed after ${deferMs / 1000}s: answering it here, the primary is not`);
@@ -38,17 +43,43 @@ export function onInserts(table: string, handle: (row: any) => Promise<void>, de
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table },
         (p: any) => { take(p.new).catch((e) => console.error(`[${table}] handler failed`, e.message)); })
       .subscribe((status) => {
-        if (status === 'SUBSCRIBED') { backoff = 1000; console.log(`[${table}] subscribed`); return; }
+        if (status === 'SUBSCRIBED') { backoff = 1000; subscribedAt = Date.now(); console.log(`[${table}] subscribed`); return; }
         if (!replaced && (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED')) {
           replaced = true;  // removeChannel reports CLOSED too; reconnect once per channel
+          subscribedAt = 0;
           sb.removeChannel(ch);
           setTimeout(connect, backoff);
           backoff = Math.min(backoff * 2, 60_000);
         }
       });
+    recycle = () => { if (!replaced) { replaced = true; subscribedAt = 0; sb.removeChannel(ch); setTimeout(connect, 1000); } };
   };
   connect();
-  setInterval(() => sweepMissed(table).catch((e) => console.error(`[${table}] missed-row sweep failed`, e.message)), MISSED_SWEEP_MS);
+  setInterval(async () => {
+    try {
+      await sweepMissed(table);
+      const now = Date.now();
+      for (const [id, at] of heard) if (at < now - MISSED_WINDOW_MS) heard.delete(id);
+      if (!subscribedAt) return;
+      const unheard = await sweepUnheard(table, heard, subscribedAt, now);
+      if (!unheard.length) return;
+      console.error(`[${table}] channel deaf while SUBSCRIBED: never received ${unheard.join(', ')}; resubscribing`);
+      recycle?.();
+    } catch (e: any) { console.error(`[${table}] missed-row sweep failed`, e.message); }
+  }, MISSED_SWEEP_MS);
+}
+
+/** Rows inserted since this channel subscribed (and old enough to have arrived) that it never received.
+ *  sweepMissed only sees a row NO machine claimed, so a deaf fallback behind a healthy Pi would stay
+ *  deaf unnoticed; this is each process checking its own hearing. */
+export async function sweepUnheard(table: string, heard: Map<string, number>, since: number, now = Date.now()): Promise<string[]> {
+  const from = Math.max(since, now - MISSED_WINDOW_MS);
+  const to = now - MISSED_AFTER_MS;
+  if (from >= to) return [];
+  const { data, error } = await getClient().from(table).select('id')
+    .gt('created_at', new Date(from).toISOString()).lt('created_at', new Date(to).toISOString());
+  if (error) throw new Error(error.message);
+  return (data || []).map((r: any) => r.id).filter((id: string) => !heard.has(id));
 }
 
 // Minutes, as a backstop must be. A row is "missed" once it is older than any claim could take (the Mac
