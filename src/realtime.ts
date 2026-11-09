@@ -55,9 +55,14 @@ export function onInserts(table: string, handle: (row: any) => Promise<void>, de
     recycle = () => { if (!replaced) { replaced = true; subscribedAt = 0; sb.removeChannel(ch); setTimeout(connect, 1000); } };
   };
   connect();
+  // A Mac wake fires this overdue timer before the network is back, so one failed sweep is a warning;
+  // a sweep still failing SWEEP_RAISE_MS after the first failure (the next one) is the error.
+  let failingSince = 0;
+  let raised = false;
   setInterval(async () => {
     try {
       await sweepMissed(table);
+      failingSince = 0; raised = false;
       const now = Date.now();
       for (const [id, at] of heard) if (at < now - MISSED_WINDOW_MS) heard.delete(id);
       if (!subscribedAt) return;
@@ -65,7 +70,14 @@ export function onInserts(table: string, handle: (row: any) => Promise<void>, de
       if (!unheard.length) return;
       console.error(`[${table}] channel deaf while SUBSCRIBED: never received ${unheard.join(', ')}; resubscribing`);
       recycle?.();
-    } catch (e: any) { console.error(`[${table}] missed-row sweep failed`, e.message); }
+    } catch (e: any) {
+      const now = Date.now();
+      failingSince ||= now;
+      if (!raised && now - failingSince >= SWEEP_RAISE_MS) {
+        raised = true;
+        console.error(`[${table}] missed-row sweep failing since ${new Date(failingSince).toISOString()}:`, e.message);
+      } else console.warn(`[${table}] missed-row sweep failed (will retry):`, e.message);
+    }
   }, MISSED_SWEEP_MS);
 }
 
@@ -87,6 +99,7 @@ export async function sweepUnheard(table: string, heard: Map<string, number>, si
 const MISSED_SWEEP_MS = 10 * 60_000;
 const MISSED_AFTER_MS = 60_000;
 const MISSED_WINDOW_MS = MISSED_SWEEP_MS + 5 * 60_000;
+const SWEEP_RAISE_MS = 5 * 60_000;
 
 export async function sweepMissed(table: string, now = Date.now()): Promise<number> {
   const sb = getClient();
