@@ -107,8 +107,8 @@ export async function machinesReady(agent: Agent = 'claude'): Promise<Record<'pi
  * An insert into the queue always succeeds, so answering at insert time reports "sent" for commands
  * the machine then refuses — the model repeats that to the user and the words are lost from view.
  * The channel is SUBSCRIBED BEFORE the insert, or a consumer that finishes in milliseconds is missed.
- * No verdict within CONFIRM_MS means it is still queued and may yet run: reported as unconfirmed,
- * never as delivered. A refused command is dead-lettered by the consumer that refused it.
+ * No verdict within CONFIRM_MS is `unconfirmed`, never delivered; `settle` takes such a command back and
+ * the caller sends it to the next machine.
  */
 const CONFIRM_MS = 20_000;
 type Verdict = { state: 'done' | 'error' | 'unconfirmed'; detail: string };
@@ -159,16 +159,137 @@ export async function dispatchConfirmed(id: string, kind: string, payload: any):
   });
 }
 
+// ── Routing: nothing waits on one machine while another could run it ────────────────────────────────
+//
+// A command goes to the machine asked for, and when that machine cannot take it NOW — not beating, not
+// signed in, refusing it, or silent for CONFIRM_MS — to the next: the other home machine, then Fly, which
+// is always there to be woken. Only when Fly too fails is the work dead-lettered. A silent machine's
+// command is cancelled before the next one is tried (`cancelPending`, atomic on `status=pending`), so a
+// machine that wakes a second later cannot run it as well; one that claimed it in that second keeps it.
+
+/** The order to try machines in, `first` first: the other home machine before Fly, and Fly last. */
+export function failoverOrder(first: Machine): Machine[] {
+  return [first, ...(['pi', 'mac', 'fly'] as Machine[]).filter((m) => m !== first)];
+}
+
 /**
- * Follow a Pi command that handed its work to the Mac. A Pi with no memory to spare sends a new
- * session or a resume on to the Mac as a fresh command and answers `handed to the Mac as <id> — why`;
- * that is not a launch, so the Mac's own verdict is what gets reported. Anything else passes through.
+ * A consumer that sends the work on answers `handed to the Mac as <id> — why` (or the Pi, or Fly). That
+ * is not a launch: the receiving machine's verdict on command `<id>` is the one that counts.
  */
-async function followHandoff(id: string, v: Verdict, machine: Machine):
-  Promise<{ id: string; v: Verdict; machine: Machine; handedOff: string | null }> {
-  const m = v.state === 'done' ? /^handed to the Mac as (\S+)(?: — (.*))?/.exec(v.detail) : null;
-  if (!m) return { id, v, machine, handedOff: null };
-  return { id: m[1], v: await awaitVerdict(m[1]), machine: 'mac', handedOff: m[2] || 'no room on the Pi' };
+export function parseHandoff(detail: string): { machine: Machine; id: string; why: string | null } | null {
+  const m = /^handed to (?:the )?(Mac|Pi|Fly)(?: machine)? as (\S+)(?: — (.*))?/.exec(detail || '');
+  if (!m) return null;
+  return { machine: m[1] === 'Mac' ? 'mac' : m[1] === 'Pi' ? 'pi' : 'fly', id: m[2], why: m[3] || null };
+}
+
+type Ready = { ok: true } | { ok: false; why: string; login?: string | null };
+type Cancel = { cancelled: true } | { cancelled: false; status: string; detail: string };
+
+/** What routing asks of the world, passed in so the rules can be tested without Supabase or Fly. */
+export interface RouteDeps {
+  ready(m: Machine): Promise<Ready>;
+  send(id: string, kind: string, payload: any): Promise<Verdict>;
+  wait(id: string): Promise<Verdict>;
+  cancel(id: string, why: string): Promise<Cancel>;
+  newId(): string;
+}
+
+/**
+ * Take a pending command back. Only a row still `pending` can be taken: one a machine has claimed is
+ * that machine's now, and its status comes back so the caller can see what became of it.
+ */
+async function cancelPending(id: string, why: string): Promise<Cancel> {
+  const client = getClient();
+  const { data, error } = await client.from('desk_commands')
+    .update({ status: 'error', detail: `rerouted: ${why}`, updated: new Date().toISOString() })
+    .eq('id', id).eq('status', 'pending').select('id');
+  if (error) console.error(`[desk] cancelling ${id}: ${error.message}`);
+  if (data?.length) return { cancelled: true };
+  const { data: row } = await client.from('desk_commands').select('status,detail').eq('id', id).maybeSingle();
+  return { cancelled: false, status: String(row?.status ?? 'missing'), detail: String(row?.detail || '') };
+}
+
+/** The live dependencies. `homes` is a readiness read already made, so the caller's and ours agree. */
+export function liveDeps(agent: Agent = 'claude', homes?: Record<'pi' | 'mac', Readiness>): RouteDeps {
+  let read: Promise<Record<'pi' | 'mac', Readiness>> | null = homes ? Promise.resolve(homes) : null;
+  return {
+    ready: async (m) => {
+      if (m === 'fly') return (await wakeFly()) ? { ok: true } : { ok: false, why: 'the Fly machine did not start' };
+      return (await (read ??= machinesReady(agent)))[m];
+    },
+    send: (id, kind, payload) => dispatchConfirmed(id, kind, payload),
+    wait: (id) => awaitVerdict(id),
+    cancel: cancelPending,
+    newId: uuid,
+  };
+}
+
+export type Settled =
+  | { ok: true; state: 'done' | 'claimed'; id: string; machine: Machine; detail: string;
+      handedOff: { from: Machine; why: string } | null }
+  // `refused`: the machine answered and said no. `silent`: it never took the command, which is cancelled.
+  | { ok: false; failed: 'refused' | 'silent'; why: string; machine: Machine };
+
+/**
+ * Turn command `id`'s first verdict into where the work really is. A handoff is followed to the machine
+ * it names (`tried` learns it, so routing does not send there again). `claimed` is a command a machine
+ * took but has not answered: it is running there, so it is neither re-sent nor reported as launched.
+ */
+export async function settle(id: string, machine: Machine, v: Verdict, deps: RouteDeps,
+                             tried?: Set<Machine>): Promise<Settled> {
+  let handedOff: { from: Machine; why: string } | null = null;
+  for (let hop = 0; hop < 4; hop++) {
+    if (v.state === 'done') {
+      const h = parseHandoff(v.detail);
+      if (h) {
+        handedOff = { from: machine, why: h.why || `the ${NAME[machine]} sent it on` };
+        tried?.add(h.machine);
+        id = h.id; machine = h.machine;
+        v = await deps.wait(id);
+        continue;
+      }
+      // No consumer queues any more (work goes to the next machine instead); one that still does has
+      // parked the work where nothing will run it soon, which is a failure to route around.
+      if (/^queued\b/.test(v.detail)) {
+        console.error(`[desk] ${id}: the ${NAME[machine]} queued it (${v.detail}); routing it on`);
+        return { ok: false, failed: 'refused', why: `the ${NAME[machine]} queued it instead of running it`, machine };
+      }
+      return { ok: true, state: 'done', id, machine, detail: v.detail, handedOff };
+    }
+    if (v.state === 'error') return { ok: false, failed: 'refused', why: `the ${NAME[machine]} refused it (${v.detail})`, machine };
+    const c = await deps.cancel(id, `no answer from the ${NAME[machine]} in ${CONFIRM_MS / 1000}s`);
+    if (c.cancelled || c.status === 'expired' || c.status === 'missing') {
+      return { ok: false, failed: 'silent', why: `the ${NAME[machine]} did not take it within ${CONFIRM_MS / 1000}s`, machine };
+    }
+    if (c.status === 'done' || c.status === 'error') { v = { state: c.status, detail: c.detail }; continue; }
+    return { ok: true, state: 'claimed', id, machine, detail: v.detail, handedOff };
+  }
+  console.error(`[desk] ${id}: handed on more than four times; stopped following it`);
+  return { ok: true, state: 'claimed', id, machine, detail: v.detail, handedOff };
+}
+
+export type Routed =
+  | (Extract<Settled, { ok: true }> & { rerouted: string | null })
+  | { ok: false; why: string };
+
+/**
+ * Send `kind` to the first machine in `order` that takes it. `rerouted` says why the ones before it did
+ * not, and is null when the first one did.
+ */
+export async function routeCommand(kind: string, payload: any, order: Machine[], deps: RouteDeps): Promise<Routed> {
+  const reasons: string[] = [];
+  const tried = new Set<Machine>();
+  for (const m of order) {
+    if (tried.has(m)) continue;
+    tried.add(m);
+    const r = await deps.ready(m);
+    if (!r.ok) { reasons.push(r.why); continue; }
+    const id = deps.newId();
+    const out = await settle(id, m, await deps.send(id, kind, { ...payload, target: m }), deps, tried);
+    if (out.ok) return { ...out, rerouted: reasons.length ? reasons.join(', and ') : null };
+    reasons.push(out.why);
+  }
+  return { ok: false, why: reasons.join(', and ') || 'there was no machine to try' };
 }
 
 /**
@@ -199,22 +320,35 @@ export async function deadLetters(includeClosed = false) {
   return data ?? [];
 }
 
-/** Re-dispatch a saved command, unchanged, if its machine is up now. */
+/**
+ * Re-dispatch a saved command, unchanged, through the same order a new one takes: its own machine, the
+ * other home machine, then Fly. A command addressed to a session goes through that session's own tool,
+ * which follows the session wherever it now lives. Marked retried only once a machine has it.
+ */
 export async function retryDeadLetter(id: string) {
   const { data: row } = await getClient().from('desk_dead_letters').select('*').eq('id', id).maybeSingle();
   if (!row) return { ok: false as const, error: 'no such saved command' };
   if (row.retried) return { ok: false as const, error: 'already retried' };
+  const p = row.payload || {};
   const machine = asMachine(row.machine);
-  if (!(await machineAwake(machine))) {
-    return { ok: false as const, error: `the ${NAME[machine]} is still not responding — leaving it saved` };
+  let r: { ok: true; id: string; machine?: Machine } | { ok: false; error: string };
+  if (row.kind === 'open_session') {
+    const routed = await dispatchOpen(p, machine === 'mac' ? 'mac' : 'pi', p.agent === 'codex' ? 'codex' : 'claude');
+    r = routed.ok ? { ok: true, id: routed.id, machine: routed.machine } : { ok: false, error: routed.why };
+  } else if (row.kind === 'follow_up' && p.session) {
+    r = await followUp(String(p.prompt || ''), String(p.session));
+  } else if ((row.kind === 'resume_session' || row.kind === 'end_session') && p.session) {
+    r = await sessionCommand(row.kind, String(p.session), p.prompt ? String(p.prompt) : undefined);
+  } else if (row.kind === 'transfer_session' && p.session) {
+    r = await transferSession(String(p.session), asMachine(p.to));
+  } else {
+    const routed = await routeCommand(row.kind, p, failoverOrder(machine), liveDeps(p.agent === 'codex' ? 'codex' : 'claude'));
+    r = routed.ok ? { ok: true, id: routed.id, machine: routed.machine } : { ok: false, error: routed.why };
   }
-  const cmdId = uuid();
-  const { error } = await getClient().from('desk_commands')
-    .insert({ id: cmdId, kind: row.kind, payload: { ...row.payload, target: machine } });
-  if (error) return { ok: false as const, error: error.message };
+  if (!r.ok) return { ok: false as const, error: `${r.error} — leaving it saved` };
   await getClient().from('desk_dead_letters')
-    .update({ retried: new Date().toISOString(), retry_command_id: cmdId }).eq('id', id);
-  return { ok: true as const, id: cmdId };
+    .update({ retried: new Date().toISOString(), retry_command_id: r.id ?? null }).eq('id', id);
+  return { ok: true as const, id: r.id, machine: r.machine ?? null };
 }
 
 /** Drop one for good — it was not worth doing after all. */
@@ -273,7 +407,6 @@ export async function startSession(repo: string | undefined, prompt: string, mac
   const want = String(repo || '').trim();
   const hit = want && want.toLowerCase() !== 'root' ? await knownRepo(want) : null;
   const target = hit ?? { path: '~', name: 'root' };
-  const id = uuid();
   // `report` is opt-in and only ever set when Jared asked for a write-up. The launchers append
   // their report directive on this flag alone, so an ordinary dispatch stays a plain session.
   // `relay` asks the machine to post the session's first finished reply back into the hub thread
@@ -283,46 +416,35 @@ export async function startSession(repo: string | undefined, prompt: string, mac
   const payload = { path: target.path, name: target.name, target: machine, ...(prompt ? { prompt } : {}), ...(report ? { report: true } : {}), ...(label ? { label: label.slice(0, 60) } : {}), ...(relay ? { relay: true, ...(needsRead ? { needs_read: true } : {}) } : {}), ...(agent === 'codex' ? { agent } : {}) };
   // The machine has to be able to run it NOW: beating, and signed in. Writing the command anyway is the
   // silent failure this guards — nobody claims it, or it launches a session that cannot authenticate,
-  // and the reply already said a session had started. The one asked for first, then the other.
+  // and the reply already said a session had started. Then it has to SAY it launched: a machine that
+  // refuses it or stays silent loses it to the next one (`failoverOrder`).
   //
-  // With neither, the Fly machine takes it: it runs on the year-long token, so no login date applies, but
-  // it has no browser and no Remote Control, which is why it is last rather than an equal.
+  // Fly comes last: it runs on the year-long token, so no login date applies, but it has no browser and
+  // no Remote Control, which is why it is last rather than an equal.
   const ready = await machinesReady(agent);
   const asked = machine === 'mac' ? 'mac' : 'pi';
-  const other = asked === 'pi' ? 'mac' : 'pi';
-  const fail = ready[asked];
-  let rerouted: string | null = null;
-  if (!fail.ok) {
-    if (ready[other].ok) {
-      machine = other;
-      rerouted = fail.why;
-    } else {
-      const why = `${fail.why}, and ${(ready[other] as { why: string }).why}`;
-      if (!(await wakeFly())) {
-        const saved = await deadLetter('open_session', payload, asked, `${why}, and the Fly machine did not start`);
-        return { ok: false as const, machine: asked, saved,
-                 error: `Nothing was started: ${why}, and the Fly machine did not start. The prompt is saved and can be retried.` };
-      }
-      machine = 'fly';
-      rerouted = why;
-    }
-    payload.target = machine;
+  const r = await dispatchOpen(payload, asked, agent, ready);
+  if (!r.ok) {
+    console.error(`[desk] open_session "${payload.label || target.name}": no machine took it: ${r.why}`);
+    const saved = await deadLetter('open_session', payload, asked, r.why);
+    return { ok: false as const, machine: asked, saved,
+             error: `Nothing was started: ${r.why}. The prompt is saved and can be retried.` };
   }
   // A dead login is a problem with a known fix, so it gets a session of its own that fixes it, run on
   // the machine that still works. Once per expired login, however many dispatches route around it.
   // The repair session needs a shell on the other machine (the runbook drives the Pi's login from the
   // Mac), so it is started only where one of the two still works, never on Fly.
-  if (!fail.ok && fail.login && !repair && machine !== 'fly' && agent === 'claude') await startLoginRepair(asked, fail.login, machine, relay);
-  // Confirmed, not inserted: a machine short of room QUEUES the session instead of launching it
-  // (pi-desk runQueue), and reporting "started" for a session that is waiting would be wrong for as long as
-  // it sits in the queue, which can be days.
-  const f = await followHandoff(id, await dispatchConfirmed(id, 'open_session', payload), machine);
-  const v = f.v;
-  if (v.state === 'error') return { ok: false as const, error: v.detail };
-  const state = v.state === 'unconfirmed' ? 'unconfirmed' as const
-    : /^queued\b/.test(v.detail) ? 'queued' as const : 'launched' as const;
-  return { ok: true as const, id: f.id, repo: target.name, machine: f.machine, matched: !!hit || !want, state,
-           detail: v.detail, handedOff: f.handedOff, rerouted, agent };
+  const fail = ready[asked];
+  if (!fail.ok && fail.login && !repair && r.machine !== 'fly' && agent === 'claude') await startLoginRepair(asked, fail.login, r.machine, relay);
+  // `claimed`: a machine took it and has not answered yet, so it is running there but not known launched.
+  return { ok: true as const, id: r.id, repo: target.name, machine: r.machine, matched: !!hit || !want,
+           state: r.state === 'claimed' ? 'unconfirmed' as const : 'launched' as const,
+           detail: r.detail, handedOff: r.handedOff, rerouted: r.rerouted, agent };
+}
+
+/** An `open_session` payload through the failover order from `asked`. */
+function dispatchOpen(payload: any, asked: 'pi' | 'mac', agent: Agent, homes?: Record<'pi' | 'mac', Readiness>) {
+  return routeCommand('open_session', payload, failoverOrder(asked), liveDeps(agent, homes));
 }
 
 /**
@@ -405,85 +527,127 @@ async function unpinRow(sessionId: string) {
  * A named session gets the words whatever it is doing — running and mid-turn, they are typed in and
  * Claude Code queues them; parked, it is resumed with them; on a machine that is asleep, it moves.
  */
-export async function followUp(prompt: string, ref: string) {
+/** What a follow-up came to. `note` is set when the words did not go where the session was: it says where. */
+export type FollowUpResult =
+  | { ok: true; id: string; repo: string; session: string | null; confirmed: boolean; moved?: Machine; note?: string }
+  | { ok: false; error: string; saved?: string | null };
+
+export async function followUp(prompt: string, ref: string, relay = false): Promise<FollowUpResult> {
   const found = await resolveSession(ref);
   if (!found.ok) return { ok: false as const, error: found.error };
   const row = found.row;
+  // Parked: resumed with the words, on its own machine or, with that one down, wherever it can move to.
   if (row.status !== 'resident') {
-    // Parked on a machine that is asleep: resume it somewhere awake rather than wait for the lid.
-    if (!(await machineAwake(machineOf(row.worker)))) {
-      const moved = await followUpElsewhere(row, prompt);
-      if (moved) return moved;
-    }
-    const r = await sessionCommand('resume_session', row.id, prompt);
-    return r.ok ? { ...r, repo: row.repo, session: row.id } : r;
+    const r = await sessionCommand('resume_session', row.id, prompt, relay);
+    if (!r.ok) return r;
+    return { ok: true, id: r.id, repo: row.repo, session: row.id, confirmed: r.confirmed === true,
+             ...(r.moved ? { moved: r.moved } : {}), ...(r.note ? { note: r.note } : {}) };
   }
-  return deliverFollowUp(row, prompt);
+  return deliverFollowUp(row, prompt, relay);
 }
 
-async function deliverFollowUp(s: DeskSession, prompt: string) {
+async function deliverFollowUp(s: DeskSession, prompt: string, relay: boolean): Promise<FollowUpResult> {
   const machine = machineOf(s.worker);
-  if (!(await machineAwake(machine))) {
-    const moved = await followUpElsewhere(s, prompt);
-    if (moved) return moved;
-    const saved = await deadLetter('follow_up', { session: s.id, prompt, target: machine }, machine,
-                                   `the ${NAME[machine]} is not responding`);
-    return { ok: false as const, saved,
-             error: `The ${NAME[machine]} is not responding, so the follow-up was not sent. It is saved and can be retried.` };
-  }
+  if (!(await machineAwake(machine))) return followUpElsewhere(s, prompt, `the ${NAME[machine]} is not responding`, relay);
   const id0 = uuid();
-  // A session handed to the Mac a moment before the words arrive forwards them there (pi-desk moved.js)
-  // and answers in the handoff form; the Mac's verdict on the forwarded command is the one reported.
-  const { id, v } = await followHandoff(id0, await dispatchConfirmed(id0, 'follow_up', { session: s.id, prompt, target: machine }), machine);
-  if (v.state === 'error') {
-    return { ok: false as const, error: `The ${s.repo} session did not get it (${v.detail}). It is saved and can be retried.` };
-  }
-  return { ok: true as const, id, repo: s.repo, session: s.id, confirmed: v.state === 'done' };
+  // A session handed on a moment before the words arrive forwards them there (pi-desk moved.js) and
+  // answers in the handoff form; `settle` follows it, so the receiving machine's verdict is the one reported.
+  const r = await settle(id0, machine, await dispatchConfirmed(id0, 'follow_up', { session: s.id, prompt, target: machine }), liveDeps());
+  if (r.ok) return { ok: true as const, id: r.id, repo: s.repo, session: s.id, confirmed: r.state === 'done' };
+  // Silent: the command is taken back, and the session moves to a machine that answers.
+  if (r.failed === 'silent') return followUpElsewhere(s, prompt, r.why, relay);
+  // Refused by a machine that is up. A session that has stopped running since it was looked up gets the
+  // words through its conversation's current row (a resume, or the row it moved to); a running one that
+  // could not be typed into is not moved, because its own process still holds the transcript.
+  const { data: now } = await getClient().from('desk_sessions').select('status').eq('id', s.id).maybeSingle();
+  if (now && now.status !== 'resident') return followUp(prompt, sessionHandle(s), relay);
+  console.error(`[desk] follow_up for ${s.id}: ${r.why}`);
+  const saved = await deadLetter('follow_up', { session: s.id, prompt, target: machine }, machine, r.why);
+  return { ok: false as const, saved, error: `The ${s.repo} session did not get it (${r.why}). It is saved and can be retried.` };
 }
 
 /**
- * A follow-up for a session whose machine is ASLEEP goes to the session, not to the machine: the
- * conversation is moved to a machine that is awake (as transferSession does with the source down,
- * from what was mirrored as of the last completed turn) and resumed there with the words as its next
+ * Words for a session whose machine is not answering go to the session, not to the machine: the
+ * conversation is moved to one that answers (`moveElsewhere`) and resumed there with the words as its next
  * prompt. A closed laptop is the ordinary case, and the user should not have to know which machine a
  * session was living on to talk to it.
  *
- * Null when it cannot move — a Codex session (not mirrored), one with no transcript, or no machine
- * that will take it, Fly included — and the caller falls back to saving the words.
+ * A session that cannot move — Codex, or nothing of it mirrored — still gets the work done: the words
+ * start a NEW session in its repo, without the earlier conversation, and the answer says so. Saved as a
+ * dead letter only when no machine, Fly included, would take either.
  */
-async function followUpElsewhere(row: DeskSession, prompt: string) {
+async function followUpElsewhere(row: DeskSession, prompt: string, why: string, relay: boolean): Promise<FollowUpResult> {
   const source = machineOf(row.worker);
-  if (!row.claude_session_id || row.agent === 'codex') return null;
-  // The other home machine first, then Fly, the last resort as for new work (startSession): waking it
-  // is the slow check, so it is asked only when both home machines are out.
-  const order: Machine[] = (source === 'mac' ? ['pi'] : source === 'pi' ? ['mac'] : ['pi', 'mac']);
-  if (source !== 'fly') order.push('fly');
-  let dest: Machine | null = null;
-  for (const m of order) if (await machineAwake(m)) { dest = m; break; }
-  if (!dest) return null;
-  const r = await resumeMirrored(row, source, dest, { prompt });
-  if (!r.ok) return { ok: false as const, error: r.error };
-  return { ok: true as const, id: r.id, repo: row.repo, session: sessionHandle(row), moved: dest,
-           note: `the ${NAME[source]} is not responding, so the session was moved to the ${NAME[dest]} with its whole conversation and the follow-up sent there` };
+  const m = await moveElsewhere(row, prompt);
+  if (m.kind === 'moved') {
+    return { ok: true as const, id: m.id, repo: row.repo, session: sessionHandle(row), moved: m.machine, confirmed: m.confirmed,
+             note: `${why}, so the session was moved to the ${NAME[m.machine]} with its whole conversation and the follow-up sent there`
+               + (m.confirmed ? '' : ' (that machine has not confirmed it resumed yet)') };
+  }
+  if (m.kind === 'unmovable') {
+    const st = await startSession(row.repo, prompt, source === 'mac' ? 'pi' : 'mac', false,
+                                  (row as any).label || undefined, relay, false, row.agent === 'codex' ? 'codex' : 'claude');
+    if (!st.ok) return st;
+    return { ok: true as const, id: st.id, repo: row.repo, session: null, moved: st.machine, confirmed: st.state === 'launched',
+             note: `${why}, and that session cannot be moved (${m.why}), so the words were started as a NEW session on the `
+               + `${NAME[st.machine]} in ${st.repo}, without the earlier conversation` };
+  }
+  console.error(`[desk] follow_up for ${row.id}: ${why}, and it could not be moved: ${m.why}`);
+  const saved = await deadLetter('follow_up', { session: row.id, prompt, target: source }, source, `${why}, and ${m.why}`);
+  return { ok: false as const, saved,
+           error: `The follow-up was not sent: ${why}, and the session could not be moved (${m.why}). It is saved and can be retried.` };
 }
 
 /**
- * Resume a session's mirrored conversation on `dest` and mark the old row handed over, so `source`
- * closes that session if it ever comes back with it still open. Only for a source that is NOT
- * responding: an awake source must close and flush first (transferSession's live path).
+ * Move a session whose machine is not answering to the next one that will resume it from the mirror —
+ * the other home machine, then Fly. `unmovable` is a session nothing can resume (Codex rollouts are not
+ * mirrored; a session with no upload has nothing to resume from); `failed` is one no machine took.
  */
-async function resumeMirrored(row: DeskSession, source: Machine, dest: Machine, extra: { prompt?: string } = {}) {
-  const id = uuid();
-  const { error } = await getClient().from('desk_commands').insert({
-    id, kind: 'resume_mirrored',
-    payload: { target: dest, claude_session_id: row.claude_session_id, repo: row.repo,
-               label: (row as any).label ?? null, origin: (row as any).origin ?? 'dispatched', from: source,
-               ...(extra.prompt ? { prompt: extra.prompt } : {}) },
-  });
-  if (error) return { ok: false as const, error: error.message };
-  await getClient().from('desk_sessions')
-    .update({ status: 'transferred', ended: new Date().toISOString(), working: false }).eq('id', row.id);
-  return { ok: true as const, id };
+async function moveElsewhere(row: DeskSession, prompt?: string): Promise<
+  { kind: 'moved'; id: string; machine: Machine; confirmed: boolean } | { kind: 'unmovable' | 'failed'; why: string }> {
+  if (row.agent === 'codex') return { kind: 'unmovable', why: 'it is a Codex session, which is not mirrored' };
+  if (!row.claude_session_id) return { kind: 'unmovable', why: 'it has no transcript recorded' };
+  // The mirror is what the destination resumes from (`<claude_session_id>/<offset>.part`). A failed
+  // listing is not taken as empty: the destination is the one that finds out.
+  const { data: parts, error } = await getClient().storage.from('transcripts').list(row.claude_session_id, { limit: 1 });
+  if (error) console.error(`[desk] listing the mirror of ${row.claude_session_id}: ${error.message}`);
+  else if (!parts?.length) return { kind: 'unmovable', why: 'nothing of its conversation has been mirrored' };
+  const source = machineOf(row.worker);
+  const r = await resumeMirrored(row, source, failoverOrder(source).slice(1), { prompt });
+  return r.ok ? { kind: 'moved', id: r.id, machine: r.machine, confirmed: r.confirmed } : { kind: 'failed', why: r.error };
+}
+
+/**
+ * Resume a session's mirrored conversation on the first of `dests` that takes it, and mark the old row
+ * handed over, so `source` closes that session if it ever comes back with it still open. Only for a
+ * source that is NOT responding: an awake source must close and flush first (transferSession's live path).
+ *
+ * The row is CLAIMED FIRST — `transferred`, written only if it still has the status it was read with —
+ * and put back if no machine takes the session. Two movers of one conversation (this and the responder's
+ * evacuate, or two follow-ups) would otherwise each resume it and fork the transcript; evacuate claims
+ * with the same write, so only one of them proceeds.
+ */
+async function resumeMirrored(row: DeskSession, source: Machine, dests: Machine[], extra: { prompt?: string } = {}):
+  Promise<{ ok: true; id: string; machine: Machine; confirmed: boolean; rerouted: string | null } | { ok: false; error: string }> {
+  const client = getClient();
+  const { data: won, error } = await client.from('desk_sessions')
+    .update({ status: 'transferred', ended: new Date().toISOString(), working: false })
+    .eq('id', row.id).eq('status', row.status).select('id');
+  if (error) return { ok: false, error: error.message };
+  if (!won?.length) return { ok: false, error: 'something else moved or closed that session at the same moment' };
+  const r = await routeCommand('resume_mirrored', {
+    claude_session_id: row.claude_session_id, repo: row.repo,
+    label: (row as any).label ?? null, origin: (row as any).origin ?? 'dispatched', from: source,
+    ...(extra.prompt ? { prompt: extra.prompt } : {}),
+  }, dests, liveDeps('claude'));
+  if (!r.ok) {
+    const { error: back } = await client.from('desk_sessions')
+      .update({ status: row.status, ended: (row as any).ended ?? null, working: row.working })
+      .eq('id', row.id).eq('status', 'transferred');
+    if (back) console.error(`[desk] putting ${row.id} back to ${row.status}: ${back.message}`);
+    return { ok: false, error: r.why };
+  }
+  return { ok: true, id: r.id, machine: r.machine, confirmed: r.state === 'done', rerouted: r.rerouted };
 }
 
 /**
@@ -632,24 +796,45 @@ export async function transferSession(ref: string, machine: Machine) {
   if (row.agent === 'codex') {
     return { ok: false as const, error: 'that is a Codex session, and Codex sessions stay on the machine that started them' };
   }
-  if (!(await machineAwake(machine))) {
-    const saved = await deadLetter('transfer_session', { session: row.id, target: source, to: machine },
-                                   machine, `${where(machine)} is not responding`);
-    return { ok: false as const, saved, error: `${where(machine)} is not responding, so nothing was moved. The request is saved.` };
-  }
+  // The machine named first, then the other one, then Fly — never back to where it already is.
+  const order = failoverOrder(machine).filter((m) => m !== source);
+  const deps = liveDeps('claude');
 
   if (await machineAwake(source)) {
+    // The destination has to be there to resume it before the source is told to close it.
+    const passed: string[] = [];
+    let dest: Machine | null = null;
+    for (const m of order) {
+      const r = await deps.ready(m);
+      if (r.ok) { dest = m; break; }
+      passed.push(r.why);
+    }
+    if (!dest) {
+      const why = passed.join(', and ');
+      console.error(`[desk] transfer_session ${row.id}: no machine to move it to: ${why}`);
+      const saved = await deadLetter('transfer_session', { session: row.id, target: source, to: machine }, machine, why);
+      return { ok: false as const, saved, error: `Nothing was moved: ${why}. The request is saved.` };
+    }
     const id = uuid();
-    const { error } = await getClient().from('desk_commands')
-      .insert({ id, kind: 'transfer_session', payload: { session: row.id, target: source, to: machine } });
-    if (error) return { ok: false as const, error: error.message };
-    return { ok: true as const, id, repo: row.repo, machine, live: true };
+    const r = await settle(id, source, await dispatchConfirmed(id, 'transfer_session', { session: row.id, target: source, to: dest }), deps);
+    if (r.ok) {
+      return { ok: true as const, id: r.id, repo: row.repo, machine: dest, live: true, confirmed: r.state === 'done',
+               rerouted: passed.length ? passed.join(', and ') : null };
+    }
+    // Refused by a source that is up: it still holds the transcript, so resuming the mirror elsewhere
+    // would fork the conversation.
+    if (r.failed === 'refused') return { ok: false as const, error: r.why };
+    // Silent: the command is taken back, and the source is treated as gone.
   }
 
-  // Source unreachable: go straight to the destination with what was mirrored.
-  const r = await resumeMirrored(row, source, machine);
-  if (!r.ok) return { ok: false as const, error: r.error };
-  return { ok: true as const, id: r.id, repo: row.repo, machine, live: false };
+  // Source unreachable: go straight to a destination with what was mirrored.
+  const r = await resumeMirrored(row, source, order);
+  if (!r.ok) {
+    console.error(`[desk] transfer_session ${row.id}: ${r.error}`);
+    const saved = await deadLetter('transfer_session', { session: row.id, target: source, to: machine }, machine, r.error);
+    return { ok: false as const, saved, error: `Nothing was moved: ${r.error}. The request is saved.` };
+  }
+  return { ok: true as const, id: r.id, repo: row.repo, machine: r.machine, live: false, confirmed: r.confirmed, rerouted: r.rerouted };
 }
 
 export async function queued() {
@@ -676,7 +861,7 @@ function isSelf(row: DeskSession): boolean {
  * resume to the Pi, which rejects the id outright — the Mac's are `mac-…`, and its consumer never
  * saw the command at all.
  */
-export async function sessionCommand(kind: 'resume_session' | 'end_session', session: string, prompt?: string) {
+export async function sessionCommand(kind: 'resume_session' | 'end_session', session: string, prompt?: string, relay = false) {
   // Takes whatever the user said — a number, a repo, an id — because these are spoken commands and the
   // id is the one form nobody says aloud.
   const found = await resolveSession(session);
@@ -702,19 +887,51 @@ export async function sessionCommand(kind: 'resume_session' | 'end_session', ses
     return { ok: true as const, self: true as const, id: row.id, machine };
   }
   const payload = { session, target: machine, ...(prompt ? { prompt } : {}) };
-  if (!(await machineAwake(machine))) {
-    const saved = await deadLetter(kind, payload, machine, `the ${NAME[machine]} is not responding`);
-    return { ok: false as const, saved,
-             error: `The ${NAME[machine]} is not responding, so that did not happen. It is saved and can be retried.` };
+  let why = `the ${NAME[machine]} is not responding`;
+  if (await machineAwake(machine)) {
+    const sent = uuid();
+    const f = await settle(sent, machine, await dispatchConfirmed(sent, kind, payload), liveDeps());
+    if (f.ok) {
+      // Closing a session BY HAND releases its pin, as unpinning does. Eviction and dispatches leave pins alone.
+      if (kind === 'end_session') await unpinRow(session);
+      return { ok: true as const, id: f.id, machine: f.machine, confirmed: f.state === 'done', detail: f.detail,
+               handedOff: f.handedOff };
+    }
+    if (f.failed === 'refused') return { ok: false as const, error: `${session}: ${f.why}` };
+    why = f.why;   // silent: taken back, and handled as for a machine that is down
   }
-  const sent = uuid();
-  const f = await followHandoff(sent, await dispatchConfirmed(sent, kind, payload), machine);
-  const v = f.v;
-  if (v.state === 'error') return { ok: false as const, error: `${session}: ${v.detail}` };
-  // Closing a session BY HAND releases its pin, as unpinning does. Eviction and dispatches leave pins alone.
-  if (kind === 'end_session') await unpinRow(session);
-  return { ok: true as const, id: f.id, machine: f.machine, confirmed: v.state === 'done', detail: v.detail,
-           queued: v.state === 'done' && /^queued\b/.test(v.detail), handedOff: f.handedOff };
+  // Closing a session on a machine that is not there: nothing can be told to close, so the row is closed
+  // here — parked when it has a transcript, as the machines themselves do, so it can still be resumed.
+  if (kind === 'end_session') {
+    const status = row.claude_session_id ? 'evicted' : 'ended';
+    const { data, error } = await getClient().from('desk_sessions')
+      .update({ status, ended: new Date().toISOString(), working: false })
+      .eq('id', row.id).eq('status', row.status).select('id');
+    if (error) return { ok: false as const, error: `could not close ${session}: ${error.message}` };
+    if (!data?.length) return { ok: false as const, error: `${session} changed while it was being closed; look again with get_sessions` };
+    await unpinRow(session);
+    return { ok: true as const, id: row.id, machine, confirmed: true, detail: `${why}, so the row was closed here`, handedOff: null };
+  }
+  // A resume goes wherever the session can move to, as a follow-up does.
+  const m = await moveElsewhere(row, prompt);
+  if (m.kind === 'moved') {
+    return { ok: true as const, id: m.id, machine: m.machine, confirmed: m.confirmed, detail: '', handedOff: null, moved: m.machine,
+             note: `${why}, so the session was resumed on the ${NAME[m.machine]} with its whole conversation`
+               + (prompt ? ' and the words sent there' : '') + (m.confirmed ? '' : ' (that machine has not confirmed it resumed yet)') };
+  }
+  if (m.kind === 'unmovable' && prompt) {
+    const st = await startSession(row.repo, prompt, machine === 'mac' ? 'pi' : 'mac', false,
+                                  (row as any).label || undefined, relay, false, row.agent === 'codex' ? 'codex' : 'claude');
+    if (!st.ok) return st;
+    return { ok: true as const, id: st.id, machine: st.machine, confirmed: st.state === 'launched', detail: '', handedOff: null,
+             moved: st.machine,
+             note: `${why}, and that session cannot be moved (${m.why}), so the words were started as a NEW session on the `
+               + `${NAME[st.machine]} in ${st.repo}, without the earlier conversation` };
+  }
+  console.error(`[desk] ${kind} ${session}: ${why}, and it could not be moved: ${m.why}`);
+  const saved = await deadLetter(kind, payload, machine, `${why}, and ${m.why}`);
+  return { ok: false as const, saved,
+           error: `That did not happen: ${why}, and the session could not be moved (${m.why}). It is saved and can be retried.` };
 }
 
 /**

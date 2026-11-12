@@ -546,23 +546,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             ? ' The Fly machine has no browser, so anything needing his signed-in accounts cannot be done there.'
             : /login/.test(r.rerouted) ? ' A separate session has been started to renew that login.' : '')
         : '';
-      if (r.state === 'queued') {
-        return text(`NOT started yet: "${label}" is queued on the ${on} (${r.detail.replace(/^queued\s*[—-]?\s*/, '')}). It launches when the ${on} has room; get_sessions lists it under Queued.${moved}${usageNote}`);
-      }
+      // A machine that took the command but has not answered yet: it is running there, not known launched.
       if (r.state === 'unconfirmed') {
-        return text(`Sent "${label}" to the ${on}, but the ${on} has not confirmed it launched. Check get_sessions before saying it started.${moved}${usageNote}`);
+        return text(`Sent "${label}" to the ${on}, which took it but has not confirmed it launched. Check get_sessions before saying it started.${moved}${usageNote}`);
       }
-      const why = r.handedOff ? ` The Pi had no room (${r.handedOff}), so it went to the Mac.` : '';
+      const why = r.handedOff ? ` The ${desk.machineName(r.handedOff.from)} sent it on (${r.handedOff.why}), so it went to the ${on}.` : '';
       const onCodex = r.agent === 'codex' ? ' It runs on Codex, not Claude.' : '';
       return text(`Started "${label}" in ${where} on the ${on}.${onCodex}${moved}${why} ${back}${usageNote}`);
     }
     if (name === 'follow_up') {
       if (!a.session) return text('Which session? follow_up needs `session` — the one he means, from get_sessions.');
-      const r = await desk.followUp(String(a.prompt || ''), String(a.session));
+      const r = await desk.followUp(String(a.prompt || ''), String(a.session), process.env.DATA_CALLER === 'hub');
       return text(!r.ok ? r.error
-        : 'moved' in r ? `Sent to the ${r.repo} session — ${r.note}.`
+        : r.note ? `Sent for the ${r.repo} session — ${r.note}.`
         : r.confirmed ? `Delivered to the ${r.repo} session.`
-        : `Queued for the ${r.repo} session, but its machine has not confirmed delivery yet.`);
+        : `Sent to the ${r.repo} session; its machine took it but has not confirmed delivery yet.`);
     }
     if (name === 'read_conversation') {
       return text(await conversation.readConversation({ from: a.from as string | undefined, to: a.to as string | undefined, query: a.query as string | undefined, limit: a.limit as number | undefined }));
@@ -672,13 +670,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const machine = String(a.machine || '').toLowerCase() === 'mac' ? 'mac' : 'pi';
       const r = await desk.transferSession(String(a.session || ''), machine as desk.Machine);
       if (!r.ok) return text(r.error);
-      const where = machine === 'mac' ? 'the Mac' : 'the Pi';
-      return text(r.live
+      const where = `the ${desk.machineName(r.machine)}`;
+      const instead = r.rerouted ? ` It went to ${where} instead of the machine asked for, because ${r.rerouted}.` : '';
+      const pending = r.confirmed ? '' : ' Its machine took the request but has not confirmed it yet.';
+      return text((r.live
         ? `Closing the ${r.repo} session and picking it up on ${where} with its full conversation.`
-        : `That machine is asleep, so ${where} is resuming the ${r.repo} session from the mirrored transcript — everything up to its last reply.`);
+        : `The machine it was on is not answering, so ${where} is resuming the ${r.repo} session from the mirrored transcript — everything up to its last upload.`)
+        + instead + pending);
     }
     if (name === 'resume_session') {
-      const r = await desk.sessionCommand('resume_session', String(a.session), a.prompt ? String(a.prompt) : undefined);
+      const r = await desk.sessionCommand('resume_session', String(a.session), a.prompt ? String(a.prompt) : undefined,
+                                          process.env.DATA_CALLER === 'hub');
       // The machine answers "already running" when the session was open: nothing was reopened, and a
       // prompt went straight into the live session. Saying "resumed" there describes something that
       // did not happen.
@@ -686,10 +688,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return text(!r.ok ? r.error
         : already ? (a.prompt ? 'That session was already running, so nothing was reopened — the words went straight to it.'
                               : 'That session was already running, so nothing was reopened.')
-        : r.queued ? `NOT resumed yet: it is queued on the Pi (${r.detail.replace(/^queued resume of \S+\s*[—-]?\s*/, '')}). It resumes when there is room; get_sessions lists it under Queued.`
-        : r.confirmed && r.handedOff ? `The Pi had no room (${r.handedOff}), so that session resumed on the Mac with its full context.`
+        : 'note' in r && r.note ? `${r.note.charAt(0).toUpperCase()}${r.note.slice(1)}.`
+        : r.confirmed && r.handedOff ? `The ${desk.machineName(r.handedOff.from)} sent it on (${r.handedOff.why}), so that session resumed on the ${desk.machineName(r.machine)} with its full context.`
         : r.confirmed ? 'Resumed that session with its full context.'
-        : 'Queued the resume, but its machine has not confirmed it yet.');
+        : 'Its machine took the resume but has not confirmed it yet.');
     }
     if (name === 'end_session') {
       const r = await desk.sessionCommand('end_session', String(a.session));
