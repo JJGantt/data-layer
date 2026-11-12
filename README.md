@@ -142,6 +142,24 @@ work never does, since sessions are started for every small reason.
 `follow_up` has no default target: it always names its session, because the orchestrator holds the
 conversation and a guess at "the focused one" puts words in the wrong session.
 
+## A dispatch goes to the next machine, never into a wait
+
+Every desk command (`desk.ts`) goes to a machine that can take it NOW, in `failoverOrder`: the machine
+asked for (or the session's own), the other home machine, then Fly, woken through `/wake`. A machine is
+passed over when it is not beating or not signed in, when it refuses the command, and when it has not
+claimed it within `CONFIRM_MS`. A silent machine's command is taken back first (`cancelPending`: an
+update that only matches `status=pending`), so it cannot also run there; one that claimed it in that
+moment keeps it, and the tool says it is running but unconfirmed. A `handed to the Mac|the Pi|Fly as
+<id>` verdict is followed to that command. Only when Fly fails too is the work dead-lettered, with a
+`console.error`.
+
+A session whose machine is not answering moves rather than waits: `follow_up`, `resume_session` and
+`transfer_session` resume its mirrored conversation elsewhere (`resumeMirrored`), which first claims the
+source row as `transferred` — the same atomic write the responder's evacuate makes, so only one mover
+resumes a conversation — and puts the row back if no machine takes it. A session that cannot move (Codex,
+or nothing mirrored) gets its words started as a new session in its repo. `end_session` for a machine
+that is not there closes the row itself, parked when it has a transcript.
+
 ## A list is addressed by its ID
 
 `lists.id` is the key ('l_grocery'), and `list_items.list_id` is the reference. The name is a label:
@@ -240,7 +258,8 @@ Run both before pushing; CI (`.github/workflows/test.yml`) runs both again on ev
 
 They cover only what is easy to break and costly when it is: the ingredient rollup and produce
 totals, recipe and leftover scaling, the 4am eating day, repeat expansion and lateness on dated
-items, which completion times are honoured, the `now()` clock, the HTTP API's token gate, and the two
+items, which completion times are honoured, the `now()` clock, the HTTP API's token gate, where a desk
+command fails over to (`desk-routing`), and the two
 SQL functions that hold shared rules, `muscle_volume()` and `desk_sessions_state()`. Transports and
 the Supabase calls themselves are not tested.
 
