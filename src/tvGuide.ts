@@ -11,10 +11,10 @@ import { randomBytes } from 'crypto';
 import { getClient } from './client.js';
 import { APPS } from './bedroomTv.js';
 
-export const OPS = ['view', 'show', 'create_shelf', 'rename_shelf', 'move_shelf', 'delete_shelf', 'add', 'remove', 'replace', 'move', 'history', 'history_view', 'restore', 'annotate'] as const;
+export const OPS = ['view', 'show', 'create_shelf', 'rename_shelf', 'move_shelf', 'delete_shelf', 'add', 'remove', 'replace', 'move', 'history', 'history_view', 'restore', 'annotate', 'describe'] as const;
 export type Op = (typeof OPS)[number];
 
-export type ItemIn = { title: string; url: string; image?: string; app?: string; note?: string };
+export type ItemIn = { title: string; url: string; image?: string; app?: string; note?: string; description?: string };
 type Row = { id: string; position: number };
 
 const PACKAGE_NAMES: Record<string, string> = Object.fromEntries(Object.entries(APPS).map(([k, v]) => [v, k]));
@@ -22,7 +22,7 @@ const YT = /(?:youtube\.com\/watch\?(?:.*&)?v=|youtu\.be\/)([\w-]{11})/;
 
 /** What opens an item and what its thumbnail is, from its URL: an `intent:` deep link names its own
  *  package; a YouTube URL opens in the YouTube app and has a thumbnail at a fixed address. */
-export function resolveItem(it: ItemIn): { title: string; url: string; package: string | null; image: string | null; note: string | null } {
+export function resolveItem(it: ItemIn): { title: string; url: string; package: string | null; image: string | null; note: string | null; description: string | null } {
   const title = String(it.title || '').trim();
   const url = String(it.url || '').trim();
   if (!title) throw new Error('every item needs a title');
@@ -32,10 +32,10 @@ export function resolveItem(it: ItemIn): { title: string; url: string; package: 
   const yt = url.match(YT);
   if (!pkg) pkg = url.startsWith('intent:') ? url.match(/;package=([\w.]+)/)?.[1] ?? null : yt ? APPS.youtube : null;
   const image = it.image?.trim() || (yt ? `https://i.ytimg.com/vi/${yt[1]}/hqdefault.jpg` : null);
-  return { title, url, package: pkg, image, note: cleanNote(it.note) };
+  return { title, url, package: pkg, image, note: cleanNote(it.note), description: cleanNote(it.description) };
 }
 
-/** An annotation as stored: trimmed, and blank means none. */
+/** A note or description as stored: trimmed, and blank means none. */
 export function cleanNote(n: unknown): string | null {
   const t = n == null ? '' : String(n).trim();
   return t || null;
@@ -69,12 +69,12 @@ async function shelfExists(shelf: string): Promise<void> {
   if (!(await shelves()).some((s) => s.id === shelf)) throw new Error(`no shelf ${shelf}; view lists them`);
 }
 
-type Shelf = { id: string; title: string; position: number; items: Array<{ id: string; title: string; url: string; package: string | null; image: string | null; note?: string | null; position: number }> };
+type Shelf = { id: string; title: string; position: number; items: Array<{ id: string; title: string; url: string; package: string | null; image: string | null; note?: string | null; description?: string | null; position: number }> };
 
 /** The whole screen: every shelf in order with every item. */
 async function state(): Promise<Shelf[]> {
   const rows = check(await getClient().from('tv_shelves')
-    .select('id,title,position,tv_shelf_items(id,title,url,package,image,note,position)').order('position')) as any[];
+    .select('id,title,position,tv_shelf_items(id,title,url,package,image,note,description,position)').order('position')) as any[];
   return rows.map((r) => ({ id: r.id, title: r.title, position: r.position,
     items: [...r.tv_shelf_items].sort((a: any, b: any) => a.position - b.position) }));
 }
@@ -84,7 +84,7 @@ function format(ss: Shelf[]): string {
   const out: string[] = [];
   for (const s of ss) {
     out.push(`${s.id} "${s.title}" (${s.items.length})`);
-    s.items.forEach((it, i) => out.push(`  ${i + 1}. ${it.id} ${it.title} [${PACKAGE_NAMES[it.package || ''] || it.package || '?'}]${it.note ? ` note: "${it.note}"` : ''} ${it.url}`));
+    s.items.forEach((it, i) => out.push(`  ${i + 1}. ${it.id} ${it.title} [${PACKAGE_NAMES[it.package || ''] || it.package || '?'}]${it.note ? ` note: "${it.note}"` : ''} ${it.url}${it.description ? `\n       ${it.description}` : ''}`));
   }
   return out.join('\n');
 }
@@ -215,6 +215,15 @@ export async function run(op: Op, a: Record<string, any>): Promise<string> {
     if (missing.length) throw new Error(`no items ${missing.join(', ')}; nothing annotated`);
     for (const n of notes) check(await sb.from('tv_shelf_items').update({ note: n.note }).eq('id', n.id));
     summary = `annotated ${notes.map((n: any) => `"${all.find((i) => i.id === n.id)?.title}" ${n.note ? `"${n.note}"` : '(cleared)'}`).join(', ')}`;
+  } else if (op === 'describe') {
+    // The text under each item's title. Many items in one call, like annotate; blank clears it.
+    const ds = (Array.isArray(a.descriptions) ? a.descriptions : []).map((d: any) => ({ id: String(d?.item || ''), description: cleanNote(d?.description) }));
+    if (!ds.length) throw new Error('describe needs descriptions: [{item, description}]');
+    const all = before.flatMap((sh) => sh.items);
+    const missing = ds.filter((d: any) => !all.some((i) => i.id === d.id)).map((d: any) => d.id);
+    if (missing.length) throw new Error(`no items ${missing.join(', ')}; nothing described`);
+    for (const d of ds) check(await sb.from('tv_shelf_items').update({ description: d.description }).eq('id', d.id));
+    summary = `described ${ds.map((d: any) => `"${all.find((i) => i.id === d.id)?.title}"${d.description ? '' : ' (cleared)'}`).join(', ')}`;
   } else if (op === 'move') {
     const cur = check(await sb.from('tv_shelf_items').select('shelf_id').eq('id', a.item).maybeSingle()) as any;
     if (!cur) throw new Error(`no item ${a.item}`);

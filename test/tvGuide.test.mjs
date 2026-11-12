@@ -7,7 +7,7 @@ describe('resolveItem', () => {
   test('a YouTube URL opens in the YouTube app with its thumbnail derived', () => {
     assert.deepEqual(resolveItem({ title: ' Quantum ', url: 'https://www.youtube.com/watch?v=KfODG5REyss' }), {
       title: 'Quantum', url: 'https://www.youtube.com/watch?v=KfODG5REyss',
-      package: 'com.google.android.youtube.tv', image: 'https://i.ytimg.com/vi/KfODG5REyss/hqdefault.jpg', note: null });
+      package: 'com.google.android.youtube.tv', image: 'https://i.ytimg.com/vi/KfODG5REyss/hqdefault.jpg', note: null, description: null });
     assert.equal(resolveItem({ title: 'x', url: 'https://youtu.be/KfODG5REyss' }).package, 'com.google.android.youtube.tv');
   });
 
@@ -40,6 +40,11 @@ describe('cleanNote', () => {
   });
   test('an item carries its note through resolveItem', () => {
     assert.equal(resolveItem({ title: 'x', url: 'https://youtu.be/KfODG5REyss', note: ' 4h 20m' }).note, '4h 20m');
+  });
+  test('an item carries its description through resolveItem, blank meaning none', () => {
+    const r = resolveItem({ title: 'x', url: 'https://youtu.be/KfODG5REyss', description: ' A heist goes wrong. ' });
+    assert.equal(r.description, 'A heist goes wrong.');
+    assert.equal(resolveItem({ title: 'x', url: 'https://youtu.be/KfODG5REyss', description: ' ' }).description, null);
   });
 });
 
