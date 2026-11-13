@@ -1,8 +1,9 @@
 import { getClient } from './client.js';
 import { now, today, ensureEasternDate } from './helpers.js';
+import { dayOf } from './conversation.js';
 
 export interface WeightEntry { id: number; date: string; weight_lbs: number; logged_at: string; }
-export interface NutritionTargetEntry { id: number; date: string; calories: number; protein_g: number; carbs_g: number; fat_g: number; logged_at: string; }
+export interface NutritionTargetEntry { id: number; date: string; calories: number; protein_g: number; carbs_g: number; fat_g: number; logged_at: string; override: boolean; }
 
 export async function getProfile(): Promise<{ height_in: number | null; updated: string | null }> {
   const { data } = await getClient().from('health_profile').select('height_in, updated').eq('id', 1).maybeSingle();
@@ -64,13 +65,46 @@ export async function recentWeights(limit = 5): Promise<WeightEntry[]> {
   return (data ?? []) as WeightEntry[];
 }
 
-export async function setNutritionTargets(targets: { calories: number; protein_g: number; carbs_g: number; fat_g: number }, date?: string): Promise<NutritionTargetEntry> {
-  const d = date ? ensureEasternDate(date) : today();
-  const n = now();
-  const { data } = await getClient().from('nutrition_targets')
-    .insert({ date: d, calories: targets.calories, protein_g: targets.protein_g, carbs_g: targets.carbs_g, fat_g: targets.fat_g, logged_at: n })
+// The daily goal is the hub's: it rewrites each day's nutrition_targets row from its adaptive
+// maintenance estimate (status-hub server/lib/maintenance.js). What can be set here is a MANUAL
+// OVERRIDE for one day — a separate row with override=true, which the hub leaves alone and which
+// applies to that date only. Clearing deletes it, so the computed row beside it is the goal again.
+//
+// Only calories are overridden. The macros are split by the hub's own rule (macroTargets in
+// maintenance.js: protein 1.0 g/lb, fat max(0.4 g/lb, 20% of calories), carbs the rest), copied here
+// so the row is complete the moment it is written; the hub re-splits it if the two ever disagree.
+function splitMacros(calories: number, bodyweight: number | null) {
+  const bw = bodyweight || 171;
+  const protein_g = Math.round(1.0 * bw);
+  const fat_g = Math.round(Math.max(0.4 * bw, (0.2 * calories) / 9));
+  const carbs_g = Math.max(0, Math.round((calories - protein_g * 4 - fat_g * 9) / 4));
+  return { protein_g, carbs_g, fat_g };
+}
+
+// "Today" is the hub's 4am-origin day, the one its goal belongs to, so an override set at 1am lands on
+// the day still in progress.
+const goalDay = (date?: string) => (date ? ensureEasternDate(date) : dayOf(new Date().toISOString()));
+
+export async function setTargetOverride(calories: number, date?: string): Promise<NutritionTargetEntry> {
+  const d = goalDay(date);
+  const db = getClient();
+  const { data: w } = await db.from('weight_log').select('weight_lbs')
+    .lte('date', d).order('date', { ascending: false }).order('id', { ascending: false }).limit(1);
+  const bw = w && w[0] ? Number(w[0].weight_lbs) : null;
+  const del = await db.from('nutrition_targets').delete().eq('date', d).eq('override', true);
+  if (del.error) throw new Error(del.error.message);
+  const { data, error } = await db.from('nutrition_targets')
+    .insert({ date: d, calories: Math.round(calories), ...splitMacros(calories, bw), logged_at: now(), override: true })
     .select().single();
+  if (error) throw new Error(error.message);
   return data as NutritionTargetEntry;
+}
+
+export async function clearTargetOverride(date?: string): Promise<{ date: string; cleared: number }> {
+  const d = goalDay(date);
+  const { data, error } = await getClient().from('nutrition_targets').delete().eq('date', d).eq('override', true).select('id');
+  if (error) throw new Error(error.message);
+  return { date: d, cleared: (data ?? []).length };
 }
 
 export async function recentTargets(limit = 3): Promise<NutritionTargetEntry[]> {

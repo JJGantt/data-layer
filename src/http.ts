@@ -182,13 +182,11 @@ const server = http.createServer(async (req, res) => {
     }
     if (path === '/data/health/targets' && method === 'POST') {
       const body = await parseBody(req);
-      const entry = await health.setNutritionTargets({
-        calories: body.calories,
-        protein_g: body.protein_g,
-        carbs_g: body.carbs_g,
-        fat_g: body.fat_g,
-      }, body.date);
-      return json(res, { entry });
+      return json(res, { entry: await health.setTargetOverride(body.calories, body.date) });
+    }
+    if (path === '/data/health/targets' && method === 'DELETE') {
+      const body = await parseBody(req);
+      return json(res, await health.clearTargetOverride(body.date));
     }
     if (path === '/data/health/targets' && method === 'GET') {
       const targets = await health.recentTargets();
