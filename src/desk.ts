@@ -1059,6 +1059,8 @@ export async function sessionTurns(ref: string, limit = 3): Promise<string> {
     `--- ${when(t.at)}\nJared: ${t.prompt || '(no prompt: a background task or resumed context)'}\nSession: ${t.reply}`)].join('\n\n');
 }
 
+const PARKED_SHOWN = 15;
+
 export function formatSessions(numbered: (DeskSession & { n: number; pinned?: boolean })[], q: any[], summaries: Map<string, string> = new Map()): string {
   if (!numbered.length && !q.length) return 'No sessions running or parked.';
   const lines: string[] = [];
@@ -1092,7 +1094,18 @@ export function formatSessions(numbered: (DeskSession & { n: number; pinned?: bo
   if (numbered.length) {
     const nRes = numbered.filter((r) => r.status === 'resident').length;
     lines.push(`**Sessions** (${nRes} running, ${numbered.length - nRes} parked — a parked one resumes with full context):`);
-    for (const r of numbered) lines.push(line(r) + (r.status === 'resident' ? '' : ' _(parked)_') + (r.pinned ? ' _(pinned)_' : ''));
+    // Parked sessions pile up for a fortnight (hundreds of rows, ~65k characters), more than a model
+    // can read in one tool result. So every running and pinned session is listed, and parked ones only
+    // up to PARKED_SHOWN; the rest are counted, and still reachable by id or by words from their name.
+    let parked = 0;
+    for (const r of numbered) {
+      const isParked = r.status !== 'resident';
+      if (isParked && !r.pinned && ++parked > PARKED_SHOWN) continue;
+      lines.push(line(r) + (isParked ? ' _(parked)_' : '') + (r.pinned ? ' _(pinned)_' : ''));
+    }
+    if (parked > PARKED_SHOWN) {
+      lines.push(`- …and ${parked - PARKED_SHOWN} older parked sessions not listed; any of them can still be named by id or by words from its name.`);
+    }
   }
   if (q.length) {
     lines.push(`**Queued** (${q.length}, waiting for a slot):`);
