@@ -725,7 +725,7 @@ export async function listSessions(): Promise<DeskSession[]> {
  * An ambiguous name is answered with the choices rather than a guess: picking one of three status-hub
  * sessions at random and then ending or moving it is not a recoverable mistake.
  */
-export async function resolveSession(ref: string): Promise<
+export async function resolveSession(ref: string, opts: { anyStatus?: boolean } = {}): Promise<
   { ok: true; row: DeskSession & { n: number } } | { ok: false; error: string }> {
   const want = String(ref || '').trim();
   if (!want) return { ok: false, error: 'which session?' };
@@ -750,8 +750,17 @@ export async function resolveSession(ref: string): Promise<
       return { ok: false, error: `more than one session starts with ${want} — use more of its id` };
     }
     const hit = rows.find((r) => conversationOf(r) === conv);
-    return hit ? { ok: true, row: hit }
-               : { ok: false, error: `${want} is ${named.status}, so it cannot be reached or resumed` };
+    if (hit) return { ok: true, row: hit };
+    // No listed row: the conversation's newest row says why. A move closes the old row before the
+    // destination writes the new one, and the destination can take a minute or two to open it, so in
+    // that window every row of a conversation that is very much alive reads `transferred`.
+    const newest = all.filter((r) => conversationOf(r) === conv)
+      .sort((a, b) => String(b.started || '').localeCompare(String(a.started || '')))[0] || named;
+    // A reader of the conversation (read_session) needs only the conversation, not a live row.
+    if (opts.anyStatus) return { ok: true, row: { ...newest, n: 0 } };
+    return { ok: false, error: newest.status === 'transferred'
+      ? `${want} is being moved between machines and has not come up on the other side yet; try again in a minute`
+      : `${want} is ${newest.status}, so it cannot be reached or resumed` };
   }
 
   const matches = (r: DeskSession & { n: number }) =>
@@ -861,7 +870,8 @@ function isSelf(row: DeskSession): boolean {
  * resume to the Pi, which rejects the id outright — the Mac's are `mac-…`, and its consumer never
  * saw the command at all.
  */
-export async function sessionCommand(kind: 'resume_session' | 'end_session', session: string, prompt?: string, relay = false) {
+export async function sessionCommand(kind: 'resume_session' | 'end_session', session: string, prompt?: string, relay = false,
+                                     to?: Machine) {
   // Takes whatever the user said — a number, a repo, an id — because these are spoken commands and the
   // id is the one form nobody says aloud.
   const found = await resolveSession(session);
@@ -874,6 +884,24 @@ export async function sessionCommand(kind: 'resume_session' | 'end_session', ses
   // genuinely gone — that is what the `ended` status means, as against `evicted`.
   if (kind === 'resume_session' && (row as any).status === 'ended') {
     return { ok: false as const, error: 'that session has no transcript recorded, so there is nothing to resume' };
+  }
+  // Resumed on a NAMED machine that is not the one holding it ("pull it up on the Mac"). A running
+  // session is moved there like transfer_session; a parked one is resumed there straight from its
+  // mirror, which parking uploads, so no machine has to open it first only to close it again.
+  if (kind === 'resume_session' && to && to !== machine) {
+    if ((row as any).status === 'resident') {
+      const t = await transferSession(row.id, to);
+      if (!t.ok) return { ok: false as const, error: t.error };
+      return { ok: true as const, id: t.id, machine: t.machine, confirmed: t.confirmed, detail: '', handedOff: null, moved: t.machine,
+               note: `it was running on the ${NAME[machine]}, so it is being moved to the ${NAME[t.machine]} with its whole conversation`
+                 + (prompt ? '; the words were NOT sent, follow up once it is there' : '') };
+    }
+    if (row.agent === 'codex') return { ok: false as const, error: 'that is a Codex session, and Codex sessions stay on the machine that started them' };
+    const r = await resumeMirrored(row, machine, [to], { prompt });
+    if (!r.ok) return { ok: false as const, error: `It was not resumed on the ${NAME[to]}: ${r.error}` };
+    return { ok: true as const, id: r.id, machine: r.machine, confirmed: r.confirmed, detail: '', handedOff: null, moved: r.machine,
+             note: `resumed on the ${NAME[r.machine]} with its whole conversation` + (prompt ? ' and the words sent there' : '')
+               + (r.confirmed ? '' : ' (that machine has not confirmed it yet)') };
   }
   // A session closing ITSELF is mid-turn by definition: it is running the tool call that asked. Closed
   // now, the process dies before it writes the reply, and the watch and phone get no answer at all. So
@@ -1016,7 +1044,7 @@ export async function turnSummaries(rows: DeskSession[]): Promise<Map<string, st
  * `desk_turns` keeps 20 turns a conversation (00105), so that is the most there is to read.
  */
 export async function sessionTurns(ref: string, limit = 3): Promise<string> {
-  const r = await resolveSession(ref);
+  const r = await resolveSession(ref, { anyStatus: true });
   if (!r.ok) return r.error;
   const n = Math.min(Math.max(Math.trunc(limit) || 3, 1), 20);
   const { data, error } = await getClient().from('desk_turns').select('at,prompt,reply')
