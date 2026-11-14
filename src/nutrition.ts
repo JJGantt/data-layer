@@ -197,6 +197,20 @@ export async function removeStaged(idPrefix: string): Promise<NutritionEntry | n
   return row;
 }
 
+/**
+ * The confirmation a food write returns: only the entries it touched, with their macros and ids.
+ * Never the whole day's log — the hub already shows it, and a model handed the day's table recites it
+ * after every bite logged.
+ */
+export function formatEntryConfirmation(verb: string, entries: NutritionEntry[]): string {
+  const lines = entries.map((e) => {
+    const qty = e.quantity !== 1 ? ` (${e.quantity}x)` : '';
+    return `${verb} ${e.name}${qty} — ${e.calories ?? '?'} cal · P ${e.protein_g ?? '?'}g · C ${e.carbs_g ?? '?'}g · F ${e.fat_g ?? '?'}g (id \`${e.id.slice(0, 8)}\`)`;
+  });
+  lines.push('', "Reply with a one-line confirmation of this only. Do not list the day's log or totals: the hub shows them.");
+  return lines.join('\n');
+}
+
 export function formatStagedList(entries: NutritionEntry[]): string {
   if (!entries.length) return 'No staged meals.';
   const lines = ['**Staged meals** (not eaten yet — commit to log)', '',

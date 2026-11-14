@@ -405,6 +405,26 @@ export async function formatDay(date?: string): Promise<string> {
   return lines.join('\n');
 }
 
+/**
+ * The confirmation a write returns: only the sets it touched, each with its ordinal for that exercise
+ * that day and its id. Never the whole day — the hub already shows it, and a model handed the day's
+ * table recites it on every set logged.
+ */
+export async function formatSetConfirmation(verb: string, rows: SetRow[]): Promise<string> {
+  if (!rows.length) return `${verb}: nothing.`;
+  const days = new Map<string, SetRow[]>();
+  for (const day of new Set(rows.map((r) => String(r.occurred_at).slice(0, 10)))) days.set(day, (await getDaySets(day)).sets);
+  const lines = rows.map((r) => {
+    const day = days.get(String(r.occurred_at).slice(0, 10)) ?? [];
+    const same = day.filter((s) => s.exercise === r.exercise);
+    const i = same.findIndex((s) => s.id === r.id) + 1;
+    const ord = i ? `set ${i} of ${same.length} today` : `${same.length} left today`;
+    return `${verb} ${r.exercise} — ${fmtWeight(r.weight_lbs)} × ${r.reps} (${ord}, id \`${r.id}\`${r.note ? `, note: ${r.note}` : ''})`;
+  });
+  lines.push('', 'Reply with a one-line confirmation of this only. Do not list the rest of the workout: the hub shows it.');
+  return lines.join('\n');
+}
+
 // ---------------------------------------------------------------- set watcher
 
 export type SetWatcher = {
