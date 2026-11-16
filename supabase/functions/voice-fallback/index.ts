@@ -8,10 +8,9 @@
 //        body: the clip (audio/mp4)                      -> { transcript, id }
 //   GET  /functions/v1/voice-fallback?id=<request id>    -> { status: pending|done|error, result, error }
 //
-// The row is queued with status `fallback`, which only the PI's worker claims (voice-pipeline
-// worker.py `claim_fallback`): it runs the command on Opus with every tool, says it came the fallback
-// way, and starts a session to find out why the hub did not answer. No other worker claims `fallback`,
-// so a Fly worker that is up while the hub is down cannot take it.
+// The row is queued with status `fallback`, which the Pi's worker claims first, then the Mac's, then
+// Fly's (voice-pipeline worker `claim.py` FALLBACK_ORDER): it runs the command on Opus with every tool,
+// says it came the fallback way, and starts a session to find out why the hub did not answer.
 //
 // Auth is the hub's own device token (X-Hub-Token), checked against the sha256 the hub writes into
 // `fallback_config` at boot. The Groq key is this function's own secret (`supabase secrets set
