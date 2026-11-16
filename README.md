@@ -33,7 +33,7 @@ both call, which is why the MCP and the API can never disagree about what a writ
 | `ingredients.ts` | the ingredient itself: validation, produce rules, rollup, scaling |
 | `reviews.ts` | as named |
 | `surf.ts` | the forecast read (`get_surf`) and a surf alarm's conditions (`set_surf_alarm`, table `surf_alarms`). It only stores them: the hub decides and owns the alarm — status-hub `docs/ALARMS.md` |
-| `location.ts` | the user's last known location (`get_location`, table `locations`), one row per device, kept by a trigger from the fix a command carries |
+| `location.ts` | where the user is (`get_location`): the phone's and watch's history (`location_points`) plus the fix each command carries (`locations`), newest first, older fixes only when more precise |
 | `desk.ts` | dispatching Claude sessions to a machine, and the follow-up pointer |
 | `reports.ts` | the HTML write-ups a dispatched session publishes |
 | `bedroomTv.ts` | the bedroom TV (`bedroom_tv`, table `tv_commands`): inserts a command and awaits the TV's answer. The hub relays it to the TV's app; google-tv `docs/VOICE.md` |
