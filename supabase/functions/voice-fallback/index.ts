@@ -8,8 +8,8 @@
 //        body: the clip (audio/mp4)                      -> { transcript, id }
 //   GET  /functions/v1/voice-fallback?id=<request id>    -> { status: pending|done|error, result, error }
 //
-// The row is queued with status `fallback`, which the Pi's worker claims first, then the Mac's, then
-// Fly's (voice-pipeline worker `claim.py` FALLBACK_ORDER): it runs the command on Opus with every tool,
+// The row is queued with status `fallback`, which the voice workers claim in their usual order (Fly,
+// Pi, Mac, skipping any that is not beating; voice-pipeline `CLAUDE.md` § Status `fallback`): it runs the command on Opus with every tool,
 // says it came the fallback way, and starts a session to find out why the hub did not answer.
 //
 // Auth is the hub's own device token (X-Hub-Token), checked against the sha256 the hub writes into
