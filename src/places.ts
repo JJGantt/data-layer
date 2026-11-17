@@ -5,9 +5,13 @@ import { getClient } from './client.js';
 // knows one there, the business or landmark. Used by `get_location` so an answer says "at Publix on Beach
 // Blvd", not a pair of coordinates.
 //
-// Apple has no "what is at this point" call for businesses. Reverse geocoding gives the ADDRESS; the business
-// comes from a search for that address near the point, keeping the nearest POI within POI_M. A miss is
-// cached too (poi null), so each spot costs at most two calls, once, for every machine (`place_names`, 00183).
+// Apple has no "what is at this point" call for businesses. Reverse geocoding gives the ADDRESS; the businesses
+// come from a search for that street address confined to a small box around the point (`searchRegionPriority:
+// required`; without it the search ranks the whole city and returns businesses kilometres away). Every POI
+// within POI_M is kept, nearest first, up to MAX_POI: several businesses share one address in a plaza, and
+// which of them he was in is the reader's call, not this code's. Transit stops are dropped (one sits on every
+// road). A miss is cached too (poi null), so each spot costs two calls, once, for every machine
+// (`place_names`, 00183).
 //
 // Credentials: MAPS_KEY_ID and MAPS_PRIVATE_KEY (the .p8's PEM, newlines as \n) in each machine's
 // environment — data-layer/.env on the Mac and the Pi, Fly secrets on jared-voice-worker — with MAPS_TEAM_ID.
@@ -16,8 +20,11 @@ import { getClient } from './client.js';
 
 const API = 'https://maps-api.apple.com/v1';
 const POI_M = 60;             // a business further than this from the point is not "where he was"
+const MAX_POI = 3;
+const BOX_M = 150;            // half-width of the search box; POI_M then filters inside it
 const PARALLEL = 4;
 
+/** `poi`: the businesses at the spot, nearest first, joined with ' / ' (one when there is only one). */
 export interface Place { address: string | null; poi: string | null; area: string | null }
 
 const keyOf = (lat: number, lon: number) => `${lat.toFixed(4)},${lon.toFixed(4)}`;
@@ -60,8 +67,7 @@ async function call(path: string, params: Record<string, string>): Promise<any> 
 
 /** Ask Apple what is at one point. */
 export async function lookUp(lat: number, lon: number): Promise<Place> {
-  const loc = `${lat},${lon}`;
-  const rev = await call('/reverseGeocode', { loc, lang: 'en-US' });
+  const rev = await call('/reverseGeocode', { loc: `${lat},${lon}`, lang: 'en-US' });
   const a = rev.results?.[0];
   if (!a) return { address: null, poi: null, area: null };
   const s = a.structuredAddress ?? {};
@@ -70,12 +76,15 @@ export async function lookUp(lat: number, lon: number): Promise<Place> {
   const area = s.areasOfInterest?.[0] ?? s.subLocality ?? null;
   let poi: string | null = null;
   if (street) {
-    const found = await call('/search', { q: [street, s.locality].filter(Boolean).join(', '), searchLocation: loc,
+    const dLat = BOX_M / 111_320, dLon = BOX_M / (111_320 * Math.cos(lat * Math.PI / 180));
+    const box = [lat + dLat, lon + dLon, lat - dLat, lon - dLon].map((x) => x.toFixed(6)).join(',');
+    const found = await call('/search', { q: street, searchRegion: box, searchRegionPriority: 'required',
       resultTypeFilter: 'Poi', lang: 'en-US' });
     const near = (found.results ?? [])
-      .filter((p: any) => p.coordinate && metres(p.coordinate, lat, lon) <= POI_M)
+      .filter((p: any) => p.coordinate && p.poiCategory !== 'PublicTransport' && metres(p.coordinate, lat, lon) <= POI_M)
       .sort((x: any, y: any) => metres(x.coordinate, lat, lon) - metres(y.coordinate, lat, lon));
-    poi = near[0]?.name ?? null;
+    const names = [...new Set(near.map((p: any) => p.name as string))].slice(0, MAX_POI);
+    poi = names.length ? names.join(' / ') : null;
   }
   return { address, poi, area };
 }
@@ -109,7 +118,7 @@ export async function placesFor(points: { lat: number; lon: number }[]): Promise
 
 export function placeKey(lat: number, lon: number): string { return keyOf(lat, lon); }
 
-/** One place as words: the business if there is one, then the address. */
+/** One place as words: the businesses there, if any, then the address. */
 export function placeText(p: Place | undefined): string | null {
   if (!p || (!p.poi && !p.address)) return null;
   return [p.poi, p.address].filter(Boolean).join(', ');

@@ -238,6 +238,24 @@ A recipe is used only when the user explicitly calls it one ("my oatmeal recipe"
 by a past log ("same as yesterday") is copied from that entry, never from a recipe that shares its name:
 the recipe can differ from what was actually eaten, and each "same as yesterday" then copies the error forward.
 
+## Place names
+
+`get_location` names positions through the Apple Maps Server API (`src/places.ts`), reachable from all three
+machines over plain HTTPS. Each needs three variables in the environment the MCP runs in:
+
+| variable | value |
+|---|---|
+| `MAPS_TEAM_ID` | `XMH4AVFC78` |
+| `MAPS_KEY_ID` | `2K8C7JS7ZS`, the "Location Maps" key in the developer account (Keys), tied to Maps ID `maps.com.jaredgantt.location` |
+| `MAPS_PRIVATE_KEY` | that key's `.p8` on one line, newlines written as `\n`, **unquoted** (the `.env` loader keeps quotes literally, and a quoted PEM fails to parse) |
+
+They live in `.env` on the Mac and the Pi and as Fly secrets on `jared-voice-worker`. The `.p8` itself is in
+`~/.appstoreconnect/private_keys/` on the Mac; Apple lets it be downloaded only once. Without the variables,
+answers carry coordinates only and `[places]` logs an error.
+
+Lookups are cached by position (4 decimal places, about 11 m) in `place_names` for every machine. A cached
+miss is permanent, so after changing how `lookUp` works, delete the table's rows to re-ask Apple.
+
 ## Migrations
 
 Numbered SQL in `supabase/migrations/`, applied with `./migrate.sh` from whichever machine wrote them
