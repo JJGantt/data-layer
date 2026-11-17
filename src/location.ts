@@ -1,5 +1,6 @@
 import { getClient } from './client.js';
 import { ValidationError } from './helpers.js';
+import { placesFor, placeKey, placeText, type Place } from './places.js';
 
 // Where the user is, and where he was, read on demand by a model that needs it instead of being pasted
 // into every prompt.
@@ -42,7 +43,6 @@ function age(at: string, now: number): string {
 
 const clock = (ms: number) => new Date(ms).toLocaleString('en-US', { timeZone: TZ, weekday: 'short', hour: 'numeric', minute: '2-digit' });
 const ms = (f: Fix) => new Date(f.at).getTime();
-const coord = (f: Fix) => `${f.lat.toFixed(5)}, ${f.lon.toFixed(5)}`;
 
 /** Metres between two fixes (haversine). */
 export function distance(a: { lat: number; lon: number }, b: { lat: number; lon: number }): number {
@@ -87,12 +87,19 @@ export function frontier(fixes: Fix[]): Fix[] {
 // Accuracy says how good a fix is; the source adds only what a visit means.
 const SOURCE: Record<string, string> = { arrive: 'arrived there', depart: 'left there' };
 
-export function describe(fixes: Fix[], now = Date.now()): string {
+type Names = Map<string, Place> | null;
+/** A position as words when Apple named it, its coordinates (for the model, never to be read out) either way. */
+const where = (lat: number, lon: number, acc: number | null, names: Names, own?: string | null) => {
+  const name = own || placeText(names?.get(placeKey(lat, lon)));
+  const c = `${lat.toFixed(5)}, ${lon.toFixed(5)}${acc != null ? `, within ${Math.round(acc)} m` : ''}`;
+  return name ? `${name} (${c})` : c;
+};
+
+export function describe(fixes: Fix[], now = Date.now(), names: Names = null): string {
   if (!fixes.length) return 'No position recorded yet — none of his devices has sent one.';
   return frontier(fixes).map(r => {
-    const fix = coord(r) + (r.acc != null ? ` (within about ${Math.round(r.acc)} m)` : '');
     const how = r.source && SOURCE[r.source] ? `, ${SOURCE[r.source]}` : '';
-    return `${r.place ? `${r.place} — ` : ''}${fix}, from the ${r.device}${how}, ${age(r.at, now)}`;
+    return `${where(r.lat, r.lon, r.acc, names, r.place)}, from the ${r.device}${how}, ${age(r.at, now)}`;
   }).join('\n');
 }
 
@@ -132,17 +139,17 @@ export function timeline(fixes: Fix[]): Segment[] {
   return out;
 }
 
-function renderTimeline(segs: Segment[], from: number, to: number, at?: number): string {
+function renderTimeline(segs: Segment[], from: number, to: number, at?: number, names: Names = null): string {
   if (!segs.length) return `No fix at all between ${clock(from)} and ${clock(to)}.`;
   const lines: string[] = [];
   const first = segs[0].kind === 'stay' ? segs[0].from : segs[0].at;
   if (first - from > 30 * 60e3) lines.push(`(no fix from ${clock(from)} until ${clock(first)})`);
   for (const s of segs) {
     if (s.kind === 'stay') {
-      lines.push(`${clock(s.from)} – ${clock(s.to)}: stayed at ${s.lat.toFixed(5)}, ${s.lon.toFixed(5)} (within ${s.acc} m, ${s.fixes} fixes)`);
+      lines.push(`${clock(s.from)} – ${clock(s.to)}: stayed at ${where(s.lat, s.lon, s.acc, names)}`);
     } else {
       const f = s.fix, how = f.source && SOURCE[f.source] ? `, ${SOURCE[f.source]}` : '';
-      lines.push(`${clock(s.at)}: ${coord(f)} (within ${Math.round(f.acc ?? 0)} m, ${f.device}${how})`);
+      lines.push(`${clock(s.at)}: ${where(f.lat, f.lon, f.acc, names)}, ${f.device}${how}`);
     }
   }
   const last = segs[segs.length - 1], end = last.kind === 'stay' ? last.to : last.at;
@@ -180,7 +187,9 @@ export async function location(q: LocationQuery = {}): Promise<string> {
     rows.push(...(data ?? []).map((r: any) => ({ device: r.device, lat: r.lat, lon: r.lon, acc: r.h_acc, at: r.at, source: r.source })));
     if (!data || data.length < 1000) break;
   }
-  return renderTimeline(timeline(rows), from, to, at);
+  const segs = timeline(rows);
+  const names = await placesFor(segs.map((g) => (g.kind === 'stay' ? g : g.fix)));
+  return renderTimeline(segs, from, to, at, names) + (names ? '' : '\n(No place names: Apple Maps could not be reached; only coordinates.)');
 }
 
 export async function lastLocation(): Promise<string> {
@@ -195,5 +204,6 @@ export async function lastLocation(): Promise<string> {
     ...(hist.data ?? []).map((r: any) => ({ device: r.device, lat: r.lat, lon: r.lon, acc: r.h_acc, at: r.at, source: r.source })),
     ...(cmd.data ?? []).map((r: any) => ({ device: r.device, lat: r.lat, lon: r.lon, acc: r.acc, at: r.at, place: r.place })),
   ];
-  return describe(fixes);
+  const names = await placesFor(frontier(fixes));
+  return describe(fixes, Date.now(), names) + (names ? '' : '\n(No place names: Apple Maps could not be reached; only coordinates.)');
 }

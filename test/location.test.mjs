@@ -23,7 +23,7 @@ test('unknown accuracy never beats a known one', () => {
 
 test('describe states device, kind of fix, accuracy and age', () => {
   const now = Date.UTC(2026, 10, 16, 20, 40);
-  assert.equal(describe([f('phone', 35, 6.4, { source: 'fix' })], now), '30.29000, -81.71000 (within about 6 m), from the phone, 5 min ago');
+  assert.equal(describe([f('phone', 35, 6.4, { source: 'fix' })], now), '30.29000, -81.71000, within 6 m, from the phone, 5 min ago');
   assert.match(describe([]), /No position/);
 });
 
@@ -52,4 +52,10 @@ test('nyInstant reads New York wall clock on both sides of DST', () => {
   assert.equal(new Date(nyInstant('2026-07-01T09:00')).toISOString(), '2026-07-01T13:00:00.000Z');
   assert.throws(() => nyInstant('2026-02-30T10:00'));
   assert.throws(() => nyInstant('8:30 pm'));
+});
+
+test('describe names the place when Apple has, keeping the coordinates for the model', () => {
+  const now = Date.UTC(2026, 10, 16, 20, 40);
+  const names = new Map([['30.2900,-81.7100', { poi: 'Publix', address: '1 Main St, Jacksonville, FL', area: null }]]);
+  assert.equal(describe([f('phone', 35, 6, { source: 'fix' })], now, names), 'Publix, 1 Main St, Jacksonville, FL (30.29000, -81.71000, within 6 m), from the phone, 5 min ago');
 });

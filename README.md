@@ -34,6 +34,7 @@ both call, which is why the MCP and the API can never disagree about what a writ
 | `reviews.ts` | as named |
 | `surf.ts` | the forecast read (`get_surf`) and a surf alarm's conditions (`set_surf_alarm`, table `surf_alarms`). It only stores them: the hub decides and owns the alarm — status-hub `docs/ALARMS.md` |
 | `location.ts` | where the user is and was (`get_location`): now = the freshest and the most precise recent fixes from the phone/watch history (`location_points`) and command fixes (`locations`); `at` or `from`/`to` = a timeline of stays and the fixes between them |
+| `places.ts` | names for positions from the Apple Maps Server API (address + the business there), cached in `place_names`; needs `MAPS_KEY_ID`, `MAPS_PRIVATE_KEY`, `MAPS_TEAM_ID` on every machine that runs the MCP |
 | `desk.ts` | dispatching Claude sessions to a machine, and the follow-up pointer |
 | `reports.ts` | the HTML write-ups a dispatched session publishes |
 | `bedroomTv.ts` | the bedroom TV (`bedroom_tv`, table `tv_commands`): inserts a command and awaits the TV's answer. The hub relays it to the TV's app; google-tv `docs/VOICE.md` |
