@@ -1047,16 +1047,68 @@ export async function sessionTurns(ref: string, limit = 3): Promise<string> {
   const r = await resolveSession(ref, { anyStatus: true });
   if (!r.ok) return r.error;
   const n = Math.min(Math.max(Math.trunc(limit) || 3, 1), 20);
-  const { data, error } = await getClient().from('desk_turns').select('at,prompt,reply')
-    .eq('conversation', conversationOf(r.row)).order('at', { ascending: false }).limit(n);
+  const conv = conversationOf(r.row);
+  // One turn more than is shown: its time bounds which sent messages can belong to the shown ones.
+  const { data, error } = await getClient().from('desk_turns').select('at,prompt,reply,events')
+    .eq('conversation', conv).order('at', { ascending: false }).limit(n + 1);
   if (error) throw new Error(`desk_turns: ${error.message}`);
-  const turns = (data ?? []).reverse();
-  const head = `${(r.row as any).label || '(unnamed)'} \`${sessionHandle(r.row)}\``;
-  if (!turns.length) return `${head}: no finished turns recorded.`;
+  const all = (data ?? []).reverse();
+  const since = all.length > n ? all[0].at : null;
+  const turns = all.length > n ? all.slice(1) : all;
+  // EVERY MESSAGE SENT TO IT, from the commands that carried them. A turn that never finished (a park,
+  // a crash) has no `desk_turns` row at all, so without these its prompt and everything typed during it
+  // are invisible here, and the reader concludes nothing was sent.
+  const { data: rows, error: rerr } = await getClient().from('desk_sessions').select('id')
+    .or(`claude_session_id.eq.${conv},id.eq.${conv}`);
+  if (rerr) throw new Error(`desk_sessions: ${rerr.message}`);
+  let q = getClient().from('desk_commands').select('created,payload')
+    .in('payload->>session', (rows ?? []).map((x: any) => x.id)).order('created', { ascending: true });
+  if (since) q = q.gt('created', since);
+  const { data: cmds, error: cerr } = await q;
+  if (cerr) throw new Error(`desk_commands: ${cerr.message}`);
+  const sent = (cmds ?? []).filter((c: any) => typeof c.payload?.prompt === 'string' && c.payload.prompt.trim())
+    .map((c: any) => ({ at: c.created, prompt: c.payload.prompt }));
+  return formatSessionTurns(`${(r.row as any).label || '(unnamed)'} \`${sessionHandle(r.row)}\``,
+    turns, sent, (r.row as any).working === true && r.row.status === 'resident');
+}
+
+const said = (t: string) => t.replace(/\s+/g, ' ').trim().slice(0, 60);
+
+/**
+ * A session's turns as read_session prints them, with every message he sent it in its place:
+ * the one that opened each turn, the ones it read while working (a message sent during a turn is
+ * absorbed between its tool calls, recorded only in that turn's `events`), and any sent message no
+ * finished turn holds, which is shown at the time it was sent as never answered.
+ */
+export function formatSessionTurns(head: string,
+  turns: { at: string; prompt: string | null; reply: string; events?: any[] | null }[],
+  sent: { at: string; prompt: string }[], working = false): string {
   const when = (at: string) => new Date(at).toLocaleString('en-US', { timeZone: 'America/New_York',
     month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
-  return [head, ...turns.map((t: any) =>
-    `--- ${when(t.at)}\nJared: ${t.prompt || '(no prompt: a background task or resumed context)'}\nSession: ${t.reply}`)].join('\n\n');
+  const read = new Set<string>();
+  const blocks: { at: string; text: string }[] = turns.map((t) => {
+    const opener = t.prompt ? said(t.prompt) : null;
+    if (opener) read.add(opener);
+    const seen = new Map<string, string>();
+    for (const e of t.events || []) {
+      if (e?.kind === 'prompt' && typeof e.text === 'string' && !seen.has(e.id)) seen.set(e.id, e.text);
+    }
+    const during = [...seen.values()].filter((x) => said(x) !== opener);
+    during.forEach((x) => read.add(said(x)));
+    return { at: t.at, text: [`--- ${when(t.at)}`,
+      `Jared: ${t.prompt || '(no prompt: a background task or resumed context)'}`,
+      ...during.map((x) => `Jared, while it was working: ${x}`),
+      `Session: ${t.reply}`].join('\n') };
+  });
+  for (const s of sent) {
+    const key = said(s.prompt);
+    if ([...read].some((r) => r.startsWith(key) || key.startsWith(r))) continue;
+    blocks.push({ at: s.at, text: `--- ${when(s.at)}\nJared: ${s.prompt}\n(no finished turn of the session holds this message)` });
+  }
+  blocks.sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+  if (working) blocks.push({ at: '', text: '(it is working on a turn now)' });
+  if (!blocks.length) return `${head}: no finished turns recorded.`;
+  return [head, ...blocks.map((b) => b.text)].join('\n\n');
 }
 
 const PARKED_SHOWN = 15;
