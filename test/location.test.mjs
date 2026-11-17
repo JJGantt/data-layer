@@ -26,3 +26,30 @@ test('describe states device, kind of fix, accuracy and age', () => {
   assert.equal(describe([f('phone', 35, 6.4, { source: 'fix' })], now), '30.29000, -81.71000 (within about 6 m), from the phone, 5 min ago');
   assert.match(describe([]), /No position/);
 });
+
+import { timeline, nyInstant } from '../dist/location.js';
+
+const p = (min, lat, acc, extra = {}) => ({ device: 'phone', lat, lon: -81.7, acc, at: new Date(Date.UTC(2026, 10, 16, 19, 0) + min * 60e3).toISOString(), ...extra });
+
+test('timeline: a run at one place for minutes is a stay, a short pause on a trip is not', () => {
+  const segs = timeline([p(0, 30.0, 5), p(20, 30.0, 5), p(30, 30.0, 11, { source: 'depart' }), p(35, 30.05, 5), p(36, 30.05, 5), p(45, 30.1, 4)]);
+  assert.deepEqual(segs.map(s => s.kind), ['stay', 'fix', 'fix', 'fix']);
+  assert.equal(segs[0].to, Date.UTC(2026, 10, 16, 19, 30));
+});
+
+test('timeline: a coarse fix near a GPS fix is dropped; a visit is kept whatever its accuracy', () => {
+  const segs = timeline([p(0, 30.0, 5), p(1, 30.2, 9000), p(10, 30.0, 55, { source: 'arrive' })]);
+  assert.equal(segs.length, 1);
+  assert.equal(segs[0].kind, 'stay');
+});
+
+test('timeline: the same instant stored twice is one fix', () => {
+  assert.equal(timeline([p(0, 30.0, 5), p(0, 30.0, 5, { source: 'move' })]).length, 1);
+});
+
+test('nyInstant reads New York wall clock on both sides of DST', () => {
+  assert.equal(new Date(nyInstant('2026-11-16T20:30')).toISOString(), '2026-11-17T01:30:00.000Z');
+  assert.equal(new Date(nyInstant('2026-07-01T09:00')).toISOString(), '2026-07-01T13:00:00.000Z');
+  assert.throws(() => nyInstant('2026-02-30T10:00'));
+  assert.throws(() => nyInstant('8:30 pm'));
+});
