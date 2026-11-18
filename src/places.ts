@@ -5,12 +5,14 @@ import { getClient } from './client.js';
 // knows one there, the business or landmark. Used by `get_location` so an answer says "at Publix on Beach
 // Blvd", not a pair of coordinates.
 //
-// Apple has no "what is at this point" call for businesses. Reverse geocoding gives the ADDRESS; the businesses
-// come from a search for that street address confined to a small box around the point (`searchRegionPriority:
-// required`; without it the search ranks the whole city and returns businesses kilometres away). Every POI
+// Apple has no "what is at this point" call for businesses, and every search needs a query. So the businesses
+// come from several searches confined to a small box around the point (`searchRegionPriority: required`;
+// without it a search ranks the whole city and returns businesses kilometres away): the reverse-geocoded
+// street, which finds what is listed on it, and generic TERMS, which find what is listed on a side or
+// service road the street search misses. Every POI
 // within POI_M is kept, nearest first, up to MAX_POI: several businesses share one address in a plaza, and
 // which of them he was in is the reader's call, not this code's. Transit stops are dropped (one sits on every
-// road). A miss is cached too (poi null), so each spot costs two calls, once, for every machine
+// road). A miss is cached too (poi null), so each spot costs its calls once, for every machine
 // (`place_names`, 00183).
 //
 // Credentials: MAPS_KEY_ID and MAPS_PRIVATE_KEY (the .p8's PEM, newlines as \n) in each machine's
@@ -21,6 +23,7 @@ import { getClient } from './client.js';
 const API = 'https://maps-api.apple.com/v1';
 const POI_M = 60;             // a business further than this from the point is not "where he was"
 const MAX_POI = 3;
+const TERMS = ['business', 'store', 'restaurant', 'service', 'office'];
 const BOX_M = 150;            // half-width of the search box; POI_M then filters inside it
 const PARALLEL = 4;
 
@@ -69,23 +72,26 @@ async function call(path: string, params: Record<string, string>): Promise<any> 
 export async function lookUp(lat: number, lon: number): Promise<Place> {
   const rev = await call('/reverseGeocode', { loc: `${lat},${lon}`, lang: 'en-US' });
   const a = rev.results?.[0];
-  if (!a) return { address: null, poi: null, area: null };
-  const s = a.structuredAddress ?? {};
-  const street = s.fullThoroughfare ?? a.name ?? null;
-  const address = [street, s.locality, s.administrativeAreaCode].filter(Boolean).join(', ') || null;
+  const s = a?.structuredAddress ?? {};
+  const street = s.fullThoroughfare ?? a?.name ?? null;
   const area = s.areasOfInterest?.[0] ?? s.subLocality ?? null;
-  let poi: string | null = null;
-  if (street) {
-    const dLat = BOX_M / 111_320, dLon = BOX_M / (111_320 * Math.cos(lat * Math.PI / 180));
-    const box = [lat + dLat, lon + dLon, lat - dLat, lon - dLon].map((x) => x.toFixed(6)).join(',');
-    const found = await call('/search', { q: street, searchRegion: box, searchRegionPriority: 'required',
-      resultTypeFilter: 'Poi', lang: 'en-US' });
-    const near = (found.results ?? [])
-      .filter((p: any) => p.coordinate && p.poiCategory !== 'PublicTransport' && metres(p.coordinate, lat, lon) <= POI_M)
-      .sort((x: any, y: any) => metres(x.coordinate, lat, lon) - metres(y.coordinate, lat, lon));
-    const names = [...new Set(near.map((p: any) => p.name as string))].slice(0, MAX_POI);
-    poi = names.length ? names.join(' / ') : null;
+  const dLat = BOX_M / 111_320, dLon = BOX_M / (111_320 * Math.cos(lat * Math.PI / 180));
+  const box = [lat + dLat, lon + dLon, lat - dLat, lon - dLon].map((x) => x.toFixed(6)).join(',');
+  const found = await Promise.all([...(street ? [street] : []), ...TERMS].map((q) =>
+    call('/search', { q, searchRegion: box, searchRegionPriority: 'required', resultTypeFilter: 'Poi', lang: 'en-US' })));
+  const byName = new Map<string, { name: string; m: number; line: string | null }>();
+  for (const p of found.flatMap((f) => f.results ?? [])) {
+    if (!p.coordinate || p.poiCategory === 'PublicTransport') continue;
+    const m = metres(p.coordinate, lat, lon);
+    if (m <= POI_M && !(byName.get(p.name)?.m! <= m)) byName.set(p.name, { name: p.name, m, line: p.formattedAddressLines?.[0] ?? null });
   }
+  const near = [...byName.values()].sort((x, y) => x.m - y.m).slice(0, MAX_POI);
+  const poi = near.length ? near.map((p) => p.name).join(' / ') : null;
+  // Reverse geocoding interpolates house numbers along a road and can name a spot hundreds of metres down it;
+  // a business's own listed address is exact, so the nearest one's address wins when there is one.
+  const address = near[0]?.line
+    ? [near[0].line, s.locality, s.administrativeAreaCode].filter(Boolean).join(', ')
+    : [street, s.locality, s.administrativeAreaCode].filter(Boolean).join(', ') || null;
   return { address, poi, area };
 }
 
