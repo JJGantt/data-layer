@@ -320,7 +320,11 @@ new table is picked up without touching this script. A daily launchd agent
 to `pi:~/supabase-backups`. Three copies: Supabase, Mac, Pi.
 
 It usually runs in a dark wake while the network is still coming up, so every fetch retries a dropped
-connection or a 5xx with backoff (2s, 5s, 15s, 30s) before the run fails.
+connection or a 5xx with backoff (2s, 5s, 15s, 30s, then 60s three times; about four minutes) before
+the run fails. When the Mac sleeps through 04:15, launchd runs it at the next wake, before DNS is up.
+
+`backup.sh` reads only the `SUPABASE_*` lines of `.env`, literally. Sourcing the whole file as shell
+breaks on `MAPS_PRIVATE_KEY`, which is an unquoted PEM with spaces in it.
 
 The mirror is best-effort and says so in the log — the Mac cannot always reach the Pi, and a backup
 that succeeded locally must not report failure because the mirror did not run. Mirroring the

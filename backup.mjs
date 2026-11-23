@@ -25,9 +25,11 @@ if (!URL_ || !KEY) { console.error('need SUPABASE_URL and SUPABASE_KEY'); proces
 const H = { apikey: KEY, Authorization: `Bearer ${KEY}` };
 
 // It runs before dawn on a Mac that is usually asleep, so it often starts in a dark wake before the network
-// is steady. A dropped connection or a 5xx is retried with backoff rather than failing the night.
+// is steady, or (when the Mac slept through its slot) the moment it wakes, before DNS answers. A dropped
+// connection or a 5xx is retried with backoff for about four minutes rather than failing the night; under
+// a minute was not enough for a cold wake.
 async function fetchRetry(url, opts) {
-  const waits = [2000, 5000, 15000, 30000];
+  const waits = [2000, 5000, 15000, 30000, 60000, 60000, 60000];
   for (let i = 0; ; i++) {
     try {
       const res = await fetch(url, opts);

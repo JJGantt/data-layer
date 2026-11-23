@@ -7,7 +7,13 @@
 set -uo pipefail
 export PATH="/usr/local/bin:/opt/homebrew/bin:$PATH"
 cd "$(dirname "$0")" || exit 1
-set -a; [ -f .env ] && . ./.env; set +a
+# Only the SUPABASE_* lines, taken literally. Sourcing the whole .env as shell runs part of any value
+# with a space in it as a command (MAPS_PRIVATE_KEY is an unquoted PEM: "PRIVATE: command not found").
+if [ -f .env ]; then
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in SUPABASE_*=*) export "$line" ;; esac
+  done < .env
+fi
 DEST="${1:-$HOME/supabase-backups}"
 
 command -v node >/dev/null || { echo "node not found on PATH: $PATH" >&2; exit 127; }
