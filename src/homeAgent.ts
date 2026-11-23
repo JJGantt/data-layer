@@ -11,6 +11,7 @@
 import { createRequire } from 'node:module';
 import * as tvHome from './tvHome.js';
 import * as homeRequests from './homeRequests.js';
+import * as jaredbotSwitch from './jaredbotSwitch.js';
 
 // ops_report.cjs is a copy of the ops responder's reporter (edit it there). Installed first, so nothing
 // fails before it listens; the beat rides the event loop, which is this process's work loop.
@@ -22,4 +23,5 @@ ops.beat(60);
 const defer = Number(process.env.HOME_DEFER_MS || 4000);
 tvHome.start(defer);
 homeRequests.start(defer);
+jaredbotSwitch.start();
 console.log(`[home-agent] fallback for the Pi, claiming after ${defer / 1000}s`);

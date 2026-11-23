@@ -112,6 +112,15 @@ headless Chrome and open the profile with a window:
 Only one Chrome can hold the profile at a time, so while that window is open the agent uses it rather
 than starting its own.
 
+## JaredBot switch
+
+`app_settings.jaredbot_enabled` is JaredBot's on/off switch (the hub's Settings and the voice
+`set_jaredbot` tool write it). Off means the `com.jaredgantt.jaredbot` launchd job is not running, so
+nothing reads chat.db. The Mac's home agent enforces it (`src/jaredbotSwitch.ts`, Mac only). It watches
+that row over realtime, starts the job when the switch turns on and stops it when the switch turns off,
+and re-applies the switch every 10 minutes as the backstop. JaredBot's own repo README covers what
+the bot does on either side of a switch.
+
 ## There is no reminders table, and no notes table
 
 A reminder is a list item with a `due` date. Any item on any list, dated, fires and badges
