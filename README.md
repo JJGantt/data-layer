@@ -34,7 +34,7 @@ both call, which is why the MCP and the API can never disagree about what a writ
 | `reviews.ts` | as named |
 | `surf.ts` | the forecast read (`get_surf`) and a surf alarm's conditions (`set_surf_alarm`, table `surf_alarms`). It only stores them: the hub decides and owns the alarm — status-hub `docs/ALARMS.md` |
 | `location.ts` | where the user is and was (`get_location`): now = the freshest and the most precise recent fixes from the phone/watch history (`location_points`) and command fixes (`locations`); `at` or `from`/`to` = a timeline of stays and the fixes between them |
-| `itemLocations.ts` | where his untracked things are kept (`set_item_location`, `get_item_locations`, `remove_item_location`; table `item_locations`): item → free-text location, one row per item, matched ignoring case only. Not his own position, which is `location.ts` |
+| `itemLocations.ts` | where his untracked things are kept (`set_item_location`, `get_item_locations`, `remove_item_location`; table `item_locations`): item → free-text location, one row per item, matched ignoring case only. `set_item_location` requires the `seen` token `get_item_locations` returns (a hash of the saved names), so a write is refused unless the caller has read every saved name — that read is what stops 'my passport' becoming a second entry beside 'passport'. Not his own position, which is `location.ts` |
 | `places.ts` | names for positions from the Apple Maps Server API (address + the business there), cached in `place_names`; needs `MAPS_KEY_ID`, `MAPS_PRIVATE_KEY`, `MAPS_TEAM_ID` on every machine that runs the MCP |
 | `desk.ts` | dispatching Claude sessions to a machine, and the follow-up pointer |
 | `reports.ts` | the HTML write-ups a dispatched session publishes |
