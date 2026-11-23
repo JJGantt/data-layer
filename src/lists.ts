@@ -549,6 +549,32 @@ export async function setPriority(
   return data as ListItem;
 }
 
+/**
+ * Change what an item SAYS — its short `title` and its body `text` — in place. Editing rather than
+ * removing and re-adding keeps everything else the row carries: its id, when it was created, its due
+ * date, series, completion and score. Only the fields passed change; an empty `title` clears it (the
+ * label then falls back to `text`), and `text` cannot be emptied, because it is the item.
+ */
+export async function editItem(
+  listId: string | null,
+  idPrefix: string,
+  patch: { title?: string | null; text?: string },
+): Promise<ListItem | null> {
+  const update: Record<string, unknown> = {};
+  if ('title' in patch) update.title = patch.title?.trim() || null;
+  if ('text' in patch) {
+    const t = String(patch.text ?? '').trim();
+    if (!t) throw new ValidationError('text cannot be empty — to get rid of the item, remove it');
+    update.text = t;
+  }
+  if (!Object.keys(update).length) throw new ValidationError('pass title, text, or both');
+  const id = await resolveListItemId(listId, idPrefix);
+  if (!id) return null;
+  await getClient().from('list_items').update({ ...update, updated: now() }).eq('id', id);
+  const { data } = await getClient().from('list_items').select('*').eq('id', id).single();
+  return data as ListItem;
+}
+
 /** How a dated item answers its moment: ring until stopped, ring briefly, or just notify. */
 export type Ring = 'alarm' | 'timer' | 'none';
 export const RINGS: Ring[] = ['alarm', 'timer', 'none'];
@@ -664,6 +690,9 @@ export function lateness(i: ListItem): string | null {
 export function itemLabel(i: ListItem): string {
   return (i.title && i.title.trim()) || i.text;
 }
+
+/** One item as get_lists prints it: label, flags, id, and its body when it has one. */
+export function formatItemLine(i: ListItem): string { return line(i); }
 
 function line(i: ListItem, withList = false): string {
   const where = withList ? ` [${i.list_name}]` : '';

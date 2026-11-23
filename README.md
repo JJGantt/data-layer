@@ -218,10 +218,14 @@ belongs to exactly one list by `list_id`, so scoring, the due view and the calen
   `on delete restrict`, so a delete that skips that step fails rather than taking the sublists with it.
 
 A note is a list item with a BODY: an undated row on the `notes` list, its short name in `title` and
-its full text in `text` (migration 00092). It has no tools of its own either. `get_lists` prints an
+its full text in `text` (migration 00092). It has no tools of its own. `get_lists` prints an
 item's `text` indented under the label whenever the two differ, so reading a note back is just
 reading the list — and any other item carrying a body, like an Amazon row with a part number, shows it
 the same way.
+
+`edit_item` changes an item's `title` and `text` in place, so a note is edited rather than removed
+and re-added — which would lose the row's id and creation time and, for a dated item, its series,
+completion and score. It edits one row: a series occurrence is changed alone.
 
 Recurrence is materialised rather than stored (migration 00085). `repeat_every` on `add_to_list` is
 an instruction executed once: it writes one dated row per occurrence out to `repeat_until`, all
