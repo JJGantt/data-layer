@@ -40,6 +40,7 @@ async function answer(row: any): Promise<void> {
     result = { ok: true, text: await youtubeAccount.account(op, row.args || {}) };
   } catch (e: any) {
     result = { ok: false, error: String(e.message || e) };
+    console.error(`[home_requests] ${row.id} (${row.kind} ${row.args?.op ?? ''}) failed: ${result.error}`);
   }
   const { error } = await getClient().from('home_requests').update({ done_at: new Date().toISOString(), result }).eq('id', row.id);
   if (error) console.error('[home] answer failed', error.message);
