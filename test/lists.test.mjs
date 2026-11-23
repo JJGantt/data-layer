@@ -2,7 +2,7 @@
 // Times are naive local wall clock throughout (CLAUDE.md, "A time the user stated is stored verbatim").
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { seriesOccurrences, normalizeDue, ringFlags, checkCompletedAt, isExpired, lateness, SERIES_DEFAULT_HORIZON_DAYS } from '../dist/lists.js';
+import { seriesOccurrences, normalizeDue, ringFlags, checkCompletedAt, isExpired, lateness, SERIES_DEFAULT_HORIZON_DAYS, listTree, listPath } from '../dist/lists.js';
 
 describe('seriesOccurrences', () => {
   test('daily, first occurrence included, through the until date', () => {
@@ -159,5 +159,28 @@ describe('lateness', () => {
   test('says nothing for an undated or unfinished item', () => {
     assert.equal(lateness({ due: null, completed_at: '2026-06-01T10:00:00' }), null);
     assert.equal(lateness({ due: '2026-06-01', completed_at: null }), null);
+  });
+});
+
+describe('list nesting', () => {
+  const L = (id, parent_id = null) => ({ id, name: id, parent_id, emoji: null, default_priority: 0, created: '' });
+  const all = [L('work'), L('tech', 'household'), L('household'), L('cables', 'tech'), L('books'), L('lost', 'gone')];
+
+  test('tree order puts each list straight after its parent, alphabetical at every level', () => {
+    assert.deepEqual(listTree(all).map(({ list, depth }) => `${list.id}:${depth}`),
+      ['books:0', 'household:0', 'tech:1', 'cables:2', 'lost:0', 'work:0']);
+  });
+
+  test('a list whose parent does not exist is shown at the top level, not dropped', () => {
+    assert.ok(listTree(all).some(({ list, depth }) => list.id === 'lost' && depth === 0));
+  });
+
+  test('a subtree starts at the list asked for', () => {
+    assert.deepEqual(listTree(all, 'tech').map(({ list, depth }) => `${list.id}:${depth}`), ['tech:0', 'cables:1']);
+  });
+
+  test('path runs outermost first and excludes the list itself', () => {
+    assert.deepEqual(listPath(all.find(l => l.id === 'cables'), all).map(l => l.id), ['household', 'tech']);
+    assert.deepEqual(listPath(all.find(l => l.id === 'work'), all), []);
   });
 });

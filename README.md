@@ -194,14 +194,27 @@ are still ids: minted once from the name, never recomputed.
 
 Two consequences worth knowing:
 
-- **The schema is built once per session**, so creating or deleting a list makes it stale. Both send
-  `notifications/tools/list_changed`, and the server advertises `tools.listChanged`.
+- **The schema is built once per session**, so creating, moving or deleting a list makes it stale. All
+  three send `notifications/tools/list_changed`, and the server advertises `tools.listChanged`.
 - **`list_items.list_name` is DERIVED**, filled by the `list_items_resolve_list` trigger from
   `list_id` — the same arrangement as `sets.exercise` and `exercise_id`. Read it, never write it. It
   is still there because the hub draws it on every list surface.
 
 The database enforces this independently of any caller: that trigger resolves a name-only write to an
 id and RAISES when it cannot, so a fork is not reachable even by writing to PostgREST directly.
+
+## Lists inside lists
+
+`lists.parent_id` (00184) nests a list inside another; null is top level. Only LISTS nest: an item
+belongs to exactly one list by `list_id`, so scoring, the due view and the calendar never see the tree.
+
+- `create_list` takes an optional `parent_id`; `move_list` re-parents an existing list (omit
+  `parent_id` for the top level). The roster in every list tool's description names each list's
+  parents, and `get_lists` prints lists in tree order with the full path in each header
+  (`listTree` / `listPath` in `lists.ts`).
+- A cycle is refused by the `lists_no_cycle` trigger, so it cannot be written by any route.
+- `delete_list` keeps the sublists and moves them up to the deleted list's own parent. The FK is
+  `on delete restrict`, so a delete that skips that step fails rather than taking the sublists with it.
 
 A note is a list item with a BODY: an undated row on the `notes` list, its short name in `title` and
 its full text in `text` (migration 00092). It has no tools of its own either. `get_lists` prints an

@@ -110,7 +110,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (path === '/data/lists' && method === 'POST') {
       const body = await parseBody(req);
-      const created = await lists.createList(body.name, { emoji: body.emoji, default_priority: body.priority });
+      const created = await lists.createList(body.name, { emoji: body.emoji, default_priority: body.priority, parent_id: body.parent_id });
       return json(res, { list: created });
     }
     const listItemsMatch = path.match(/^\/data\/lists\/([^/]+)\/items$/);

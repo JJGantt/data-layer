@@ -96,9 +96,14 @@ export const SERIES_DEFAULT_HORIZON_DAYS = 30;
 export const DUE_DEFAULT_DAYS = 2;
 const SERIES_MAX_OCCURRENCES = 366;      // a hard stop, so a bad interval cannot flood a list
 
-/** A list. `id` is the identity and never changes; `name` is a label and can be edited freely. */
+/**
+ * A list. `id` is the identity and never changes; `name` is a label and can be edited freely.
+ * `parent_id` nests it inside another list (00184), null at the top level. Only lists nest: every item
+ * still belongs to exactly one list, so nothing that reads items knows the tree exists.
+ */
 export interface List {
   id: string; name: string; emoji: string | null; default_priority: number; created: string;
+  parent_id: string | null;
 }
 
 export async function allLists(): Promise<List[]> {
@@ -131,10 +136,11 @@ export async function requireList(listId: string): Promise<List> {
 /** Create a list and mint its id. The ONLY way a list comes into existence. */
 export async function createList(
   name: string,
-  opts: { emoji?: string | null; default_priority?: number } = {},
+  opts: { emoji?: string | null; default_priority?: number; parent_id?: string | null } = {},
 ): Promise<List> {
   const clean = String(name || '').trim();
   if (!clean) throw new ValidationError('a list needs a name');
+  const parent = opts.parent_id ? await requireList(opts.parent_id) : null;
   const existing = (await allLists()).find(l => l.name.toLowerCase() === clean.toLowerCase());
   if (existing) throw new ValidationError(`'${existing.name}' already exists (id ${existing.id})`);
 
@@ -149,10 +155,55 @@ export async function createList(
   const row = {
     id, name: clean, emoji: opts.emoji || null,
     default_priority: clampPriority(opts.default_priority ?? 0), created: now(),
+    parent_id: parent?.id ?? null,
   };
   const { data, error } = await getClient().from('lists').insert(row).select().single();
   if (error) throw new ValidationError(error.message);
   return data as List;
+}
+
+/**
+ * Nest a list inside another, or bring it back to the top level with null. Its items and sublists
+ * move with it. The database refuses a cycle (00184), so "put Household needs inside Tech" when Tech
+ * is already inside Household needs is an error rather than a loop.
+ */
+export async function setListParent(listId: string, parentId: string | null): Promise<List> {
+  const list = await requireList(listId);
+  const parent = parentId ? await requireList(parentId) : null;
+  const { data, error } = await getClient().from('lists')
+    .update({ parent_id: parent?.id ?? null }).eq('id', list.id).select().single();
+  if (error) throw new ValidationError(error.message);
+  return data as List;
+}
+
+/** A list's chain of ancestors, outermost first: ['Household needs'] for Tech inside it. */
+export function listPath(list: List, all: List[]): List[] {
+  const byId = new Map(all.map(l => [l.id, l]));
+  const out: List[] = [];
+  for (let p = list.parent_id ? byId.get(list.parent_id) : undefined; p && out.length < 64;
+       p = p.parent_id ? byId.get(p.parent_id) : undefined) out.unshift(p);
+  return out;
+}
+
+/**
+ * Lists in tree order: each list followed by its sublists (alphabetical at every level), with its
+ * depth. A list whose parent is missing is treated as top level rather than dropped.
+ */
+export function listTree(all: List[], rootId: string | null = null): { list: List; depth: number }[] {
+  const ids = new Set(all.map(l => l.id));
+  const kids = (pid: string | null) => all
+    .filter(l => (l.parent_id && ids.has(l.parent_id) ? l.parent_id : null) === pid)
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const out: { list: List; depth: number }[] = [];
+  const walk = (pid: string | null, depth: number) => {
+    for (const l of kids(pid)) { out.push({ list: l, depth }); walk(l.id, depth + 1); }
+  };
+  if (rootId == null) walk(null, 0);
+  else {
+    const root = all.find(l => l.id === rootId);
+    if (root) { out.push({ list: root, depth: 0 }); walk(root.id, 1); }
+  }
+  return out;
 }
 
 /** What new items on this list start as. Lists that predate the column read 0. */
@@ -550,9 +601,16 @@ export async function removeSeries(seriesId: string): Promise<ListItem[]> {
   return rows;
 }
 
-/** Delete a whole list plus all its items. Returns the list as it was. */
+/**
+ * Delete a whole list plus all its items. Returns the list as it was. Its sublists are NOT deleted:
+ * they move up to the deleted list's own parent, because "delete the household list" should never
+ * take a whole tree of other lists with it unasked. 00184 restricts the delete so this step cannot be
+ * skipped.
+ */
 export async function removeList(listId: string): Promise<List> {
   const list = await requireList(listId);
+  const moved = await getClient().from('lists').update({ parent_id: list.parent_id ?? null }).eq('parent_id', list.id);
+  if (moved.error) throw new ValidationError(moved.error.message);
   await getClient().from('list_items').delete().eq('list_id', list.id);
   await getClient().from('lists').delete().eq('id', list.id);
   return list;
@@ -625,13 +683,13 @@ function line(i: ListItem, withList = false): string {
   return body && body !== itemLabel(i) ? `${head}\n${body.split('\n').map(l => '    ' + l).join('\n')}` : head;
 }
 
-export function formatListItems(items: ListItem[], list: List): string {
+export function formatListItems(items: ListItem[], list: List, path: List[] = []): string {
   // The default is stated on the header because it silently shapes everything added here — without
   // it, a caller cannot tell why a new item on `work` came out exempt. The id is stated because it is
   // what every write takes, and a reader who only ever sees the name will pass the name.
   const p = clampPriority(list.default_priority);
   const def = p > 0 ? ', new items default to important' : p < 0 ? ', new items default to exempt' : '';
-  const head = `${list.name} [${list.id}]`;
+  const head = `${[...path, list].map(l => l.name).join(' › ')} [${list.id}]`;
   if (!items.length) return `${head} is empty${def}.`;
   return `**${head}** (${items.length} items${def}):\n${items.map(i => line(i)).join('\n')}`;
 }
