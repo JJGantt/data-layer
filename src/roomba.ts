@@ -9,9 +9,12 @@
  * Needs ROOMBA_IP, ROOMBA_BLID and ROOMBA_PASSWORD in data-layer/.env (roomba/fetch-cloud.py writes the
  * last two). The IP is DHCP: when it stops answering, the robot is found again by its UDP discovery
  * broadcast and the new address is used for this process's life. Room names come from roomba_rooms,
- * which the same script fills from the iRobot app's map.
+ * which the same script fills from the iRobot app's map; with the iRobot login stored in .env
+ * (IROBOT_EMAIL / IROBOT_PASSWORD) every `rooms` request re-runs it first, so the list is never stale.
  */
 import dgram from 'node:dgram';
+import { execFile } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
 import mqtt from 'mqtt';
 import { getClient } from './client.js';
@@ -134,11 +137,27 @@ async function command(c: Conn, cmd: string, params: Record<string, unknown> = {
   throw new Error(`${cmd} did not take effect in ${EFFECT_MS / 1000}s (${heard ? 'the robot acknowledged it' : 'the robot never acknowledged it'}) — ${describe(c.state)}`);
 }
 
+const FETCH = fileURLToPath(new URL('../roomba/fetch-cloud.py', import.meta.url));
+
+/** Re-copy the rooms from the iRobot cloud map into roomba_rooms. Null on success, else why not. */
+function refreshRooms(): Promise<string | null> {
+  creds();
+  if (!process.env.IROBOT_EMAIL || !process.env.IROBOT_PASSWORD) return Promise.resolve('no iRobot login stored on this machine');
+  return new Promise((resolve) => execFile('python3', [FETCH], { timeout: 45_000 }, (err, _out, stderr) => {
+    if (!err) return resolve(null);
+    const why = (stderr || err.message).trim().split('\n').pop() || 'failed';
+    console.error(`[roomba] room refresh from the iRobot cloud failed: ${why}`);
+    resolve(why);
+  }));
+}
+
 export async function roomba(op: Op, args: Record<string, any> = {}): Promise<string> {
   if (op === 'rooms') {
+    const stale = await refreshRooms();
     const rs = await rooms();
-    if (!rs.length) return 'No rooms saved yet: roomba/fetch-cloud.py copies them from the iRobot app.';
-    return rs.map((r) => `${r.name} — map ${r.pmap_id} (${r.map_name || 'unnamed map'}), room ${r.region_id}`).join('\n');
+    const note = stale ? `\n(Could not refresh from the iRobot app — ${stale} — so this is the last saved list.)` : '';
+    if (!rs.length) return `No rooms on any map in the iRobot app.${note}`;
+    return rs.map((r) => `${r.name} — map ${r.pmap_id} (${r.map_name || 'unnamed map'}), room ${r.region_id}`).join('\n') + note;
   }
   let regions: Record<string, unknown> | null = null;
   if (op === 'clean_rooms') {

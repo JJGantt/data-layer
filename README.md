@@ -41,7 +41,7 @@ both call, which is why the MCP and the API can never disagree about what a writ
 | `handoff.ts`, `handoffAgent.ts` | `request_handoff`: a session hands Jared the screen it is stuck on (§ Handoffs) |
 | `images.ts` | `share_image`: an image put in the `shared-images` bucket and shown inline in a reply (the hub serves `/img/<name>`) |
 | `bedroomTv.ts` | the bedroom TV (`bedroom_tv`, table `tv_commands`): inserts a command and awaits the TV's answer. The hub relays it to the TV's app; google-tv `docs/VOICE.md` |
-| `roomba.ts` | the Roomba i7+ (`roomba`): status, whole-house and per-room cleans, pause/resume/stop/dock/empty, over the robot's LOCAL MQTT (no iRobot cloud). A home-network job (`home_requests` kind `roomba`, below); `rooms` reads table `roomba_rooms` directly. § The Roomba |
+| `roomba.ts` | the Roomba i7+ (`roomba`): status, whole-house and per-room cleans, pause/resume/stop/dock/empty, over the robot's LOCAL MQTT (no iRobot cloud). A home-network job (`home_requests` kind `roomba`, below); room names in table `roomba_rooms`. § The Roomba |
 | `feeder.ts` | the cat feeder (`feed_cats`, table `feeder_commands`): inserts a feed and awaits the Pi's `petlibro-collector` marking it done or failed. The feeder is LAN-only, so this relay is how a worker off the LAN (Fly) feeds; petlibro-mcp `CLAUDE.md` |
 | `youtube.ts` | public YouTube (`youtube` search / video / related / channel), parsed from the JSON YouTube embeds in its pages |
 | `youtubeAccount.ts` | the owner's YouTube account (`youtube` history / home / subscriptions / …), signed in with a browser's cookies: the Pi's automation browser, or the Mac's on-demand one |
@@ -166,10 +166,12 @@ discovery broadcast (`irobotmcs` to port 5678) and the error log says to update 
 
 The local password comes only from the iRobot cloud: on this firmware (lewis 22.x) the robot answers
 the local password request with "cloud only", so the hold-HOME method that roombapy and dorita980
-describe does nothing. `python3 roomba/fetch-cloud.py` signs in to the iRobot account once (it prompts;
-nothing about the login is stored), writes the BLID and password to `.env`, and replaces
-`roomba_rooms` with the rooms on every visible map; re-run it after renaming or remapping rooms in the
-iRobot app. Its discovery host is `disc-prod.iot.irobotapi.com`; the older `disc-prod.irobotapi.com`
+describe does nothing. `python3 roomba/fetch-cloud.py` signs in to the iRobot account, writes the BLID
+and password to `.env`, and replaces `roomba_rooms` with the rooms on every visible map. Its first run
+prompts for the iRobot login and stores it in `.env` (`IROBOT_EMAIL`, `IROBOT_PASSWORD`); after that it
+runs unattended, and every `rooms` request runs it first, so a room added or renamed in the iRobot app
+shows up the next time the rooms are listed. When that refresh fails, `rooms` answers with the last
+saved list and says so. Its discovery host is `disc-prod.iot.irobotapi.com`; the older `disc-prod.irobotapi.com`
 no longer resolves.
 
 ## JaredBot switch

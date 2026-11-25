@@ -1,11 +1,12 @@
-"""One sign-in to the iRobot account: saves the Roomba's local password and its room names.
+"""Sign in to the iRobot account; save the Roomba's local password and its room names.
 
-    python3 roomba/fetch-cloud.py
+    python3 roomba/fetch-cloud.py [ROOMBA_IP]
 
-Prompts for the iRobot email and password, which are used for this login only and never stored.
-Writes ROOMBA_BLID / ROOMBA_PASSWORD (and ROOMBA_IP when given as an argument) into data-layer/.env,
-and replaces the roomba_rooms table with the rooms on every visible map. Re-run it after renaming or
-remapping rooms in the iRobot app. Standard library only, so it runs on the Mac or the Pi as is.
+Uses IROBOT_EMAIL / IROBOT_PASSWORD from data-layer/.env; when they are not there it prompts for them
+and saves them there, so the first run is the only interactive one. Writes ROOMBA_BLID / ROOMBA_PASSWORD
+(and ROOMBA_IP when given) into .env, and replaces the roomba_rooms table with the rooms on every
+visible map. roomba.ts runs it on every `rooms` request, which is what keeps the room list current.
+Standard library only, so it runs on the Mac or the Pi as is.
 
 The robot (i7+, firmware lewis 22.x) answers the local password request with "cloud only", so the
 hold-HOME method that roombapy and dorita980 describe does not work on it.
@@ -73,8 +74,12 @@ disc = http(DISCOVERY)
 gigya = disc["gigya"]
 dep = disc["deployments"][disc["current_deployment"]]
 
-email = input("iRobot account email: ").strip()
-password = getpass.getpass("iRobot account password (hidden): ")
+text = ENV.read_text() if ENV.exists() else ""
+if "IROBOT_EMAIL=" in text and "IROBOT_PASSWORD=" in text:
+    email, password = env("IROBOT_EMAIL"), env("IROBOT_PASSWORD")
+else:
+    email = input("iRobot account email: ").strip()
+    password = getpass.getpass("iRobot account password (hidden): ")
 login = http(f"https://accounts.{gigya['datacenter_domain']}/accounts.login", {
     "apiKey": gigya["api_key"], "loginID": email, "password": password,
     "format": "json", "targetEnv": "mobile"}, form=True)
@@ -88,11 +93,12 @@ robots = irbt.get("robots") or {}
 if len(robots) != 1:
     sys.exit(f"expected one robot on the account, found {len(robots)}: {list(robots)}")
 blid, robot = next(iter(robots.items()))
-values = {"ROOMBA_BLID": blid, "ROOMBA_PASSWORD": robot["password"]}
+values = {"IROBOT_EMAIL": email, "IROBOT_PASSWORD": password,
+          "ROOMBA_BLID": blid, "ROOMBA_PASSWORD": robot["password"]}
 if len(sys.argv) > 1:
     values["ROOMBA_IP"] = sys.argv[1]
 set_env(values)
-print(f"{robot.get('name')} ({robot.get('sku')}): local password saved to {ENV}")
+print(f"{robot.get('name')} ({robot.get('sku')}): login and local password saved to {ENV}")
 
 maps = sigv4_get(f"{dep['httpBaseAuth']}/v1/{blid}/pmaps?activeDetails=1&visible=true",
                  irbt["credentials"], dep["awsRegion"])
