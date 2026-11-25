@@ -25,7 +25,12 @@ func json(_ obj: [String: Any]) {
     print(String(data: d, encoding: .utf8)!)
 }
 
+// Without the grant macOS drops a posted event without a word, so a click would report success while
+// nothing happened on screen. Checked before every post, so the handoff says why instead.
 func post(_ e: CGEvent?) {
+    guard CGPreflightPostEventAccess() else {
+        fail("the Mac has not allowed clicks and keystrokes: turn on hands-launch under System Settings > Privacy & Security > Accessibility")
+    }
     guard let e else { fail("could not make an event") }
     e.post(tap: .cghidEventTap)
 }
