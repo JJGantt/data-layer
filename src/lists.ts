@@ -59,6 +59,8 @@ export interface ListItem {
   // to know how late it was, and a boolean beside the time is a field that can contradict it.
   completed_at: string | null;
   deleted: boolean; created: string; updated: string;
+  // Audio saved onto the item (00186), oldest first; the hub writes and plays them (recordings.ts).
+  recordings?: { path: string; dur: number | null; at: string }[];
 }
 
 /** Outstanding: not done, not deleted. What every active surface means by "on the list". */
@@ -644,7 +646,7 @@ export async function removeList(listId: string): Promise<List> {
 
 // `listName` is optional: with reminders folded in, a caller often holds an id that came from the
 // cross-list dated view and has no idea which list the item sits on. Omitting it searches all lists.
-async function resolveListItemId(
+export async function resolveListItemId(
   listId: string | null,
   prefix: string,
   opts: { includeCompleted?: boolean } = {},
@@ -703,7 +705,9 @@ function line(i: ListItem, withList = false): string {
   const rings = i.timer ? ' [timer]' : i.alarm ? ' [alarm]' : '';
   const done = i.completed_at ? ` [done ${i.completed_at.slice(0, 16).replace('T', ' ')}]` : '';
   const series = i.series_id ? ` [series: ${i.series_id.slice(0, 8)}]` : '';
-  const head = `- ${itemLabel(i)}${where}${due}${flag}${rings}${done}${series}  [id: ${i.id.slice(0, 8)}]`;
+  const n = (i.recordings || []).length;
+  const recs = n ? ` [${n} recording${n > 1 ? 's' : ''}]` : '';
+  const head = `- ${itemLabel(i)}${where}${due}${flag}${rings}${done}${series}${recs}  [id: ${i.id.slice(0, 8)}]`;
   // An item whose `text` is longer than its label is carrying a BODY, and the label alone does not
   // contain it — a note (migration 00092) is exactly that, and reading one back has to return what
   // was written. Indented so the item stays one visual row when the body is empty, which is most of
