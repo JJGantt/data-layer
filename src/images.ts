@@ -14,10 +14,10 @@ export const BUCKET = 'shared-images';
 
 const TYPES: Record<string, string> = {
   '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp',
-  '.gif': 'image/gif', '.svg': 'image/svg+xml',
+  '.gif': 'image/gif',
 };
 const EXT: Record<string, string> = {
-  'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp', 'image/gif': '.gif', 'image/svg+xml': '.svg',
+  'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp', 'image/gif': '.gif',
 };
 const MAX_BYTES = 15 * 1024 * 1024;
 
@@ -35,7 +35,7 @@ export function imageMarkdown(name: string, caption: string): string {
 async function load(src: { path?: string; url?: string }): Promise<{ bytes: Buffer; type: string }> {
   if (src.path) {
     const type = TYPES[path.extname(src.path).toLowerCase()];
-    if (!type) throw new ValidationError(`not an image file this can share (jpg, png, webp, gif, svg): ${src.path}`);
+    if (!type) throw new ValidationError(`not an image file this can share (jpg, png, webp, gif — render an svg to png first): ${src.path}`);
     return { bytes: await readFile(src.path), type };
   }
   const url = String(src.url || '');
