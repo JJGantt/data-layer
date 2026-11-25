@@ -41,6 +41,7 @@ both call, which is why the MCP and the API can never disagree about what a writ
 | `handoff.ts`, `handoffAgent.ts` | `request_handoff`: a session hands Jared the screen it is stuck on (§ Handoffs) |
 | `images.ts` | `share_image`: an image put in the `shared-images` bucket and shown inline in a reply (the hub serves `/img/<name>`) |
 | `bedroomTv.ts` | the bedroom TV (`bedroom_tv`, table `tv_commands`): inserts a command and awaits the TV's answer. The hub relays it to the TV's app; google-tv `docs/VOICE.md` |
+| `roomba.ts` | the Roomba i7+ (`roomba`): status, whole-house and per-room cleans, pause/resume/stop/dock/empty, over the robot's LOCAL MQTT (no iRobot cloud). A home-network job (`home_requests` kind `roomba`, below); `rooms` reads table `roomba_rooms` directly. § The Roomba |
 | `feeder.ts` | the cat feeder (`feed_cats`, table `feeder_commands`): inserts a feed and awaits the Pi's `petlibro-collector` marking it done or failed. The feeder is LAN-only, so this relay is how a worker off the LAN (Fly) feeds; petlibro-mcp `CLAUDE.md` |
 | `youtube.ts` | public YouTube (`youtube` search / video / related / channel), parsed from the JSON YouTube embeds in its pages |
 | `youtubeAccount.ts` | the owner's YouTube account (`youtube` history / home / subscriptions / …), signed in with a browser's cookies: the Pi's automation browser, or the Mac's on-demand one |
@@ -105,8 +106,8 @@ finished changing after a click; a result still in motion is what the Refresh ac
 
 ## The home-network jobs
 
-Some things only a machine on the home network can do: wake the bedroom TV (Wake-on-LAN, adb), or read
-the owner's YouTube account through a browser signed in as him. The voice worker usually runs on Fly,
+Some things only a machine on the home network can do: wake the bedroom TV (Wake-on-LAN, adb), read
+the owner's YouTube account through a browser signed in as him, or drive the Roomba. The voice worker usually runs on Fly,
 which can do neither. So the caller writes a row (`tv_commands`, `home_requests`) and a machine at
 home, subscribed to inserts, does the work and fills in the answer. Realtime both ways; nothing polls.
 
@@ -151,6 +152,25 @@ headless Chrome and open the profile with a window:
 
 Only one Chrome can hold the profile at a time, so while that window is open the agent uses it rather
 than starting its own.
+
+## The Roomba
+
+`roomba.ts` opens a TLS MQTT connection to the robot for each request (port 8883, username and client
+id = its BLID), reads the state it pushes on connect, publishes to `cmd`, then waits for the robot's own
+`cleanMissionStatus` to show the effect: a command that is published but never takes effect is an
+error, not a success. Nothing stays connected between requests.
+
+Each machine that answers needs `ROOMBA_IP`, `ROOMBA_BLID` and `ROOMBA_PASSWORD` in its
+`data-layer/.env`. The IP is DHCP; when it stops answering, the robot is found again by its UDP
+discovery broadcast (`irobotmcs` to port 5678) and the error log says to update `ROOMBA_IP`.
+
+The local password comes only from the iRobot cloud: on this firmware (lewis 22.x) the robot answers
+the local password request with "cloud only", so the hold-HOME method that roombapy and dorita980
+describe does nothing. `python3 roomba/fetch-cloud.py` signs in to the iRobot account once (it prompts;
+nothing about the login is stored), writes the BLID and password to `.env`, and replaces
+`roomba_rooms` with the rooms on every visible map; re-run it after renaming or remapping rooms in the
+iRobot app. Its discovery host is `disc-prod.iot.irobotapi.com`; the older `disc-prod.irobotapi.com`
+no longer resolves.
 
 ## JaredBot switch
 

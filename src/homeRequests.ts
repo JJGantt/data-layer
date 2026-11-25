@@ -1,10 +1,11 @@
-// Reads only a machine at home can answer (migration 00138). `ask` is the caller's side, from any
+// Requests only a machine at home can answer (migration 00138): the owner's YouTube account and the Roomba. `ask` is the caller's side, from any
 // machine; `start` is the answering side: data-http on the Pi (HOME_AGENT=1), and the Mac's home agent
 // (homeAgent.ts) as the fallback, which claims only what the Pi has not. Realtime both ways, like tv_commands.
 import { randomUUID } from 'crypto';
 import { getClient } from './client.js';
 import { onInserts } from './realtime.js';
 import * as youtubeAccount from './youtubeAccount.js';
+import * as roomba from './roomba.js';
 
 // A deep history or the full subscription list is several YouTube round trips from the Pi.
 const TIMEOUT_MS = 60_000;
@@ -34,10 +35,14 @@ async function answer(row: any): Promise<void> {
   if (row.done_at) return;
   let result: Record<string, unknown>;
   try {
-    if (row.kind !== 'youtube_account') throw new Error(`unknown kind ${row.kind}`);
-    const op = String(row.args?.op) as youtubeAccount.Op;
-    if (!youtubeAccount.OPS.includes(op)) throw new Error(`unknown op ${op}`);
-    result = { ok: true, text: await youtubeAccount.account(op, row.args || {}) };
+    const op = String(row.args?.op);
+    if (row.kind === 'youtube_account') {
+      if (!youtubeAccount.OPS.includes(op as youtubeAccount.Op)) throw new Error(`unknown op ${op}`);
+      result = { ok: true, text: await youtubeAccount.account(op as youtubeAccount.Op, row.args || {}) };
+    } else if (row.kind === 'roomba') {
+      if (!roomba.OPS.includes(op as roomba.Op)) throw new Error(`unknown op ${op}`);
+      result = { ok: true, text: await roomba.roomba(op as roomba.Op, row.args || {}) };
+    } else throw new Error(`unknown kind ${row.kind}`);
   } catch (e: any) {
     result = { ok: false, error: String(e.message || e) };
     console.error(`[home_requests] ${row.id} (${row.kind} ${row.args?.op ?? ''}) failed: ${result.error}`);
