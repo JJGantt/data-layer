@@ -227,6 +227,16 @@ the same way.
 and re-added — which would lose the row's id and creation time and, for a dated item, its series,
 completion and score. It edits one row: a series occurrence is changed alone.
 
+An item can hold audio (migration 00186): `list_items.recordings` is an array of `{path, type, dur, at,
+request_id, start_s}`, the files in the private `list-audio` bucket, which no retention sweep touches.
+`save_recording` (`src/recordings.ts`) keeps the audio of the voice command being answered: it reads
+the in-flight request id from the file `DATA_REQ_FILE` names (written by the voice worker per command,
+a file for the same reason as `DATA_TS_FILE`) and asks the hub's `/api/list-recordings` to do the work,
+so it needs `HUB_TOKEN` (and optionally `HUB_URL`) in its environment. The hub cuts the clip at the end
+of the start marker the model names (`after`, usually "starting now") using Whisper word timings,
+because only the hub has the Groq key and ffmpeg. A marker not found answers the timed words, and the
+model calls again with `start_s`. Only phone and watch commands keep a clip, so only they can be saved.
+
 Recurrence is materialised rather than stored (migration 00085). `repeat_every` on `add_to_list` is
 an instruction executed once: it writes one dated row per occurrence out to `repeat_until`, all
 sharing a `series_id`. There is no repeating item — checking one off leaves the rest alone, and a
