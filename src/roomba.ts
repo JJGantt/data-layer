@@ -185,7 +185,11 @@ export async function roomba(op: Op, args: Record<string, any> = {}): Promise<st
       case 'pause': return await command(c, 'pause');
       case 'resume': return await command(c, 'resume');
       case 'stop': return await command(c, 'stop');
-      case 'dock': return await command(c, 'dock');
+      case 'dock': {
+        // Mid-clean the robot acknowledges `dock` and keeps cleaning; stopped, it goes home. So stop first.
+        if (c.state.cleanMissionStatus?.phase === 'run') await command(c, 'stop');
+        return await command(c, 'dock');
+      }
       case 'empty_bin': return await command(c, 'evac');
       default: throw new Error(`unknown op ${op}`);
     }

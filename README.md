@@ -160,6 +160,9 @@ id = its BLID), reads the state it pushes on connect, publishes to `cmd`, then w
 `cleanMissionStatus` to show the effect: a command that is published but never takes effect is an
 error, not a success. Nothing stays connected between requests.
 
+`dock` while the robot is cleaning sends `stop` first: mid-clean it acknowledges `dock` and keeps
+cleaning, and from stopped it goes home.
+
 Each machine that answers needs `ROOMBA_IP`, `ROOMBA_BLID` and `ROOMBA_PASSWORD` in its
 `data-layer/.env`. The IP is DHCP; when it stops answering, the robot is found again by its UDP
 discovery broadcast (`irobotmcs` to port 5678) and the error log says to update `ROOMBA_IP`.
