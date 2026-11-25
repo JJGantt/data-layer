@@ -35,12 +35,27 @@ const CDP = process.env.HANDOFF_CDP || 'http://127.0.0.1:9223';
  */
 const SETTLE_MS = Number(process.env.HANDOFF_SETTLE_MS || 1200);
 
-type Frame = { png: Buffer; width: number; height: number };
+/** A screenshot, and the rectangle of the real screen it shows (Mac: points; browser: CSS pixels of the
+ *  viewport), which is where a tap at a fraction of it lands. */
+type Frame = { png: Buffer; width: number; height: number; rect: Rect };
+type Rect = { x: number; y: number; w: number; h: number };
+/** What a handoff asked to be shown: `app` (mac-screen), `region` (fractions of the window or page),
+ *  `selector` (pi-browser), and Jared's `whole` toggle. */
+type Ask = { id: string; target: string; app: string | null; region: Rect | null; selector: string | null; whole: boolean };
 interface Screen {
-  shot(): Promise<Frame>;
-  tap(fx: number, fy: number): Promise<void>;
-  type(text: string): Promise<void>;
-  key(name: string): Promise<void>;
+  shot(h: Ask): Promise<Frame>;
+  tap(rect: Rect, fx: number, fy: number): Promise<void>;
+  type(h: Ask, text: string): Promise<void>;
+  key(h: Ask, name: string): Promise<void>;
+}
+
+/** A region the session gave, as fractions, clamped to the window or page; null when there is none. */
+function regionOf(h: Ask): Rect | null {
+  const r = h.region;
+  if (h.whole || !r || ![r.x, r.y, r.w, r.h].every(Number.isFinite)) return null;
+  const x = Math.min(Math.max(r.x, 0), 1), y = Math.min(Math.max(r.y, 0), 1);
+  const w = Math.min(Math.max(r.w, 0.02), 1 - x), h2 = Math.min(Math.max(r.h, 0.02), 1 - y);
+  return { x, y, w, h: h2 };
 }
 
 // ---- the Mac ---------------------------------------------------------------------------------------
@@ -52,61 +67,58 @@ async function hands(args: string[], input?: string): Promise<string> {
   return stdout;
 }
 
-type Box = { id?: number; x: number; y: number; w: number; h: number };
-
-async function capture(args: string[]): Promise<Buffer> {
-  const dir = await mkdtemp(path.join(tmpdir(), 'handoff-'));
-  const file = path.join(dir, 'shot.png');
-  try {
-    await run('/usr/sbin/screencapture', ['-x', '-t', 'png', ...args, file], { timeout: 15_000 });
-    return await readFile(file);
-  } finally { await rm(dir, { recursive: true, force: true }); }
-}
-
 function pngSize(png: Buffer): { width: number; height: number } {
   return { width: png.readUInt32BE(16), height: png.readUInt32BE(20) };
 }
 
-/** The whole main display. A tap is a fraction of the screenshot, so it maps onto the display's points
- *  whatever the pixel density. */
-function macScreen(): Screen {
-  let box: Box | null = null;
-  return {
-    async shot() {
-      box = JSON.parse(await hands(['screen']));
-      const png = await capture(['-D', '1']);
-      return { png, ...pngSize(png) };
-    },
-    async tap(fx, fy) {
-      const b = box || JSON.parse(await hands(['screen']));
-      await hands(['click', String(b.x + fx * b.w), String(b.y + fy * b.h)]);
-    },
-    async type(text) { await hands(['type'], text); },
-    async key(name) { await hands(['key', name]); },
-  };
+/** One window, captured by its id (on whichever display it is), and cut to `crop` (pixels) if given. */
+async function captureWindow(id: number, crop: { x: number; y: number; w: number; h: number } | null): Promise<Buffer> {
+  const dir = await mkdtemp(path.join(tmpdir(), 'handoff-'));
+  const file = path.join(dir, 'shot.png');
+  try {
+    await run('/usr/sbin/screencapture', ['-x', '-o', '-t', 'png', '-l', String(id), file], { timeout: 15_000 });
+    if (crop) {
+      await run('/usr/bin/sips', ['-c', String(crop.h), String(crop.w), '--cropOffset', String(crop.y), String(crop.x), file, '--out', file], { timeout: 15_000 });
+    }
+    return await readFile(file);
+  } finally { await rm(dir, { recursive: true, force: true }); }
 }
 
-/** Chrome's frontmost window, brought to the front first so the click lands on it. This is the same
- *  Chrome the Claude extension drives, so its tabs are reached this way too. */
-function macChrome(): Screen {
-  let box: Box | null = null;
-  const front = async () => {
-    await run('/usr/bin/osascript', ['-e', 'tell application "Google Chrome" to activate'], { timeout: 10_000 });
-    box = JSON.parse(await hands(['chrome']));
-    return box!;
+/** The front window of one app, brought to the front so a click lands on it. The app is the owner name
+ *  `hands windows` lists ('Google Chrome' for mac-chrome). */
+function macWindow(fixedApp?: string): Screen {
+  const front = async (h: Ask) => {
+    const app = fixedApp || h.app;
+    if (!app) throw new Error('mac-screen needs the app whose window to show');
+    try {
+      await run('/usr/bin/osascript', ['-e', `tell application ${JSON.stringify(app)} to activate`], { timeout: 10_000 });
+    } catch (e: any) {
+      // A system dialog's owner (a SecurityAgent prompt) is not an app that takes `activate`; it is
+      // already in front, so the capture and the click go ahead.
+      console.warn(`[handoff] could not bring ${app} to the front: ${String(e.message).split('\n')[0]}`);
+    }
+    return JSON.parse(await hands(['window', app])) as Rect & { id: number };
   };
   return {
-    async shot() {
-      const b = await front();
-      const png = await capture(['-o', '-l', String(b.id)]);
-      return { png, ...pngSize(png) };
+    async shot(h) {
+      const win = await front(h);
+      const r = regionOf(h);
+      if (!r) {
+        const png = await captureWindow(win.id, null);
+        return { png, ...pngSize(png), rect: { x: win.x, y: win.y, w: win.w, h: win.h } };
+      }
+      // The capture is in pixels, the window in points: crop by the window's own pixel size.
+      const full = pngSize(await captureWindow(win.id, null));
+      const crop = { x: Math.round(r.x * full.width), y: Math.round(r.y * full.height),
+        w: Math.max(1, Math.round(r.w * full.width)), h: Math.max(1, Math.round(r.h * full.height)) };
+      const png = await captureWindow(win.id, crop);
+      return { png, ...pngSize(png), rect: { x: win.x + r.x * win.w, y: win.y + r.y * win.h, w: r.w * win.w, h: r.h * win.h } };
     },
-    async tap(fx, fy) {
-      const b = await front();
-      await hands(['click', String(b.x + fx * b.w), String(b.y + fy * b.h)]);
+    async tap(rect, fx, fy) {
+      await hands(['click', String(rect.x + fx * rect.w), String(rect.y + fy * rect.h)]);
     },
-    async type(text) { await front(); await hands(['type'], text); },
-    async key(name) { await front(); await hands(['key', name]); },
+    async type(h, text) { await front(h); await hands(['type'], text); },
+    async key(h, name) { await front(h); await hands(['key', name]); },
   };
 }
 
@@ -144,23 +156,44 @@ const KEYS: Record<string, { key: string; code: string; keyCode: number }> = {
   backspace: { key: 'Backspace', code: 'Backspace', keyCode: 8 }, escape: { key: 'Escape', code: 'Escape', keyCode: 27 },
 };
 
+/** Margin around a selector's element, so the field's label and its button come with it. */
+const ELEMENT_MARGIN = 24;
+
 function piBrowser(): Screen {
+  /** What to show, in viewport CSS pixels: the selector's element (if it is on the page), else the
+   *  region, else the whole viewport. */
+  async function framing(h: Ask): Promise<{ rect: Rect; scrollX: number; scrollY: number }> {
+    const { result } = await cdp<any>('Runtime.evaluate', { returnByValue: true, expression: `(() => {
+      const vw = innerWidth, vh = innerHeight, el = ${!h.whole && h.selector ? `document.querySelector(${JSON.stringify(h.selector)})` : 'null'};
+      const b = el && el.getBoundingClientRect();
+      return { vw, vh, sx: scrollX, sy: scrollY, b: b && b.width && b.height ? { x: b.x, y: b.y, w: b.width, h: b.height } : null };
+    })()` });
+    const v = result.value;
+    let rect: Rect = { x: 0, y: 0, w: v.vw, h: v.vh };
+    const r = regionOf(h);
+    if (v.b) {
+      const x = Math.max(0, v.b.x - ELEMENT_MARGIN), y = Math.max(0, v.b.y - ELEMENT_MARGIN);
+      rect = { x, y, w: Math.min(v.vw, v.b.x + v.b.w + ELEMENT_MARGIN) - x, h: Math.min(v.vh, v.b.y + v.b.h + ELEMENT_MARGIN) - y };
+    } else if (r) rect = { x: r.x * v.vw, y: r.y * v.vh, w: r.w * v.vw, h: r.h * v.vh };
+    return { rect, scrollX: v.sx, scrollY: v.sy };
+  }
   return {
-    async shot() {
-      const { data } = await cdp<{ data: string }>('Page.captureScreenshot', { format: 'png' });
+    async shot(h) {
+      const f = await framing(h);
+      // The clip is in page coordinates, the framing in the viewport's: offset by the scroll.
+      const { data } = await cdp<{ data: string }>('Page.captureScreenshot', { format: 'png',
+        clip: { x: f.rect.x + f.scrollX, y: f.rect.y + f.scrollY, width: f.rect.w, height: f.rect.h, scale: 1 } });
       const png = Buffer.from(data, 'base64');
-      return { png, ...pngSize(png) };
+      return { png, ...pngSize(png), rect: f.rect };
     },
-    async tap(fx, fy) {
-      const m = await cdp<any>('Page.getLayoutMetrics');
-      const v = m.cssVisualViewport || m.visualViewport;
-      const x = fx * v.clientWidth, y = fy * v.clientHeight;
+    async tap(rect, fx, fy) {
+      const x = rect.x + fx * rect.w, y = rect.y + fy * rect.h;
       for (const type of ['mousePressed', 'mouseReleased']) {
         await cdp('Input.dispatchMouseEvent', { type, x, y, button: 'left', clickCount: 1 });
       }
     },
-    async type(text) { await cdp('Input.insertText', { text }); },
-    async key(name) {
+    async type(_h, text) { await cdp('Input.insertText', { text }); },
+    async key(_h, name) {
       const k = KEYS[name];
       if (!k) throw new Error(`unknown key ${name}`);
       for (const type of ['keyDown', 'keyUp']) {
@@ -171,17 +204,25 @@ function piBrowser(): Screen {
   };
 }
 
-const SCREENS: Record<string, () => Screen> = { 'mac-screen': macScreen, 'mac-chrome': macChrome, 'pi-browser': piBrowser };
+const SCREENS: Record<string, () => Screen> = {
+  'mac-screen': () => macWindow(), 'mac-chrome': () => macWindow('Google Chrome'), 'pi-browser': piBrowser,
+};
 const screens = new Map<string, Screen>();
 const screenFor = (target: string) => {
   if (!screens.has(target)) screens.set(target, SCREENS[target]());
   return screens.get(target)!;
 };
+/** The rectangle each handoff's newest screenshot shows, which is what its next tap is measured in. */
+const shown = new Map<string, Rect>();
 
 // ---- the work ---------------------------------------------------------------------------------------
 
-async function publish(handoff: string, target: string, extra: Record<string, unknown> = {}): Promise<void> {
-  const f = await screenFor(target).shot();
+const ASK = 'id,target,app,region,selector,whole';
+
+async function publish(h: Ask, extra: Record<string, unknown> = {}): Promise<void> {
+  const handoff = h.id;
+  const f = await screenFor(h.target).shot(h);
+  shown.set(handoff, f.rect);
   const name = `${uuid()}.png`;
   const { error: up } = await getClient().storage.from(BUCKET).upload(name, f.png, { contentType: 'image/png' });
   if (up) throw new Error(`could not store the screenshot: ${up.message}`);
@@ -198,13 +239,13 @@ async function fail(handoff: string, why: string): Promise<void> {
 }
 
 async function opened(row: any): Promise<void> {
-  try { await publish(row.id, row.target, { status: 'open' }); }
+  try { await publish(row, { status: 'open' }); }
   catch (e: any) { await fail(row.id, `could not screenshot ${row.target}: ${e.message}`); }
 }
 
 async function act(a: any): Promise<void> {
   const sb = getClient();
-  const { data: h } = await sb.from('handoffs').select('id,status,target,taps,typed').eq('id', a.handoff).single();
+  const { data: h } = await sb.from('handoffs').select(`${ASK},status,taps,typed`).eq('id', a.handoff).single();
   const finish = async (fields: Record<string, unknown>) => {
     const { error } = await sb.from('handoff_actions').update({ done_at: new Date().toISOString(), text: null, ...fields }).eq('id', a.id);
     if (error) console.error(`[handoff] action ${a.id} not marked done: ${error.message}`);
@@ -219,17 +260,23 @@ async function act(a: any): Promise<void> {
   try {
     if (a.kind === 'tap') {
       if (!(a.x >= 0 && a.x <= 1 && a.y >= 0 && a.y <= 1)) throw new Error('tap outside the screenshot');
-      await screen.tap(a.x, a.y);
-    } else if (a.kind === 'text') await screen.type(String(a.text || ''));
-    else if (a.kind === 'key') await screen.key(String(a.key));
+      const rect = shown.get(h.id);
+      if (!rect) throw new Error('no screenshot of this handoff taken here to place the tap on');
+      await screen.tap(rect, a.x, a.y);
+    } else if (a.kind === 'text') await screen.type(h, String(a.text || ''));
+    else if (a.kind === 'key') await screen.key(h, String(a.key));
+    else if (a.kind === 'view') {
+      h.whole = !h.whole;
+      await sb.from('handoffs').update({ whole: h.whole }).eq('id', h.id);
+    }
     await finish({});
   } catch (e: any) {
     console.error(`[handoff] ${a.kind} on ${h.target} failed: ${e.message}`);
     await finish({ error: String(e.message).slice(0, 300) });
   }
-  if (a.kind !== 'refresh') await new Promise((r) => setTimeout(r, SETTLE_MS));
+  if (a.kind !== 'refresh' && a.kind !== 'view') await new Promise((r) => setTimeout(r, SETTLE_MS));
   const count = a.kind === 'tap' || a.kind === 'key' ? { taps: h.taps + 1 } : a.kind === 'text' ? { typed: h.typed + 1 } : {};
-  try { await publish(h.id, h.target, count); }
+  try { await publish(h, count); }
   catch (e: any) { await fail(h.id, `could not screenshot ${h.target} after a ${a.kind}: ${e.message}`); }
 }
 

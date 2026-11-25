@@ -58,12 +58,27 @@ function untilEnded(id: string): Promise<Row> {
   });
 }
 
-export async function requestHandoff(target: string, note: string): Promise<string> {
+export interface Framing {
+  /** mac-screen: the app whose front window is shown (its owner name, as `hands windows` lists it). */
+  app?: string;
+  /** The part of the window or page that matters, as fractions: a sign-in dialog, not the whole screen. */
+  region?: { x: number; y: number; w: number; h: number };
+  /** pi-browser: the element to show (plus a margin), followed as the page changes. */
+  selector?: string;
+}
+
+export async function requestHandoff(target: string, note: string, f: Framing = {}): Promise<string> {
   if (!(TARGETS as readonly string[]).includes(target)) {
     throw new ValidationError(`target must be one of ${TARGETS.join(', ')}`);
   }
+  if (target === 'mac-screen' && !f.app) throw new ValidationError('mac-screen needs `app`: the app whose window to show');
+  const reg = f.region;
+  if (reg && ![reg.x, reg.y, reg.w, reg.h].every((v) => typeof v === 'number' && v >= 0 && v <= 1)) {
+    throw new ValidationError('region is {x, y, w, h}, each a fraction 0-1 of the window or page');
+  }
   const { data, error } = await getClient().from('handoffs')
-    .insert({ target, note: note.slice(0, 300), session: process.env.HUB_SESSION_ID || null })
+    .insert({ target, note: note.slice(0, 300), session: process.env.HUB_SESSION_ID || null,
+      app: f.app || null, region: reg || null, selector: f.selector || null })
     .select('id').single();
   if (error) throw new Error(`could not open the handoff: ${error.message}`);
   const r = await untilEnded(data.id);

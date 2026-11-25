@@ -1,8 +1,10 @@
 // hands: the Mac half of a handoff (src/handoffAgent.ts). Where things are on screen, and a click or
 // keystrokes put there, for a tap Jared made on a screenshot from his phone or watch.
 //
-//   hands screen                 → {"x","y","w","h"} of the main display, in points
-//   hands chrome                 → {"id","x","y","w","h"} of Chrome's frontmost window, in points
+//   hands windows                → one line of JSON per window on screen, front to back:
+//                                  {"id","app","title","x","y","w","h"} (points, any display)
+//   hands window <app> [title]   → the front window of that app (exact owner name, as `windows` lists
+//                                  it), the first whose title contains `title` when one is given
 //   hands click <x> <y>          → a left click at that global point
 //   hands type                   → types stdin as it is (any characters; nothing is echoed)
 //   hands key enter|tab|backspace|escape
@@ -29,24 +31,24 @@ func post(_ e: CGEvent?) {
 }
 
 let args = CommandLine.arguments.dropFirst()
-guard let cmd = args.first else { fail("usage: hands screen|chrome|click x y|type|key name") }
+guard let cmd = args.first else { fail("usage: hands windows|window app [title]|click x y|type|key name") }
 
 switch cmd {
-case "screen":
-    let b = CGDisplayBounds(CGMainDisplayID())
-    json(["x": b.origin.x, "y": b.origin.y, "w": b.width, "h": b.height])
-
-case "chrome":
+case "windows", "window":
+    let want = args.dropFirst().first
+    let titled = args.dropFirst(2).first
     let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
-    for w in list where (w[kCGWindowOwnerName as String] as? String) == "Google Chrome"
-        && (w[kCGWindowLayer as String] as? Int) == 0 {
+    for w in list where (w[kCGWindowLayer as String] as? Int) == 0 {
         guard let id = w[kCGWindowNumber as String] as? Int,
+              let app = w[kCGWindowOwnerName as String] as? String,
               let r = w[kCGWindowBounds as String] as? [String: CGFloat],
-              let wd = r["Width"], let ht = r["Height"], wd > 200, ht > 200 else { continue }
-        json(["id": id, "x": r["X"] ?? 0, "y": r["Y"] ?? 0, "w": wd, "h": ht])
-        exit(0)
+              let wd = r["Width"], let ht = r["Height"], wd > 40, ht > 40 else { continue }
+        let title = w[kCGWindowName as String] as? String ?? ""
+        let row: [String: Any] = ["id": id, "app": app, "title": title, "x": r["X"] ?? 0, "y": r["Y"] ?? 0, "w": wd, "h": ht]
+        if cmd == "windows" { json(row); continue }
+        if app == want && (titled == nil || title.localizedCaseInsensitiveContains(titled!)) { json(row); exit(0) }
     }
-    fail("no Chrome window on screen")
+    if cmd == "window" { fail("no window of \(want ?? "?")\(titled.map { " titled \($0)" } ?? "") on screen") }
 
 case "click":
     let v = Array(args.dropFirst())

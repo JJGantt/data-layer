@@ -77,9 +77,15 @@ and answers with how it ended.
 
 | target | the screen | answered by |
 |---|---|---|
-| `mac-screen` | the Mac's main display | `handoffMain.js` on the Mac (launchd `com.jaredgantt.handoff-agent`) |
+| `mac-screen` | one app's front window (`app`, its owner name as `hands windows` lists it), on whichever display | `handoffMain.js` on the Mac (launchd `com.jaredgantt.handoff-agent`) |
 | `mac-chrome` | Chrome's front window on the Mac, brought to the front (the Claude extension's tabs included) | the same |
 | `pi-browser` | the Pi's automation browser, over CDP on :9223 | data-http on the Pi (`HOME_AGENT=1` turns it on; `HANDOFF_TARGETS` overrides) |
+
+**Only the part that matters is sent** (he may be on the watch): a window, never a whole display, and
+the session can crop further with `region` (fractions of the window or page) or, on the Pi, `selector`
+(that element plus a 24 px margin, followed as the page changes). His Full/Crop toggle is the `view`
+action, which flips `handoffs.whole`. A tap is placed in the rectangle the newest screenshot showed,
+which the agent keeps in memory: after an agent restart a tap fails until Refresh takes a new one.
 
 A screen exists on one machine, so there is no fallback: a handoff whose machine is down is never
 claimed, and `sweepMissed` reports it.
@@ -89,7 +95,7 @@ cancelled | failed`) and `handoff_actions` (each tap, text, key, refresh, done, 
 `handoff_actions.text` only until the agent has typed it; it is then nulled, and the session is told only
 how many times he typed.
 
-**The Mac needs two grants on `hands/bin/hands-launch`:** Screen Recording (screenshots of other apps)
+**The Mac needs two grants on `hands/bin/hands-launch`:** Screen Recording (window captures and titles)
 and Accessibility (posting the click and keys). macOS ties a grant to the binary's signature, so
 `hands/build.sh` builds the launcher only when it is missing; rebuilding it voids both grants. `hands`
 (`hands/hands.swift`) is rebuilt freely: it runs as the launcher's descendant and uses its grants.
