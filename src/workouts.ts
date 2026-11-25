@@ -205,7 +205,7 @@ function normalizeNote(value: unknown): string | null {
  * A set may override that with its own `occurred_at` — for a set being written down after the fact,
  * which is the only way to place one at a time that has already passed.
  */
-export async function logSets(items: { exercise_id: number; weight_lbs: number; reps: number; occurred_at?: string; note?: string }[]): Promise<SetRow[]> {
+export async function logSets(items: { exercise_id: number; weight_lbs?: number | null; reps: number; occurred_at?: string; note?: string }[]): Promise<SetRow[]> {
   const sb = getClient();
   // now() is voice-aware: for a voice-logged set it resolves to the audio CAPTURE START (when the user spoke),
   // not the current instant — see helpers.ts. That's what makes rest gaps between sets read true.
@@ -218,15 +218,30 @@ export async function logSets(items: { exercise_id: number; weight_lbs: number; 
     if (!Number.isInteger(n)) throw new Error(`each set needs an integer exercise_id from get_workout_catalog, got ${JSON.stringify(it.exercise_id)}`);
     const entry = catalog.find((r) => r.id === n);
     if (!entry) throw new Error(`No exercise with id ${n}. Call get_workout_catalog for the ids; a genuinely new movement is registered with upsert_catalog_exercise, which returns one.`);
-    if (!Number.isFinite(it.weight_lbs) || it.weight_lbs < 0) throw new Error(`'${entry.name}': weight_lbs must be >= 0 (bodyweight = 0)`);
+    // No weight stated means the weight he used last for this movement — an earlier set in this
+    // same call first, else his most recent logged set of it.
+    let weight = it.weight_lbs;
+    if (weight === undefined || weight === null) {
+      weight = rows.filter((r) => r.exercise_id === n).at(-1)?.weight_lbs ?? (await lastWeight(n));
+      if (weight === null) throw new Error(`'${entry.name}' has never been logged, so there is no previous weight to use. Ask him for the weight (bodyweight = 0).`);
+    }
+    if (!Number.isFinite(weight) || weight < 0) throw new Error(`'${entry.name}': weight_lbs must be >= 0 (bodyweight = 0)`);
     if (!Number.isInteger(it.reps) || it.reps <= 0) throw new Error(`'${entry.name}': reps must be a positive integer`);
     // Only a set that states its own time departs from the call's shared stamp, so logging several
     // sets together still records them as one moment. The `exercise` column is filled by the
     // sets_resolve_exercise trigger (migration 00075) from this id — never written here.
-    rows.push({ occurred_at: it.occurred_at ? normalizeSetTime(it.occurred_at) : ts, exercise_id: n, weight_lbs: it.weight_lbs, reps: it.reps, note: normalizeNote(it.note) });
+    rows.push({ occurred_at: it.occurred_at ? normalizeSetTime(it.occurred_at) : ts, exercise_id: n, weight_lbs: weight, reps: it.reps, note: normalizeNote(it.note) });
   }
   const { data } = await sb.from('sets').insert(rows).select();
   return (data ?? []) as SetRow[];
+}
+
+/** The weight of the most recent logged set of this exercise, or null if it has none. */
+async function lastWeight(exercise_id: number): Promise<number | null> {
+  const { data, error } = await getClient().from('sets').select('weight_lbs')
+    .eq('exercise_id', exercise_id).order('occurred_at', { ascending: false }).order('id', { ascending: false }).limit(1);
+  if (error) throw new Error(`could not read the previous weight: ${error.message}`);
+  return data?.length ? Number(data[0].weight_lbs) : null;
 }
 
 export async function removeSet(id: number): Promise<SetRow | null> {
