@@ -119,9 +119,9 @@ const EFFECT: Record<string, (m: Mission) => boolean> = {
 };
 const EFFECT_MS = 25_000;
 
-async function command(c: Conn, cmd: string, params: Record<string, unknown> = {}): Promise<string> {
+async function command(c: Conn, cmd: string, params: Record<string, unknown> = {}, effect = EFFECT[cmd]): Promise<string> {
   const m0: Mission = c.state.cleanMissionStatus || {};
-  if (EFFECT[cmd](m0)) return `Already so — ${describe(c.state)}`;
+  if (effect(m0)) return `Already so — ${describe(c.state)}`;
   const idle = !m0.cycle || m0.cycle === 'none';
   if ((cmd === 'pause' || cmd === 'resume') && idle) return `Nothing to ${cmd}: no clean in progress — ${describe(c.state)}`;
   const time = Math.floor(Date.now() / 1000);
@@ -130,7 +130,7 @@ async function command(c: Conn, cmd: string, params: Record<string, unknown> = {
   while (Date.now() < deadline) {
     const m: Mission = c.state.cleanMissionStatus || {};
     if (m.error) break;
-    if (EFFECT[cmd](m)) return describe(c.state);
+    if (effect(m)) return describe(c.state);
     await Promise.race([c.changed(), new Promise((r) => setTimeout(r, deadline - Date.now()))]);
   }
   const heard = c.state.lastCommand?.time === time;
@@ -186,8 +186,10 @@ export async function roomba(op: Op, args: Record<string, any> = {}): Promise<st
       case 'resume': return await command(c, 'resume');
       case 'stop': return await command(c, 'stop');
       case 'dock': {
-        // Mid-clean the robot acknowledges `dock` and keeps cleaning; stopped, it goes home. So stop first.
-        if (c.state.cleanMissionStatus?.phase === 'run') await command(c, 'stop');
+        // The robot acknowledges `dock` during a running or paused clean and ignores it, so the clean
+        // is ended first; from `stop` the dock takes.
+        const phase = c.state.cleanMissionStatus?.phase;
+        if (phase === 'run' || phase === 'pause') await command(c, 'stop', {}, (m) => m.phase === 'stop');
         return await command(c, 'dock');
       }
       case 'empty_bin': return await command(c, 'evac');
