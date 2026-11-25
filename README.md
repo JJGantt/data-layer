@@ -38,6 +38,7 @@ both call, which is why the MCP and the API can never disagree about what a writ
 | `places.ts` | names for positions from the Apple Maps Server API (address + the business there), cached in `place_names`; needs `MAPS_KEY_ID`, `MAPS_PRIVATE_KEY`, `MAPS_TEAM_ID` on every machine that runs the MCP |
 | `desk.ts` | dispatching Claude sessions to a machine, and the follow-up pointer |
 | `reports.ts` | the HTML write-ups a dispatched session publishes |
+| `handoff.ts`, `handoffAgent.ts` | `request_handoff`: a session hands Jared the screen it is stuck on (§ Handoffs) |
 | `images.ts` | `share_image`: an image put in the `shared-images` bucket and shown inline in a reply (the hub serves `/img/<name>`) |
 | `bedroomTv.ts` | the bedroom TV (`bedroom_tv`, table `tv_commands`): inserts a command and awaits the TV's answer. The hub relays it to the TV's app; google-tv `docs/VOICE.md` |
 | `feeder.ts` | the cat feeder (`feed_cats`, table `feeder_commands`): inserts a feed and awaits the Pi's `petlibro-collector` marking it done or failed. The feeder is LAN-only, so this relay is how a worker off the LAN (Fly) feeds; petlibro-mcp `CLAUDE.md` |
@@ -65,6 +66,36 @@ the search, not the session.
 
 The cart URL takes ids, not names, because reading the list and choosing one is the step that picks
 the right product; a name matcher has to reject "milk" as ambiguous against a milkshake cereal.
+
+## Handoffs
+
+A session stuck on something only Jared can do (a sign-in, a 2FA code, a captcha) calls
+`request_handoff(target, note)`. He gets the screenshot on his phone and watch (status-hub
+`docs/HANDOFFS.md`); where he taps is clicked on the real screen, what he types is typed there, and a new
+screenshot follows each action until he presses Done or Cancel. The tool call is held open throughout
+and answers with how it ended.
+
+| target | the screen | answered by |
+|---|---|---|
+| `mac-screen` | the Mac's main display | `handoffMain.js` on the Mac (launchd `com.jaredgantt.handoff-agent`) |
+| `mac-chrome` | Chrome's front window on the Mac, brought to the front (the Claude extension's tabs included) | the same |
+| `pi-browser` | the Pi's automation browser, over CDP on :9223 | data-http on the Pi (`HOME_AGENT=1` turns it on; `HANDOFF_TARGETS` overrides) |
+
+A screen exists on one machine, so there is no fallback: a handoff whose machine is down is never
+claimed, and `sweepMissed` reports it.
+
+**Tables:** `handoffs` (the screen, its newest screenshot and `seq`, status `new → open → done |
+cancelled | failed`) and `handoff_actions` (each tap, text, key, refresh, done, cancel). Typed text is in
+`handoff_actions.text` only until the agent has typed it; it is then nulled, and the session is told only
+how many times he typed.
+
+**The Mac needs two grants on `hands/bin/hands-launch`:** Screen Recording (screenshots of other apps)
+and Accessibility (posting the click and keys). macOS ties a grant to the binary's signature, so
+`hands/build.sh` builds the launcher only when it is missing; rebuilding it voids both grants. `hands`
+(`hands/hands.swift`) is rebuilt freely: it runs as the launcher's descendant and uses its grants.
+
+**The screenshot after an action waits `HANDOFF_SETTLE_MS` (1.2 s).** No event says a screen has
+finished changing after a click; a result still in motion is what the Refresh action is for.
 
 ## The home-network jobs
 

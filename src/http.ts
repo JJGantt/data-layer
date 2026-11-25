@@ -21,6 +21,7 @@ import * as shopping from './shopping.js';
 import { ValidationError } from './helpers.js';
 import * as tvHome from './tvHome.js';
 import * as homeRequests from './homeRequests.js';
+import * as handoffAgent from './handoffAgent.js';
 
 const PORT = Number(process.env.DATA_HTTP_PORT || 27186);
 const TOKEN = process.env.DATA_HTTP_TOKEN || '';
@@ -307,6 +308,10 @@ const server = http.createServer(async (req, res) => {
 // The home-network jobs (tvHome.ts, homeRequests.ts); set only in the Pi's unit. The Mac runs them as the
 // fallback from homeAgent.ts instead.
 if (process.env.HOME_AGENT === '1') { tvHome.start(); homeRequests.start(); }
+// Handoffs on the Pi's automation browser (handoffAgent.ts). The browser is the Pi's, the machine that
+// sets HOME_AGENT, so that is where they are answered; HANDOFF_TARGETS overrides it.
+const handoffTargets = process.env.HANDOFF_TARGETS ?? (process.env.HOME_AGENT === '1' ? 'pi-browser' : '');
+if (handoffTargets) handoffAgent.start(handoffTargets.split(',').map((t) => t.trim()).filter(Boolean));
 
 // Errors and the heartbeat go to the ops responder (health/responder). ops_report.cjs is a copy of its
 // reporter (edit it there). Request-driven, so the event loop is the work loop: a beat from a timer on

@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.jaredgantt.handoff-agent</string>
+  <!-- Carries out Jared's taps on a handed-off Mac screen; README § Handoffs.
+       Runs under hands/bin/hands-launch, which holds Screen Recording and Accessibility.
+       Install: hands/build.sh, cp this to ~/Library/LaunchAgents, launchctl bootstrap gui/$(id -u) <that file>. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/jaredgantt/repos/data-layer/hands/bin/hands-launch</string>
+    <string>/usr/local/bin/node</string>
+    <string>/Users/jaredgantt/repos/data-layer/dist/handoffMain.js</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/jaredgantt/repos/data-layer</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>OPS_MACHINE</key><string>mac</string>
+    <key>HANDOFF_TARGETS</key><string>mac-screen,mac-chrome</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>30</integer>
+  <key>StandardOutPath</key><string>/Users/jaredgantt/Library/Logs/handoff-agent.log</string>
+  <key>StandardErrorPath</key><string>/Users/jaredgantt/Library/Logs/handoff-agent.log</string>
+</dict>
+</plist>

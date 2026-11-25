@@ -22,14 +22,19 @@ async function claim(table: string, row: any): Promise<boolean> {
  *  Behind the subscription, a slow backstop (`sweepMissed`, every MISSED_SWEEP_MS) finds rows nobody
  *  claimed — every row is claimed by whichever machine answers it, so an unclaimed one means no machine
  *  heard it — and reports each once. It does not act on them: a TV command or a read minutes late is
- *  worse than none, and its caller has already given up. */
-export function onInserts(table: string, handle: (row: any) => Promise<void>, deferMs = 0): void {
+ *  worse than none, and its caller has already given up.
+ *
+ *  `accept` leaves a row alone, unclaimed, when this machine is not the one that can answer it (a
+ *  handoff for the Pi's browser, heard by the Mac). */
+export function onInserts(table: string, handle: (row: any) => Promise<void>, deferMs = 0,
+  accept: (row: any) => boolean = () => true): void {
   // Ids this process received, by when, so the sweep can tell a deaf channel from a quiet table.
   const heard = new Map<string, number>();
   let subscribedAt = 0;
   let recycle: (() => void) | null = null;
   const take = async (row: any) => {
     heard.set(row.id, Date.now());
+    if (!accept(row)) return;
     if (deferMs) await new Promise((r) => setTimeout(r, deferMs));
     if (!(await claim(table, row))) return;
     if (deferMs) console.error(`[${table}] ${row.id} (${row.op || row.kind}) unclaimed after ${deferMs / 1000}s: answering it here, the primary is not`);
