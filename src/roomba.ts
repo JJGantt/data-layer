@@ -9,8 +9,8 @@
  * Needs ROOMBA_IP, ROOMBA_BLID and ROOMBA_PASSWORD in data-layer/.env (roomba/fetch-cloud.py writes the
  * last two). The IP is DHCP: when it stops answering, the robot is found again by its UDP discovery
  * broadcast and the new address is used for this process's life. Room names come from roomba_rooms,
- * which the same script fills from the iRobot app's map; with the iRobot login stored in .env
- * (IROBOT_EMAIL / IROBOT_PASSWORD) every `rooms` request re-runs it first, so the list is never stale.
+ * which the same script fills from the iRobot app's map. `rooms` reads that saved list; only
+ * `update_rooms`, asked for by name, re-runs the script with the iRobot login stored in .env.
  */
 import dgram from 'node:dgram';
 import { execFile } from 'node:child_process';
@@ -19,7 +19,7 @@ import crypto from 'node:crypto';
 import mqtt from 'mqtt';
 import { getClient } from './client.js';
 
-export const OPS = ['status', 'rooms', 'start', 'clean_rooms', 'pause', 'resume', 'stop', 'dock', 'empty_bin'] as const;
+export const OPS = ['status', 'rooms', 'update_rooms', 'start', 'clean_rooms', 'pause', 'resume', 'stop', 'dock', 'empty_bin'] as const;
 export type Op = typeof OPS[number];
 
 type Reported = Record<string, any>;
@@ -141,8 +141,7 @@ const FETCH = fileURLToPath(new URL('../roomba/fetch-cloud.py', import.meta.url)
 
 /** Re-copy the rooms from the iRobot cloud map into roomba_rooms. Null on success, else why not. */
 function refreshRooms(): Promise<string | null> {
-  creds();
-  if (!process.env.IROBOT_EMAIL || !process.env.IROBOT_PASSWORD) return Promise.resolve('no iRobot login stored on this machine');
+  // The script reads .env itself, so a login saved after this process started is still used.
   return new Promise((resolve) => execFile('python3', [FETCH], { timeout: 45_000 }, (err, _out, stderr) => {
     if (!err) return resolve(null);
     const why = (stderr || err.message).trim().split('\n').pop() || 'failed';
@@ -151,13 +150,17 @@ function refreshRooms(): Promise<string | null> {
   }));
 }
 
+function listRooms(rs: any[]): string {
+  if (!rs.length) return 'No named rooms on any map.';
+  return rs.map((r) => `${r.name} — map ${r.pmap_id} (${r.map_name || 'unnamed map'}), room ${r.region_id}`).join('\n');
+}
+
 export async function roomba(op: Op, args: Record<string, any> = {}): Promise<string> {
-  if (op === 'rooms') {
-    const stale = await refreshRooms();
-    const rs = await rooms();
-    const note = stale ? `\n(Could not refresh from the iRobot app — ${stale} — so this is the last saved list.)` : '';
-    if (!rs.length) return `No rooms on any map in the iRobot app.${note}`;
-    return rs.map((r) => `${r.name} — map ${r.pmap_id} (${r.map_name || 'unnamed map'}), room ${r.region_id}`).join('\n') + note;
+  if (op === 'rooms') return listRooms(await rooms());
+  if (op === 'update_rooms') {
+    const failed = await refreshRooms();
+    if (failed) throw new Error(`could not update the rooms from the iRobot app: ${failed}`);
+    return `Updated from the iRobot app:\n${listRooms(await rooms())}`;
   }
   let regions: Record<string, unknown> | null = null;
   if (op === 'clean_rooms') {

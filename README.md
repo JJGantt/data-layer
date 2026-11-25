@@ -169,9 +169,9 @@ the local password request with "cloud only", so the hold-HOME method that roomb
 describe does nothing. `python3 roomba/fetch-cloud.py` signs in to the iRobot account, writes the BLID
 and password to `.env`, and replaces `roomba_rooms` with the rooms on every visible map. Its first run
 prompts for the iRobot login and stores it in `.env` (`IROBOT_EMAIL`, `IROBOT_PASSWORD`); after that it
-runs unattended, and every `rooms` request runs it first, so a room added or renamed in the iRobot app
-shows up the next time the rooms are listed. When that refresh fails, `rooms` answers with the last
-saved list and says so. Its discovery host is `disc-prod.iot.irobotapi.com`; the older `disc-prod.irobotapi.com`
+runs unattended. The tool's `rooms` reads the saved list; `update_rooms` re-runs the script, and only
+when he asks for it, because rooms change rarely. Only named rooms are kept: a map never edited in the
+app has unnamed segments and no user version. Its discovery host is `disc-prod.iot.irobotapi.com`; the older `disc-prod.irobotapi.com`
 no longer resolves.
 
 ## JaredBot switch

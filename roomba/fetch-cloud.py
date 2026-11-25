@@ -77,6 +77,8 @@ dep = disc["deployments"][disc["current_deployment"]]
 text = ENV.read_text() if ENV.exists() else ""
 if "IROBOT_EMAIL=" in text and "IROBOT_PASSWORD=" in text:
     email, password = env("IROBOT_EMAIL"), env("IROBOT_PASSWORD")
+elif not sys.stdin.isatty():
+    sys.exit("no iRobot login stored in .env; run this once in a terminal to save it")
 else:
     email = input("iRobot account email: ").strip()
     password = getpass.getpass("iRobot account password (hidden): ")
@@ -105,10 +107,13 @@ maps = sigv4_get(f"{dep['httpBaseAuth']}/v1/{blid}/pmaps?activeDetails=1&visible
 rows = []
 for m in maps:
     d = m.get("active_pmapv_details") or {}
+    # A map nobody has edited in the app has no user version and unnamed rooms; only named rooms are kept.
     for r in d.get("regions") or []:
-        rows.append({"pmap_id": m["pmap_id"], "region_id": str(r["id"]), "name": r.get("name") or r["id"],
+        if not r.get("name"):
+            continue
+        rows.append({"pmap_id": m["pmap_id"], "region_id": str(r["id"]), "name": r["name"],
                      "region_type": r.get("region_type"), "map_name": (d.get("map_header") or {}).get("name"),
-                     "user_pmapv_id": m["user_pmapv_id"]})
+                     "user_pmapv_id": m.get("user_pmapv_id") or m["active_pmapv_id"]})
 for r in rows:
     print(f"  {r['map_name']}: {r['name']} (region {r['region_id']})")
 
