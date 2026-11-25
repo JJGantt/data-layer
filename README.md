@@ -45,6 +45,7 @@ both call, which is why the MCP and the API can never disagree about what a writ
 | `ytParse.ts` | YouTube's renderer JSON, old and new shapes, flattened to rows; shared by the two above |
 | `tvGuide.ts` | the bedroom TV's TV Guide (`tv_guide`, tables `tv_shelves` and `tv_shelf_items`): titled shelves of items, read by the TV through the hub's `/api/tv/guide`; google-tv `docs/GUIDE.md` |
 | `catalog.ts` | what is streaming where (`catalog`), from JustWatch, with Android TV deep links |
+| `appleMusic.ts` | his Apple Music account (`apple_music`): library, playlists, recent plays, catalog search, and adding songs, albums, favorites and playlists; needs the `APPLE_MUSIC_*` variables (§ Apple Music) |
 | `homeRequests.ts` | reads only a machine at home can answer (table `home_requests`): any machine asks, the Pi answers, the Mac if the Pi does not |
 | `tvHome.ts` | the bedroom TV's home-network end (the Pi, the Mac as fallback): power over Wake-on-LAN and adb, remote keys over adb, and a wake before `open` / `launch` / `input` |
 | `realtime.ts` | `onInserts`, the reconnecting INSERT subscription the home jobs run on, with the fallback's deferred claim |
@@ -292,6 +293,34 @@ answers carry coordinates only and `[places]` logs an error.
 
 Lookups are cached by position (4 decimal places, about 11 m) in `place_names` for every machine. A cached
 miss is permanent, so after changing how `lookUp` works, delete the table's rows to re-ask Apple.
+
+## Apple Music
+
+`apple_music` (`src/appleMusic.ts`) reads and adds to his Apple Music library through the Apple Music API.
+The API itself cannot delete or rename anything in a library, so the tool only adds. It cannot play
+anything either; playback on the HomePods is Siri's.
+
+| variable | value |
+|---|---|
+| `APPLE_MUSIC_TEAM_ID` | `XMH4AVFC78` |
+| `APPLE_MUSIC_KEY_ID` | `96Y764WD88`, the MusicKit key "Jared Music" (Media ID `media.com.jaredgantt.music`) |
+| `APPLE_MUSIC_PRIVATE_KEY` | that key's `.p8` (`~/.appstoreconnect/private_keys/` on the Mac) on one line, newlines as `\n`, unquoted |
+| `APPLE_MUSIC_USER_TOKEN` | his Music-User-Token, `~/.config/music/apple-music-user-token` on the Mac |
+
+They live in `.env` on the Mac and as Fly secrets on `jared-voice-worker`. **The Pi's `.env` does not have
+them yet** (the Pi was off the network when the tool was added); until it does, `apple_music` on the Pi
+answers that it is not configured and logs an error.
+
+The user token can only be minted by MusicKit JS in a browser (`~/repos/music/bin/apple-music-login`,
+which opens a page on the Mac) and lasts about six months. When it expires every call fails 401/403
+after the retries, and the error says to sign in again; then copy the new token to every place above.
+Apple also answers a burst of calls with 401 or 403 "Invalid authentication" while both tokens are
+valid, clearing within a minute, which is why those statuses are retried with backoff rather than
+treated as an expired token at once. Some responses arrive gzipped without a `Content-Encoding` header.
+
+Catalog ids (numbers) are what adding, favoriting and playlists take; library ids (`i.`, `l.`, `p.`)
+name what is already in the library, and library songs print their catalog id beside them. `recent`
+is Apple's last ~90 tracks with no times; there is no fuller history in the API.
 
 ## Migrations
 
