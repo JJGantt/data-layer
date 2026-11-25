@@ -44,7 +44,7 @@ type Rect = { x: number; y: number; w: number; h: number };
 type Ask = { id: string; target: string; app: string | null; region: Rect | null; selector: string | null; whole: boolean };
 interface Screen {
   shot(h: Ask): Promise<Frame>;
-  tap(rect: Rect, fx: number, fy: number): Promise<void>;
+  tap(h: Ask, rect: Rect, fx: number, fy: number): Promise<void>;
   type(h: Ask, text: string): Promise<void>;
   key(h: Ask, name: string): Promise<void>;
 }
@@ -97,7 +97,12 @@ function macWindow(fixedApp?: string): Screen {
       // already in front, so the capture and the click go ahead.
       console.warn(`[handoff] could not bring ${app} to the front: ${String(e.message).split('\n')[0]}`);
     }
-    return JSON.parse(await hands(['window', app])) as Rect & { id: number };
+    // An app on another Space has no window on screen until the switch to it finishes, so the window is
+    // looked for again for a few seconds before the capture or the click gives up.
+    for (let i = 0; ; i++) {
+      try { return JSON.parse(await hands(['window', app])) as Rect & { id: number }; }
+      catch (e) { if (i >= 10) throw e; await new Promise((r) => setTimeout(r, 300)); }
+    }
   };
   return {
     async shot(h) {
@@ -114,7 +119,10 @@ function macWindow(fixedApp?: string): Screen {
       const png = await captureWindow(win.id, crop);
       return { png, ...pngSize(png), rect: { x: win.x + r.x * win.w, y: win.y + r.y * win.h, w: r.w * win.w, h: r.h * win.h } };
     },
-    async tap(rect, fx, fy) {
+    async tap(h, rect, fx, fy) {
+      // Another app may have come to the front since the screenshot (he went to the Mac): the click is
+      // placed on this window, so it is brought back first.
+      await front(h);
       await hands(['click', String(rect.x + fx * rect.w), String(rect.y + fy * rect.h)]);
     },
     async type(h, text) { await front(h); await hands(['type'], text); },
@@ -186,7 +194,7 @@ function piBrowser(): Screen {
       const png = Buffer.from(data, 'base64');
       return { png, ...pngSize(png), rect: f.rect };
     },
-    async tap(rect, fx, fy) {
+    async tap(_h, rect, fx, fy) {
       const x = rect.x + fx * rect.w, y = rect.y + fy * rect.h;
       for (const type of ['mousePressed', 'mouseReleased']) {
         await cdp('Input.dispatchMouseEvent', { type, x, y, button: 'left', clickCount: 1 });
@@ -262,7 +270,7 @@ async function act(a: any): Promise<void> {
       if (!(a.x >= 0 && a.x <= 1 && a.y >= 0 && a.y <= 1)) throw new Error('tap outside the screenshot');
       const rect = shown.get(h.id);
       if (!rect) throw new Error('no screenshot of this handoff taken here to place the tap on');
-      await screen.tap(rect, a.x, a.y);
+      await screen.tap(h, rect, a.x, a.y);
     } else if (a.kind === 'text') await screen.type(h, String(a.text || ''));
     else if (a.kind === 'key') await screen.key(h, String(a.key));
     else if (a.kind === 'view') {
