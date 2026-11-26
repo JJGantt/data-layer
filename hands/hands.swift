@@ -27,12 +27,24 @@ func json(_ obj: [String: Any]) {
 
 // Without the grant macOS drops a posted event without a word, so a click would report success while
 // nothing happened on screen. Checked before every post, so the handoff says why instead.
+//
+// The WindowServer checks the grant on each event AFTER it is posted, by looking up the process that
+// sent it. A sender that has already exited fails that lookup ("Sender is prohibited from synthesizing
+// events") and the event is dropped. Exiting straight after a click drops the mouse-up: the app under
+// the pointer is left holding a button that never comes up, and while it waits for the release it
+// answers no Apple Event, so every script sent to it times out until a real click or keypress at the Mac.
+// So every event is followed by a pause, and the process stays alive after its last one (`settle`).
+var posted = false
+func settle() { if posted { usleep(400_000) } }
+
 func post(_ e: CGEvent?) {
     guard CGPreflightPostEventAccess() else {
         fail("the Mac has not allowed clicks and keystrokes: turn on hands-launch under System Settings > Privacy & Security > Accessibility")
     }
     guard let e else { fail("could not make an event") }
     e.post(tap: .cghidEventTap)
+    posted = true
+    usleep(20_000)
 }
 
 let args = CommandLine.arguments.dropFirst()
@@ -86,3 +98,4 @@ case "key":
 default:
     fail("unknown command \(cmd)")
 }
+settle()
