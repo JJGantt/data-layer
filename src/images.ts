@@ -47,13 +47,18 @@ async function load(src: { path?: string; url?: string }): Promise<{ bytes: Buff
   return { bytes: Buffer.from(await r.arrayBuffer()), type };
 }
 
-/** Upload one image → the markdown line that shows it. */
-export async function shareImage(src: { path?: string; url?: string }, caption = ''): Promise<string> {
+/** Upload one image → its name in the bucket, served by the hub at /img/<name>. */
+export async function storeImage(src: { path?: string; url?: string }): Promise<string> {
   const { bytes, type } = await load(src);
   if (!bytes.length) throw new ValidationError('the image is empty');
   if (bytes.length > MAX_BYTES) throw new ValidationError(`the image is ${(bytes.length / 1048576).toFixed(1)} MB; the limit is 15 MB — shrink it first`);
   const name = uuid() + EXT[type];
   const { error } = await getClient().storage.from(BUCKET).upload(name, bytes, { contentType: type, upsert: false });
   if (error) throw new Error(`could not store the image: ${error.message}`);
-  return imageMarkdown(name, caption);
+  return name;
+}
+
+/** Upload one image → the markdown line that shows it. */
+export async function shareImage(src: { path?: string; url?: string }, caption = ''): Promise<string> {
+  return imageMarkdown(await storeImage(src), caption);
 }

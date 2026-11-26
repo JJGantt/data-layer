@@ -864,6 +864,17 @@ function isSelf(row: DeskSession): boolean {
 }
 
 /**
+ * The conversation this MCP server belongs to (`conversationOf` its own row), or null when it is not
+ * inside a session the hub knows — a voice turn, a script. Running rows only: a server answering a tool
+ * call is inside a running session by definition.
+ */
+export async function selfConversation(): Promise<string | null> {
+  const { data } = await getClient().from('desk_sessions').select('*').eq('status', 'resident');
+  const row = ((data ?? []) as DeskSession[]).find(isSelf);
+  return row ? conversationOf(row) : null;
+}
+
+/**
  * Resume an evicted session with its full context, or end a running one.
  *
  * The target comes from the session's own row. Hardcoding 'pi' sent every Mac session's close and
