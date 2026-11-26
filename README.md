@@ -40,6 +40,7 @@ both call, which is why the MCP and the API can never disagree about what a writ
 | `desk.ts` | dispatching Claude sessions to a machine, and the follow-up pointer |
 | `reports.ts` | the HTML write-ups a dispatched session publishes |
 | `handoff.ts`, `handoffAgent.ts` | `request_handoff`: a session hands Jared the screen it is stuck on (§ Handoffs) |
+| `sessionTabs.ts` | `session_tab`: a session opens, updates and closes content tabs (an image, markdown, an HTML page) on its own view on his phone; `session_tabs` also holds the live Chrome tabs, claimed by status-hub `bin/chrome-live`. The design is status-hub `docs/SESSION-TABS.md` |
 | `screenAgent.ts` | live screen shares on the Mac: answers a `screen_shares` row by starting `hands/bin/screenshare` (WebRTC, ScreenCaptureKit, hardware H.264, input as events); status-hub `docs/SCREEN.md` |
 | `images.ts` | `share_image`: an image put in the `shared-images` bucket and shown inline in a reply (the hub serves `/img/<name>`) |
 | `bedroomTv.ts` | the bedroom TV (`bedroom_tv`, table `tv_commands`): inserts a command and awaits the TV's answer. The hub relays it to the TV's app; google-tv `docs/VOICE.md` |
