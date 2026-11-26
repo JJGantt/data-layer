@@ -31,7 +31,7 @@ const COARSE_NEAR = 15 * 60e3; // a coarse fix this close in time to a GPS-grade
 const AT_SPAN = 3 * 3600e3;    // `at` alone reads this much either side of it
 const NOW_ROWS = 300;          // history rows considered for "now"; the walk stops long before this
 
-interface Fix { device: string; lat: number; lon: number; acc: number | null; at: string; source?: string | null; place?: string | null }
+export interface Fix { device: string; lat: number; lon: number; acc: number | null; at: string; source?: string | null; place?: string | null }
 
 function age(at: string, now: number): string {
   const min = Math.max(0, Math.round((now - new Date(at).getTime()) / 60000));
@@ -192,7 +192,7 @@ export async function location(q: LocationQuery = {}): Promise<string> {
   return renderTimeline(segs, from, to, at, names) + (names ? '' : '\n(No place names: Apple Maps could not be reached; only coordinates.)');
 }
 
-export async function lastLocation(): Promise<string> {
+async function nowFixes(): Promise<Fix[]> {
   const db = getClient();
   const [hist, cmd] = await Promise.all([
     db.from('location_points').select('device,lat,lon,h_acc,at,source').order('at', { ascending: false }).limit(NOW_ROWS),
@@ -200,10 +200,44 @@ export async function lastLocation(): Promise<string> {
   ]);
   if (hist.error) throw new Error(hist.error.message);
   if (cmd.error) throw new Error(cmd.error.message);
-  const fixes: Fix[] = [
+  return [
     ...(hist.data ?? []).map((r: any) => ({ device: r.device, lat: r.lat, lon: r.lon, acc: r.h_acc, at: r.at, source: r.source })),
     ...(cmd.data ?? []).map((r: any) => ({ device: r.device, lat: r.lat, lon: r.lon, acc: r.acc, at: r.at, place: r.place })),
   ];
+}
+
+export async function lastLocation(): Promise<string> {
+  const fixes = await nowFixes();
   const names = await placesFor(frontier(fixes));
   return describe(fixes, Date.now(), names) + (names ? '' : '\n(No place names: Apple Maps could not be reached; only coordinates.)');
+}
+
+/** The one fix that best says where he was at `at` (an instant; omitted = now), or null when none is
+ *  near enough. The last fix at or before the moment wins — the phone sends nothing while he sits still,
+ *  so the last fix before is where he stayed — except that a GPS-grade fix close to it beats a coarse
+ *  one. With nothing before, the first fix within an hour after. Used by the pantry's home check. */
+export async function fixAt(at?: number): Promise<Fix | null> {
+  if (at == null) {
+    const fixes = await nowFixes();
+    const f = frontier(fixes);
+    return f.length ? f[f.length - 1] : null;
+  }
+  const { data, error } = await getClient().from('location_points').select('device,lat,lon,h_acc,at,source')
+    .gte('at', new Date(at - 12 * 3600e3).toISOString()).lte('at', new Date(at + 3600e3).toISOString())
+    .order('at', { ascending: true });
+  if (error) throw new Error(error.message);
+  const rows: Fix[] = (data ?? []).map((r: any) => ({ device: r.device, lat: r.lat, lon: r.lon, acc: r.h_acc, at: r.at, source: r.source }));
+  return pickFixAt(rows, at);
+}
+
+/** The choice fixAt makes, over fixes already read. */
+export function pickFixAt(rows: Fix[], at: number): Fix | null {
+  const before = rows.filter((f) => ms(f) <= at).sort((a, b) => ms(b) - ms(a));
+  if (before.length) {
+    const last = before[0];
+    if ((last.acc ?? Infinity) <= GPS_GRADE) return last;
+    const precise = before.find((f) => (f.acc ?? Infinity) <= GPS_GRADE && ms(last) - ms(f) <= COARSE_NEAR);
+    return precise ?? last;
+  }
+  return rows.find((f) => ms(f) > at) ?? null;
 }

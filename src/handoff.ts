@@ -67,7 +67,7 @@ function until(id: string, done: (r: Row) => boolean): Promise<Row> {
 export interface Framing {
   /** mac-screen: the app whose front window is shown (its owner name, as `hands windows` lists it). */
   app?: string;
-  /** The part of the window or page that matters, as fractions: a sign-in dialog, not the whole screen. */
+  /** The part of the screen (Mac) or page (browser) that matters, as fractions: a sign-in dialog, not the whole screen. */
   region?: { x: number; y: number; w: number; h: number };
   /** pi-browser: the element to show (plus a margin), followed as the page changes. */
   selector?: string;
@@ -80,7 +80,7 @@ export async function requestHandoff(target: string, note: string, f: Framing = 
   if (target === 'mac-screen' && !f.app) throw new ValidationError('mac-screen needs `app`: the app whose window to show');
   const reg = f.region;
   if (reg && ![reg.x, reg.y, reg.w, reg.h].every((v) => typeof v === 'number' && v >= 0 && v <= 1)) {
-    throw new ValidationError('region is {x, y, w, h}, each a fraction 0-1 of the window or page');
+    throw new ValidationError('region is {x, y, w, h}, each a fraction 0-1 of the screen (Mac) or page (browser)');
   }
   const { data, error } = await getClient().from('handoffs')
     .insert({ target, note: note.slice(0, 300), session: process.env.HUB_SESSION_ID || null,

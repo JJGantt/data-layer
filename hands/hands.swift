@@ -6,6 +6,7 @@
 //   hands window <app> [title]   → {"app","x","y","w","h"}: the screen area covering every on-screen
 //                                  window of that app (exact owner name, as `windows` lists it), only
 //                                  those whose title contains `title` when one is given
+//   hands screen <x> <y>         → {"x","y","w","h"}: the whole display that point is on
 //   hands click <x> <y>          → a left click at that global point
 //   hands type                   → types stdin as it is (any characters; nothing is echoed)
 //   hands key enter|tab|backspace|escape
@@ -78,6 +79,17 @@ case "windows", "window":
         guard let b = box else { fail("no window of \(want ?? "?")\(titled.map { " titled \($0)" } ?? "") on screen") }
         json(["app": want!, "x": b.minX, "y": b.minY, "w": b.width, "h": b.height])
     }
+
+case "screen":
+    // The display a point is on, in global points (top-left origin, like the window list).
+    let v = Array(args.dropFirst())
+    guard v.count == 2, let x = Double(v[0]), let y = Double(v[1]) else { fail("usage: hands screen x y") }
+    var ids = [CGDirectDisplayID](repeating: 0, count: 8)
+    var n: UInt32 = 0
+    CGGetDisplaysWithPoint(CGPoint(x: x, y: y), 8, &ids, &n)
+    let d = n > 0 ? ids[0] : CGMainDisplayID()
+    let b = CGDisplayBounds(d)
+    json(["x": b.minX, "y": b.minY, "w": b.width, "h": b.height])
 
 case "click":
     let v = Array(args.dropFirst())

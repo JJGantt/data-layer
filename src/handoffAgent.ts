@@ -42,7 +42,7 @@ const SETTLE_MS = Number(process.env.HANDOFF_SETTLE_MS || 1200);
  *  viewport), which is where a tap at a fraction of it lands. */
 type Frame = { png: Buffer; width: number; height: number; rect: Rect };
 type Rect = { x: number; y: number; w: number; h: number };
-/** What a handoff asked to be shown: `app` (mac-screen), `region` (fractions of the window or page),
+/** What a handoff asked to be shown: `app` (mac-screen), `region` (fractions of the screen or page),
  *  `selector` (pi-browser), and Jared's `whole` toggle. */
 type Ask = { id: string; target: string; app: string | null; region: Rect | null; selector: string | null; whole: boolean };
 interface Screen {
@@ -89,7 +89,7 @@ async function captureRect(rect: Rect): Promise<Buffer> {
   } finally { await rm(dir, { recursive: true, force: true }); }
 }
 
-/** The screen area one app's windows cover, brought to the front so a click lands on it. The app is the owner name
+/** The app brought to the front so what he taps on is its window, and the screen area its windows cover. The app is the owner name
  *  `hands windows` lists ('Google Chrome' for mac-chrome). */
 function macWindow(fixedApp?: string): Screen {
   const front = async (h: Ask) => {
@@ -111,16 +111,18 @@ function macWindow(fixedApp?: string): Screen {
   };
   return {
     async shot(h) {
+      // The whole display the app is on, or the part of it the session asked for. The app is only
+      // brought to the front; what he sees and taps on is the screen itself.
       const win = await front(h);
+      const scr = JSON.parse(await hands(['screen', String(win.x + win.w / 2), String(win.y + win.h / 2)])) as Rect;
       const r = regionOf(h);
-      const rect = r ? { x: win.x + r.x * win.w, y: win.y + r.y * win.h, w: r.w * win.w, h: r.h * win.h }
-        : { x: win.x, y: win.y, w: win.w, h: win.h };
+      const rect = r ? { x: scr.x + r.x * scr.w, y: scr.y + r.y * scr.h, w: r.w * scr.w, h: r.h * scr.h } : scr;
       const png = await captureRect(rect);
       return { png, ...pngSize(png), rect };
     },
     async tap(h, rect, fx, fy) {
       // Another app may have come to the front since the screenshot (he went to the Mac): the click is
-      // placed on this window, so it is brought back first.
+      // meant for this app, so it is brought back first.
       await front(h);
       await hands(['click', String(rect.x + fx * rect.w), String(rect.y + fy * rect.h)]);
     },
