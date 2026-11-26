@@ -106,7 +106,7 @@ export async function saveRecipe(args: {
   if (!recipeName) throw new ValidationError('A recipe needs a name.');
 
   // Same validator, same floor as a logged meal: every ingredient carries a portion and its macros.
-  const { ingredients, warnings } = normalizeIngredients(Array.isArray(args.ingredients) ? await applyPantry(args.ingredients) : args.ingredients, `Recipe '${recipeName}'`, true);
+  const { ingredients, warnings } = normalizeIngredients(args.ingredients, `Recipe '${recipeName}'`, true);
   const totals = rollup(ingredients);
 
   const { data: existing } = await sb.from('recipes').select('id, created').ilike('name', recipeName).maybeSingle();

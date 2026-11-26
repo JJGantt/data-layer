@@ -1,7 +1,6 @@
 import { getClient } from './client.js';
 import { now, type MacroNutritionInput, ValidationError, uuid } from './helpers.js';
 import { getRecipe, saveRecipe, type Recipe } from './recipes.js';
-import { applyPantry } from './pantry.js';
 import {
   ingLabel, ingredientGrams, isFiniteNumber, normalizeIngredients, produceRollup, rollup,
   round10, scaleIngredients, type NutritionIngredient, type ProduceRollup,
@@ -82,7 +81,7 @@ export async function logNutrition(items: {
     if (!Number.isFinite(servings) || servings <= 0) throw new ValidationError('Nutrition entries require servings to be greater than 0.');
 
     const { name, quantity, raw } = await resolveItemIngredients(item, servings);
-    const { ingredients, warnings } = normalizeIngredients(await applyPantry(raw), `Nutrition entry '${name}'`, true);
+    const { ingredients, warnings } = normalizeIngredients(raw, `Nutrition entry '${name}'`, true);
     const nutr = rollup(ingredients);   // totals = sum of ingredients, always
     const prod = produceRollup(ingredients);
 
@@ -176,7 +175,7 @@ export async function editEntry(idPrefix: string, staged: boolean, fields: {
 
   let warnings: string[] = [];
   if (raw) {
-    const out = normalizeIngredients(await applyPantry(raw), `${staged ? 'Staged meal' : 'Nutrition entry'} '${newName}'`, true);
+    const out = normalizeIngredients(raw, `${staged ? 'Staged meal' : 'Nutrition entry'} '${newName}'`, true);
     const nutr = rollup(out.ingredients);
     const prod = produceRollup(out.ingredients);
     patch.ingredients = out.ingredients;
