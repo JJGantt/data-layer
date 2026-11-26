@@ -1077,9 +1077,10 @@ const said = (t: string) => t.replace(/\s+/g, ' ').trim().slice(0, 60);
 /** What became of a sent message no finished turn holds, from its command's status. */
 function delivery(s: { status?: string | null; detail?: string | null }): string {
   const why = String(s.detail || '').split('\n').map((l) => l.trim()).filter(Boolean);
-  // A failed osascript's detail opens with the whole script (his words included) and ends with the
-  // actual error, so the last line is the reason.
-  const reason = (s.status === 'done' ? why[0] : why[why.length - 1] || '')?.slice(0, 160) || '';
+  // A failed osascript's detail opens with the whole script (his words included), and the stored detail
+  // is cut short, often before the actual error: only a line that reads as the error is quoted.
+  const reason = (s.status === 'done' ? why[0] : [...why].reverse().find((l) => /execution error|timed out|error:/i.test(l)))
+    ?.slice(0, 160) || '';
   if (s.status === 'done') return `(DELIVERED${reason ? ` (${reason})` : ''}, but no finished turn has answered it yet)`;
   if (s.status === 'error' || s.status === 'failed') return `(NOT DELIVERED: the send failed${reason ? `: ${reason}` : ''}. The session never received this message.)`;
   if (s.status === 'pending' || s.status === 'running') return `(NOT DELIVERED YET: its command is still ${s.status})`;

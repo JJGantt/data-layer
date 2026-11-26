@@ -44,3 +44,9 @@ test('a message no turn holds says whether its send actually delivered it', () =
     /DELIVERED \(sent 2 chars to \/dev\/ttys014\), but no finished turn has answered it yet/);
   assert.match(formatSessionTurns('S', [], [{ at, prompt: 'hi', status: 'running' }]), /NOT DELIVERED YET: its command is still running/);
 });
+
+test('a failed send whose stored error was cut off still says not delivered, without quoting the script', () => {
+  const out = formatSessionTurns('S', [], [{ at: '2026-11-25T23:40:14Z', prompt: 'Chrome was not on screen', status: 'error',
+    detail: 'Command failed: osascript -e tell application "Terminal"\n  do script (character id 27) & "[200~Chrome was not on scr' }]);
+  assert.match(out, /\(NOT DELIVERED: the send failed\. The session never received this message\.\)/);
+});
