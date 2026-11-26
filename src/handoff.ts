@@ -71,6 +71,9 @@ export interface Framing {
   region?: { x: number; y: number; w: number; h: number };
   /** pi-browser: the element to show (plus a margin), followed as the page changes. */
   selector?: string;
+  /** Values he will type that the session already knows (his email, a card number), each a button on
+   *  the phone that fills the text box; he still presses Type. Cleared from the row when it ends. */
+  suggest?: { label: string; text: string }[];
 }
 
 export async function requestHandoff(target: string, note: string, f: Framing = {}): Promise<string> {
@@ -82,9 +85,11 @@ export async function requestHandoff(target: string, note: string, f: Framing = 
   if (reg && ![reg.x, reg.y, reg.w, reg.h].every((v) => typeof v === 'number' && v >= 0 && v <= 1)) {
     throw new ValidationError('region is {x, y, w, h}, each a fraction 0-1 of the screen (Mac) or page (browser)');
   }
+  const suggest = (f.suggest || []).filter((v) => v && typeof v.text === 'string' && v.text)
+    .slice(0, 8).map((v) => ({ label: String(v.label || v.text).slice(0, 40), text: v.text.slice(0, 500) }));
   const { data, error } = await getClient().from('handoffs')
     .insert({ target, note: note.slice(0, 300), session: process.env.HUB_SESSION_ID || null,
-      app: f.app || null, region: reg || null, selector: f.selector || null })
+      app: f.app || null, region: reg || null, selector: f.selector || null, suggest: suggest.length ? suggest : null })
     .select('id').single();
   if (error) throw new Error(`could not open the handoff: ${error.message}`);
   if (!process.env.HUB_SESSION_ID) return endedMessage(await until(data.id, ended));

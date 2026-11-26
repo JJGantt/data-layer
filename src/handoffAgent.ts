@@ -23,7 +23,7 @@ import { getClient } from './client.js';
 import { onInserts } from './realtime.js';
 import { uuid } from './helpers.js';
 import { BUCKET } from './images.js';
-import { diffFraction } from './pngDiff.js';
+import { cropPng, diffFraction } from './pngDiff.js';
 import { endedMessage } from './handoff.js';
 import { followUp } from './desk.js';
 
@@ -38,9 +38,10 @@ const CDP = process.env.HANDOFF_CDP || 'http://127.0.0.1:9223';
  */
 const SETTLE_MS = Number(process.env.HANDOFF_SETTLE_MS || 1200);
 
-/** A screenshot, and the rectangle of the real screen it shows (Mac: points; browser: CSS pixels of the
- *  viewport), which is where a tap at a fraction of it lands. */
-type Frame = { png: Buffer; width: number; height: number; rect: Rect };
+/** A screenshot of the whole screen (Mac: the display; browser: the viewport), the rectangle of the real
+ *  screen it shows (points / CSS pixels), which is where a tap at a fraction of it lands, and `focus`:
+ *  the part that matters (a region or an element), as fractions of it, or null. */
+type Frame = { png: Buffer; width: number; height: number; rect: Rect; focus: Rect | null };
 type Rect = { x: number; y: number; w: number; h: number };
 /** What a handoff asked to be shown: `app` (mac-screen), `region` (fractions of the screen or page),
  *  `selector` (pi-browser), and Jared's `whole` toggle. */
@@ -115,10 +116,8 @@ function macWindow(fixedApp?: string): Screen {
       // brought to the front; what he sees and taps on is the screen itself.
       const win = await front(h);
       const scr = JSON.parse(await hands(['screen', String(win.x + win.w / 2), String(win.y + win.h / 2)])) as Rect;
-      const r = regionOf(h);
-      const rect = r ? { x: scr.x + r.x * scr.w, y: scr.y + r.y * scr.h, w: r.w * scr.w, h: r.h * scr.h } : scr;
-      const png = await captureRect(rect);
-      return { png, ...pngSize(png), rect };
+      const png = await captureRect(scr);
+      return { png, ...pngSize(png), rect: scr, focus: regionOf(h) };
     },
     async tap(h, rect, fx, fy) {
       // Another app may have come to the front since the screenshot (he went to the Mac): the click is
@@ -169,31 +168,31 @@ const KEYS: Record<string, { key: string; code: string; keyCode: number }> = {
 const ELEMENT_MARGIN = 24;
 
 function piBrowser(): Screen {
-  /** What to show, in viewport CSS pixels: the selector's element (if it is on the page), else the
-   *  region, else the whole viewport. */
-  async function framing(h: Ask): Promise<{ rect: Rect; scrollX: number; scrollY: number }> {
+  /** The viewport, and what matters in it as fractions of it: the selector's element (if it is on the
+   *  page), else the region, else nothing. */
+  async function framing(h: Ask): Promise<{ vw: number; vh: number; focus: Rect | null; scrollX: number; scrollY: number }> {
     const { result } = await cdp<any>('Runtime.evaluate', { returnByValue: true, expression: `(() => {
       const vw = innerWidth, vh = innerHeight, el = ${!h.whole && h.selector ? `document.querySelector(${JSON.stringify(h.selector)})` : 'null'};
       const b = el && el.getBoundingClientRect();
       return { vw, vh, sx: scrollX, sy: scrollY, b: b && b.width && b.height ? { x: b.x, y: b.y, w: b.width, h: b.height } : null };
     })()` });
     const v = result.value;
-    let rect: Rect = { x: 0, y: 0, w: v.vw, h: v.vh };
-    const r = regionOf(h);
+    let focus = regionOf(h);
     if (v.b) {
       const x = Math.max(0, v.b.x - ELEMENT_MARGIN), y = Math.max(0, v.b.y - ELEMENT_MARGIN);
-      rect = { x, y, w: Math.min(v.vw, v.b.x + v.b.w + ELEMENT_MARGIN) - x, h: Math.min(v.vh, v.b.y + v.b.h + ELEMENT_MARGIN) - y };
-    } else if (r) rect = { x: r.x * v.vw, y: r.y * v.vh, w: r.w * v.vw, h: r.h * v.vh };
-    return { rect, scrollX: v.sx, scrollY: v.sy };
+      const w = Math.min(v.vw, v.b.x + v.b.w + ELEMENT_MARGIN) - x, hh = Math.min(v.vh, v.b.y + v.b.h + ELEMENT_MARGIN) - y;
+      focus = w > 0 && hh > 0 ? { x: x / v.vw, y: y / v.vh, w: w / v.vw, h: hh / v.vh } : focus;
+    }
+    return { vw: v.vw, vh: v.vh, focus, scrollX: v.sx, scrollY: v.sy };
   }
   return {
     async shot(h) {
       const f = await framing(h);
       // The clip is in page coordinates, the framing in the viewport's: offset by the scroll.
       const { data } = await cdp<{ data: string }>('Page.captureScreenshot', { format: 'png',
-        clip: { x: f.rect.x + f.scrollX, y: f.rect.y + f.scrollY, width: f.rect.w, height: f.rect.h, scale: 1 } });
+        clip: { x: f.scrollX, y: f.scrollY, width: f.vw, height: f.vh, scale: 1 } });
       const png = Buffer.from(data, 'base64');
-      return { png, ...pngSize(png), rect: f.rect };
+      return { png, ...pngSize(png), rect: { x: 0, y: 0, w: f.vw, h: f.vh }, focus: f.focus };
     },
     async tap(_h, rect, fx, fy) {
       const x = rect.x + fx * rect.w, y = rect.y + fy * rect.h;
@@ -221,9 +220,11 @@ const screenFor = (target: string) => {
   if (!screens.has(target)) screens.set(target, SCREENS[target]());
   return screens.get(target)!;
 };
-/** Each handoff's newest screenshot and the rectangle it shows: what his next tap was made on and is
- *  measured in, and what the screen is checked against before anything is done there. */
-const shown = new Map<string, { rect: Rect; png: Buffer }>();
+/** Each handoff's newest screenshot of the whole screen and the rectangle it shows, and the rectangle of
+ *  `image` (the cropped picture the watch shows): what his next tap is measured in (the phone taps on
+ *  the whole screen, the watch on `image`), and what the screen is checked against before anything is
+ *  done there. */
+const shown = new Map<string, { full: Rect; rect: Rect; png: Buffer }>();
 
 /**
  * A tap or typing is acted on only while the screen still looks like the screenshot he made it on. A
@@ -241,20 +242,31 @@ const ASK = 'id,target,app,region,selector,whole';
 async function publish(h: Ask, extra: Record<string, unknown> = {}): Promise<void> {
   const handoff = h.id;
   const f = await screenFor(h.target).shot(h);
-  shown.set(handoff, { rect: f.rect, png: f.png });
-  const name = `${uuid()}.png`;
-  const { error: up } = await getClient().storage.from(BUCKET).upload(name, f.png, { contentType: 'image/png' });
-  if (up) throw new Error(`could not store the screenshot: ${up.message}`);
+  // The phone gets the whole screen and frames the focus itself, so he can pinch out to the rest. The
+  // watch has no room for that: `image` is the focus alone (or everything, after his Full toggle).
+  const crop = f.focus && !h.whole ? cropPng(f.png, f.focus) : null;
+  const fo = crop ? f.focus! : null;
+  shown.set(handoff, { full: f.rect, png: f.png, rect: fo
+    ? { x: f.rect.x + fo.x * f.rect.w, y: f.rect.y + fo.y * f.rect.h, w: fo.w * f.rect.w, h: fo.h * f.rect.h } : f.rect });
+  const store = async (png: Buffer) => {
+    const name = `${uuid()}.png`;
+    const { error: up } = await getClient().storage.from(BUCKET).upload(name, png, { contentType: 'image/png' });
+    if (up) throw new Error(`could not store the screenshot: ${up.message}`);
+    return name;
+  };
+  const full = await store(f.png);
+  const image = crop ? await store(crop) : full;
+  const size = crop ? pngSize(crop) : { width: f.width, height: f.height };
   const { data: cur } = await getClient().from('handoffs').select('seq').eq('id', handoff).single();
   const { error } = await getClient().from('handoffs').update({
-    image: name, width: f.width, height: f.height, seq: (cur?.seq || 0) + 1, updated_at: new Date().toISOString(), ...extra,
+    image, ...size, full_image: full, focus: f.focus, seq: (cur?.seq || 0) + 1, updated_at: new Date().toISOString(), ...extra,
   }).eq('id', handoff);
   if (error) throw new Error(`could not record the screenshot: ${error.message}`);
 }
 
 async function fail(handoff: string, why: string): Promise<void> {
   console.error(`[handoff] ${handoff} failed: ${why}`);
-  await getClient().from('handoffs').update({ status: 'failed', error: why.slice(0, 300), updated_at: new Date().toISOString() }).eq('id', handoff);
+  await getClient().from('handoffs').update({ status: 'failed', error: why.slice(0, 300), suggest: null, updated_at: new Date().toISOString() }).eq('id', handoff);
   await tellSession(handoff);
 }
 
@@ -283,7 +295,7 @@ async function act(a: any): Promise<void> {
   };
   if (!h || h.status !== 'open') { await finish({ error: 'handoff is not open' }); return; }
   if (a.kind === 'done' || a.kind === 'cancel') {
-    await sb.from('handoffs').update({ status: a.kind === 'done' ? 'done' : 'cancelled', updated_at: new Date().toISOString() }).eq('id', h.id);
+    await sb.from('handoffs').update({ status: a.kind === 'done' ? 'done' : 'cancelled', suggest: null, updated_at: new Date().toISOString() }).eq('id', h.id);
     await finish({});
     await tellSession(h.id);
     return;
@@ -294,7 +306,7 @@ async function act(a: any): Promise<void> {
     try {
       if (!before) throw new Error('no screenshot of this handoff taken here to act on');
       const now = await screen.shot(h);
-      const moved = !sameRect(before.rect, now.rect);
+      const moved = !sameRect(before.full, now.rect);
       const diff = moved ? 1 : diffFraction(before.png, now.png);
       if (moved || diff > CHANGED) {
         // Not an error: the screen moving under him is ordinary. He gets the screen as it is now.
@@ -312,7 +324,8 @@ async function act(a: any): Promise<void> {
   try {
     if (a.kind === 'tap') {
       if (!(a.x >= 0 && a.x <= 1 && a.y >= 0 && a.y <= 1)) throw new Error('tap outside the screenshot');
-      await screen.tap(h, shown.get(h.id)!.rect, a.x, a.y);
+      const s = shown.get(h.id)!;
+      await screen.tap(h, a.full ? s.full : s.rect, a.x, a.y);
     } else if (a.kind === 'text') await screen.type(h, String(a.text || ''));
     else if (a.kind === 'key') await screen.key(h, String(a.key));
     else if (a.kind === 'view') {

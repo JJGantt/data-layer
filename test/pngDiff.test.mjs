@@ -2,7 +2,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { deflateSync } from 'node:zlib';
-import { decodePng, diffFraction } from '../dist/pngDiff.js';
+import { cropPng, decodePng, diffFraction } from '../dist/pngDiff.js';
 
 function crc32(buf) {
   let c, crc = 0xffffffff;
@@ -62,4 +62,13 @@ test('a scrolled page is a large change', () => {
 test('screenshots of different sizes, or not PNGs at all, count as entirely changed', () => {
   assert.equal(diffFraction(png(40, 40, page), png(40, 30, page)), 1);
   assert.equal(diffFraction(png(40, 40, page), Buffer.from('not a png')), 1);
+});
+
+test('a crop is the pixels inside the fractions given, as a PNG that decodes', () => {
+  const c = decodePng(cropPng(png(40, 40, page, 2), { x: 0.5, y: 0.75, w: 0.25, h: 0.25 }));
+  assert.equal(c.width, 10); assert.equal(c.height, 10);
+  const src = decodePng(png(40, 40, page));
+  const at = (p, x, y) => [...p.data.subarray((y * p.width + x) * 4, (y * p.width + x) * 4 + 4)];
+  assert.deepEqual(at(c, 0, 0), at(src, 20, 30));
+  assert.deepEqual(at(c, 9, 9), at(src, 29, 39));
 });

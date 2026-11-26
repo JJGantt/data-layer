@@ -1,11 +1,11 @@
 /**
- * How much two screenshots differ — what a handoff checks before it acts on a tap or typing, so a tap
+ * Screenshot pixels: how much two differ — what a handoff checks before it acts on a tap or typing, so a tap
  * made on a picture of the screen never lands on a screen that has since changed under it (handoffAgent.ts).
  *
  * Decodes only what the handoff screenshots are: 8-bit, non-interlaced RGB or RGBA PNG (macOS
  * screencapture, Chrome's CDP capture). Anything else is reported as undecodable, not guessed at.
  */
-import { inflateSync } from 'node:zlib';
+import { deflateSync, inflateSync } from 'node:zlib';
 
 export type Pixels = { width: number; height: number; channels: number; data: Buffer };
 
@@ -70,4 +70,48 @@ export function diffFraction(a: Buffer, b: Buffer, threshold = 48): number {
     }
   }
   return seen ? changed / seen : 0;
+}
+
+const CRC = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; }
+  return t;
+})();
+function crc32(buf: Buffer): number {
+  let c = 0xffffffff;
+  for (const b of buf) c = CRC[(c ^ b) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+function chunk(type: string, body: Buffer): Buffer {
+  const len = Buffer.alloc(4); len.writeUInt32BE(body.length);
+  const tb = Buffer.concat([Buffer.from(type, 'ascii'), body]);
+  const crc = Buffer.alloc(4); crc.writeUInt32BE(crc32(tb));
+  return Buffer.concat([len, tb, crc]);
+}
+
+/** Pixels as an 8-bit RGB/RGBA PNG (rows unfiltered; a screenshot crop, not an archive). */
+export function encodePng(p: Pixels): Buffer {
+  const stride = p.width * p.channels;
+  const raw = Buffer.alloc((stride + 1) * p.height);
+  for (let y = 0; y < p.height; y++) p.data.copy(raw, y * (stride + 1) + 1, y * stride, (y + 1) * stride);
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(p.width, 0); ihdr.writeUInt32BE(p.height, 4);
+  ihdr[8] = 8; ihdr[9] = p.channels === 4 ? 6 : 2;
+  return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', ihdr), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]);
+}
+
+/** The part of a screenshot inside `f` (fractions of it), as its own PNG; null when it cannot be decoded. */
+export function cropPng(png: Buffer, f: { x: number; y: number; w: number; h: number }): Buffer | null {
+  const p = decodePng(png);
+  if (!p) return null;
+  const x0 = Math.round(f.x * p.width), y0 = Math.round(f.y * p.height);
+  const w = Math.max(1, Math.min(p.width - x0, Math.round(f.w * p.width)));
+  const h = Math.max(1, Math.min(p.height - y0, Math.round(f.h * p.height)));
+  const out = Buffer.alloc(w * h * p.channels);
+  for (let y = 0; y < h; y++) {
+    const src = ((y0 + y) * p.width + x0) * p.channels;
+    p.data.copy(out, y * w * p.channels, src, src + w * p.channels);
+  }
+  return encodePng({ width: w, height: h, channels: p.channels, data: out });
 }

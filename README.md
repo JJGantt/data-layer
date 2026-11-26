@@ -89,11 +89,18 @@ caller with no `HUB_SESSION_ID` (no session to wake) still waits for the end.
 | `mac-chrome` | Chrome's front window on the Mac, brought to the front (the Claude extension's tabs included) | the same |
 | `pi-browser` | the Pi's automation browser, over CDP on :9223 | data-http on the Pi (`HOME_AGENT=1` turns it on; `HANDOFF_TARGETS` overrides) |
 
-**Only the part that matters is sent** (he may be on the watch): a window, never a whole display, and
-the session can crop further with `region` (fractions of the window or page) or, on the Pi, `selector`
-(that element plus a 24 px margin, followed as the page changes). His Full/Crop toggle is the `view`
-action, which flips `handoffs.whole`. A tap is placed in the rectangle the newest screenshot showed,
-which the agent keeps in memory: after an agent restart a tap fails until Refresh takes a new one.
+**He starts on the part that matters, and can pinch out to the rest.** Each screenshot is the whole
+display (Mac) or viewport (Pi), stored as `full_image`, with `focus`: the session's `region` (fractions
+of the screen or page) or, on the Pi, `selector` (that element plus a 24 px margin, followed as the
+page changes), as fractions of it. The phone frames `full_image` on `focus`. `image` is the focus
+cropped out (`cropPng` in `src/pngDiff.ts`) for the watch, whose Full/Crop toggle is the `view` action,
+flipping `handoffs.whole`. A tap carries `full` when it was measured on `full_image`; it is placed in
+the rectangle the newest screenshot showed, which the agent keeps in memory: after an agent restart a
+tap fails until Refresh takes a new one.
+
+`suggest` ([{label, text}]) on the request is values he will type that the session knows (his email, a
+card number): buttons on the phone that fill his text box. Never a password or a one-time code; the
+agent clears it when the handoff ends.
 
 **A tap, typing or key is acted on only if the screen still matches the screenshot he made it on.** The
 agent captures the screen again first; if the window moved or resized, or more than
