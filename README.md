@@ -103,8 +103,7 @@ tap fails until Refresh takes a new one.
 
 `suggest` ([{label, text}]) on the request is values he will type that the session knows (his email, a
 card number): buttons on the phone that fill his text box. Never a password or a one-time code; the
-agent clears it when the handoff ends. His standing values (his email) are added to every handoff from app_settings `handoff_suggest`
-(`[{label, text}]` as JSON), after the session's own, so a sign-in never depends on the session passing them.
+agent clears it when the handoff ends.
 
 **A tap, typing or key is acted on only if the screen still matches the screenshot he made it on.** The
 agent captures the screen again first; if the window moved or resized, or more than
