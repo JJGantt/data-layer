@@ -27,16 +27,17 @@ const hm = (min: number) => `${Math.floor(min / 60)}h${String(Math.round(min % 6
 const clock = (iso: string) => new Date(iso).toLocaleTimeString('en-US', { timeZone: TZ, hour: 'numeric', minute: '2-digit' });
 const stamp = (iso: string) => new Date(iso).toLocaleString('sv-SE', { timeZone: TZ }).slice(0, 16);
 
-/** Every type that has data, with its unit, count and span. */
+/** Every type that has data, with its unit and span. */
 export async function catalogue(): Promise<string> {
   const { data, error } = await getClient().rpc('health_types');
   if (error) throw new Error(error.message);
-  const rows = (data || []) as { type: string; unit: string | null; samples: number; first_at: string; last_at: string }[];
-  const { count: sleep } = await getClient().from('sleep_samples').select('id', { count: 'exact', head: true });
-  if (!rows.length && !sleep) return 'No Apple Health data has arrived yet.';
-  const lines = rows.map((r) => `${r.type}\t${r.unit ?? '(category)'}\t${r.samples}\t${stamp(r.first_at).slice(0, 10)} → ${stamp(r.last_at)}`);
-  if (sleep) lines.unshift(`sleep\t(stages)\t${sleep}\tuse type "sleep"`);
-  return `type\tunit\tsamples\tspan\n${lines.join('\n')}`;
+  const rows = (data || []) as { type: string; unit: string | null; first_at: string; last_at: string }[];
+  const { data: night, error: sErr } = await getClient().from('sleep_samples').select('id').limit(1);
+  if (sErr) throw new Error(sErr.message);
+  if (!rows.length && !night?.length) return 'No Apple Health data has arrived yet.';
+  const lines = rows.map((r) => `${r.type}\t${r.unit ?? '(category)'}\t${stamp(r.first_at).slice(0, 10)} → ${stamp(r.last_at)}`);
+  if (night?.length) lines.unshift('sleep\t(stages)\tuse type "sleep"');
+  return `type\tunit\tspan\n${lines.join('\n')}`;
 }
 
 /** Nights, keyed by the wake date. */
