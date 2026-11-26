@@ -3,8 +3,8 @@
 //
 //   hands windows                → one line of JSON per window on screen, front to back:
 //                                  {"id","app","title","x","y","w","h"} (points, any display)
-//   hands window <app> [title]   → the front window of that app (exact owner name, as `windows` lists
-//                                  it), the first whose title contains `title` when one is given
+//   hands window <app> [title]   → the largest on-screen window of that app (exact owner name, as
+//                                  `windows` lists it), of those whose title contains `title` if given
 //   hands click <x> <y>          → a left click at that global point
 //   hands type                   → types stdin as it is (any characters; nothing is echoed)
 //   hands key enter|tab|backspace|escape
@@ -54,6 +54,10 @@ switch cmd {
 case "windows", "window":
     let want = args.dropFirst().first
     let titled = args.dropFirst(2).first
+    // The LARGEST matching window, not the frontmost: full-screen Chrome is several windows (the tab
+    // strip, the toolbar and the page each separately, plus small bubbles), and the frontmost of them is
+    // a strip a few dozen points tall. A tap mapped into that strip lands on the tabs.
+    var best: [String: Any]? = nil
     let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
     for w in list where (w[kCGWindowLayer as String] as? Int) == 0 {
         guard let id = w[kCGWindowNumber as String] as? Int,
@@ -63,9 +67,14 @@ case "windows", "window":
         let title = w[kCGWindowName as String] as? String ?? ""
         let row: [String: Any] = ["id": id, "app": app, "title": title, "x": r["X"] ?? 0, "y": r["Y"] ?? 0, "w": wd, "h": ht]
         if cmd == "windows" { json(row); continue }
-        if app == want && (titled == nil || title.localizedCaseInsensitiveContains(titled!)) { json(row); exit(0) }
+        if app == want && (titled == nil || title.localizedCaseInsensitiveContains(titled!)) {
+            if best == nil || wd * ht > (best!["w"] as! CGFloat) * (best!["h"] as! CGFloat) { best = row }
+        }
     }
-    if cmd == "window" { fail("no window of \(want ?? "?")\(titled.map { " titled \($0)" } ?? "") on screen") }
+    if cmd == "window" {
+        guard let best else { fail("no window of \(want ?? "?")\(titled.map { " titled \($0)" } ?? "") on screen") }
+        json(best)
+    }
 
 case "click":
     let v = Array(args.dropFirst())

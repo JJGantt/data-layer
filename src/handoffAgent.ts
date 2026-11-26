@@ -74,15 +74,17 @@ function pngSize(png: Buffer): { width: number; height: number } {
   return { width: png.readUInt32BE(16), height: png.readUInt32BE(20) };
 }
 
-/** One window, captured by its id (on whichever display it is), and cut to `crop` (pixels) if given. */
-async function captureWindow(id: number, crop: { x: number; y: number; w: number; h: number } | null): Promise<Buffer> {
+/** The screen inside `rect` (points, global coordinates), captured as it shows there. Capturing the
+ *  rectangle rather than a window id is what keeps the picture and the tap mapping the same area: a
+ *  window captured by id can come back larger than the bounds the window list gives it (full-screen
+ *  Chrome's page window captures with its tab strip and toolbar above it), so a tap placed by fraction
+ *  of those bounds would land offset from what he tapped on. */
+async function captureRect(rect: Rect): Promise<Buffer> {
   const dir = await mkdtemp(path.join(tmpdir(), 'handoff-'));
   const file = path.join(dir, 'shot.png');
   try {
-    await run('/usr/sbin/screencapture', ['-x', '-o', '-t', 'png', '-l', String(id), file], { timeout: 15_000 });
-    if (crop) {
-      await run('/usr/bin/sips', ['-c', String(crop.h), String(crop.w), '--cropOffset', String(crop.y), String(crop.x), file, '--out', file], { timeout: 15_000 });
-    }
+    const r = [rect.x, rect.y, rect.w, rect.h].map((v) => Math.round(v)).join(',');
+    await run('/usr/sbin/screencapture', ['-x', '-t', 'png', `-R${r}`, file], { timeout: 15_000 });
     return await readFile(file);
   } finally { await rm(dir, { recursive: true, force: true }); }
 }
@@ -111,16 +113,10 @@ function macWindow(fixedApp?: string): Screen {
     async shot(h) {
       const win = await front(h);
       const r = regionOf(h);
-      if (!r) {
-        const png = await captureWindow(win.id, null);
-        return { png, ...pngSize(png), rect: { x: win.x, y: win.y, w: win.w, h: win.h } };
-      }
-      // The capture is in pixels, the window in points: crop by the window's own pixel size.
-      const full = pngSize(await captureWindow(win.id, null));
-      const crop = { x: Math.round(r.x * full.width), y: Math.round(r.y * full.height),
-        w: Math.max(1, Math.round(r.w * full.width)), h: Math.max(1, Math.round(r.h * full.height)) };
-      const png = await captureWindow(win.id, crop);
-      return { png, ...pngSize(png), rect: { x: win.x + r.x * win.w, y: win.y + r.y * win.h, w: r.w * win.w, h: r.h * win.h } };
+      const rect = r ? { x: win.x + r.x * win.w, y: win.y + r.y * win.h, w: r.w * win.w, h: r.h * win.h }
+        : { x: win.x, y: win.y, w: win.w, h: win.h };
+      const png = await captureRect(rect);
+      return { png, ...pngSize(png), rect };
     },
     async tap(h, rect, fx, fy) {
       // Another app may have come to the front since the screenshot (he went to the Mac): the click is
