@@ -47,7 +47,8 @@ both call, which is why the MCP and the API can never disagree about what a writ
 | `roomba.ts` | the Roomba i7+ (`roomba`): status, whole-house and room/zone cleans with per-clean passes and edge clean, the saved cleaning preferences, pause/resume/stop/dock/empty, over the robot's LOCAL MQTT (no iRobot cloud). A home-network job (`home_requests` kind `roomba`, below); home-map rooms and zones in table `roomba_rooms`. § The Roomba |
 | `feeder.ts` | the cat feeder (`feed_cats`, table `feeder_commands`): inserts a feed and awaits the Pi's `petlibro-collector` marking it done or failed. The feeder is LAN-only, so this relay is how a worker off the LAN (Fly) feeds; petlibro-mcp `CLAUDE.md` |
 | `youtube.ts` | public YouTube (`youtube` search / video / related / channel), parsed from the JSON YouTube embeds in its pages |
-| `youtubeAccount.ts` | the owner's YouTube account (`youtube` history / home / subscriptions / …), signed in with a browser's cookies: the Pi's automation browser, or the Mac's on-demand one |
+| `youtubeApi.ts` | the owner's YouTube account through the YouTube Data API (OAuth): subscriptions, liked, playlists, and the writes — like, subscribe, make and add to playlists (§ YouTube) |
+| `youtubeAccount.ts` | the owner's YouTube account where the API has nothing (`youtube` history / home / subscription_feed / watch_later), signed in with a browser's cookies: the Pi's automation browser, or the Mac's on-demand one; also the fallback for the API's reads |
 | `ytParse.ts` | YouTube's renderer JSON, old and new shapes, flattened to rows; shared by the two above |
 | `tvGuide.ts` | the bedroom TV's TV Guide (`tv_guide`, tables `tv_shelves` and `tv_shelf_items`): titled shelves of items, read by the TV through the hub's `/api/tv/guide`; google-tv `docs/GUIDE.md` |
 | `catalog.ts` | what is streaming where (`catalog`), from JustWatch, with Android TV deep links |
@@ -418,6 +419,23 @@ answers carry coordinates only and `[places]` logs an error.
 
 Lookups are cached by position (4 decimal places, about 11 m) in `place_names` for every machine. A cached
 miss is permanent, so after changing how `lookUp` works, delete the table's rows to re-ask Apple.
+
+## YouTube
+
+`youtube` reaches his account two ways. The Data API (`youtubeApi.ts`) answers `subscriptions`, `liked`,
+`playlists` and `playlist`, and does every write (`like`, `unlike`, `subscribe`, `unsubscribe`,
+`create_playlist`, `add_to_playlist`). Watch history, home recommendations, the subscription feed and
+Watch Later are not in the API at all, so those are read through a signed-in browser
+(`youtubeAccount.ts`, a `home_requests` job). An API read that fails falls back to the browser and is
+reported, since it means the grant is broken on that machine.
+
+The grant is an OAuth refresh token on the gmail-mcp OAuth client (Google Cloud project
+`status-hub-507320`, YouTube Data API enabled, published to production so the token does not lapse
+after 7 days). `node bin/youtube-authorize.mjs` mints one: it prints a consent URL, catches the
+redirect on loopback and writes `YOUTUBE_CLIENT_ID`, `YOUTUBE_CLIENT_SECRET`, `YOUTUBE_REFRESH_TOKEN`
+to `.env`. Those three live in `.env` on the Mac and as Fly secrets on `jared-voice-worker`; the Pi's
+`.env` needs them copied in once it is back on the network. Quota is 10,000 units a day; a read costs 1,
+a write 50.
 
 ## Apple Music
 
