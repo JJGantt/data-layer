@@ -10,7 +10,7 @@
 //   hands click <x> <y>          → a left click at that global point
 //   hands type                   → types stdin as it is (any characters; nothing is echoed)
 //   hands key enter|tab|backspace|escape
-//   hands activate <pid>         → brings that process's app to the front (one of two running Chromes)
+//   hands activate <pid>         → brings that process's app to the front, switching Space (one of two Chromes)
 //   hands chrome-tab <pid> <id>  → in the Chrome running as <pid>, makes the tab with that id (the
 //                                  extension's tab id) the active tab of its window and that window the
 //                                  front one; "missing" on stdout when no tab has it. By pid, because
@@ -101,7 +101,13 @@ case "activate":
     guard let v = args.dropFirst().first, let pid = Int32(v), let app = NSRunningApplication(processIdentifier: pid) else {
         fail("usage: hands activate pid (a running app)")
     }
-    guard app.activate(options: [.activateAllWindows]) else { fail("could not activate pid \(pid)") }
+    // Through Accessibility (the grant hands-launch holds), as System Events' `frontmost` does: unlike
+    // NSRunningApplication.activate, it switches to the Space the app's windows are on, so an app behind a
+    // full-screen window comes onto the screen to be captured.
+    let ax = AXUIElementCreateApplication(pid)
+    if AXUIElementSetAttributeValue(ax, kAXFrontmostAttribute as CFString, kCFBooleanTrue) != .success {
+        guard app.activate(options: [.activateAllWindows]) else { fail("could not activate pid \(pid)") }
+    }
 
 case "chrome-tab":
     let v = Array(args.dropFirst())

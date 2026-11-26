@@ -64,8 +64,8 @@ function regionOf(h: Ask): Rect | null {
 
 // ---- the Mac ---------------------------------------------------------------------------------------
 
-async function hands(args: string[], input?: string): Promise<string> {
-  const p = run(HANDS, args, { timeout: 15_000 });
+async function hands(args: string[], input?: string, timeout = 15_000): Promise<string> {
+  const p = run(HANDS, args, { timeout });
   if (input != null) { p.child.stdin?.end(input); }
   const { stdout } = await p;
   return stdout;
@@ -146,7 +146,9 @@ function macWindow(fixedApp?: string): Screen {
       // The tab is selected in THAT Chrome, by pid (`hands chrome-tab`); a tab it cannot find is logged
       // and his Chrome is raised as it stands.
       if (tab != null) {
-        const out = await hands(['chrome-tab', String(pid), String(tab)]).catch((e: any) => String(e.message));
+        // Selecting a tab is an Apple Event, which macOS holds until he answers its one-time "control
+        // Google Chrome" prompt: 4 s and the handoff goes on without it rather than waiting on him.
+        const out = await hands(['chrome-tab', String(pid), String(tab)], undefined, 4_000).catch((e: any) => String(e.message));
         if (out.trim() !== 'ok') console.warn(`[handoff] ${h.id}: could not select tab ${tab} (${out.trim().slice(0, 80)}); raising Chrome pid ${pid} as it is`);
       }
       await raisePid(pid);
