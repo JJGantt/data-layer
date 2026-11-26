@@ -23,4 +23,11 @@ if [ "$(cat vendor/WebRTC.version 2>/dev/null)" != "$WEBRTC" ]; then
 fi
 rm -rf bin/WebRTC.framework && cp -R vendor/WebRTC.framework bin/
 swiftc -O -swift-version 5 -F vendor -framework WebRTC -Xlinker -rpath -Xlinker @executable_path -o bin/screenshare screenshare.swift
+# The macOS firewall asks once whether screenshare may accept incoming connections, and remembers the
+# answer against the binary's signature. Ad hoc, that is the build's hash, so every rebuild asks again and
+# the direct path on the home network is blocked until someone answers; signed with the login keychain's
+# development identity, one Allow lasts across builds.
+ID=$(security find-identity -v -p codesigning 2>/dev/null | sed -n 's/.*"\(Apple Development: .*\)"/\1/p' | head -1)
+if [ -n "$ID" ]; then codesign -f -s "$ID" bin/WebRTC.framework && codesign -f -s "$ID" -i com.jaredgantt.screenshare bin/screenshare
+else echo "no Apple Development identity: screenshare is signed ad hoc, and the firewall will ask again" >&2; fi
 echo "built $(pwd)/bin"

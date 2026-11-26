@@ -201,7 +201,13 @@ final class Peer: NSObject, RTCPeerConnectionDelegate, RTCDataChannelDelegate {
     func peerConnection(_ pc: RTCPeerConnection, didAdd stream: RTCMediaStream) {}
     func peerConnection(_ pc: RTCPeerConnection, didRemove stream: RTCMediaStream) {}
     func peerConnectionShouldNegotiate(_ pc: RTCPeerConnection) {}
-    func peerConnection(_ pc: RTCPeerConnection, didGenerate candidate: RTCIceCandidate) {}
+    // The relay candidate is the last one worth waiting for (one round trip to the TURN server); once it
+    // is in, what is still gathering (TCP relays, other interfaces) is not worth holding the answer for.
+    func peerConnection(_ pc: RTCPeerConnection, didGenerate candidate: RTCIceCandidate) {
+        if candidate.sdp.contains(" typ relay") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { self.gathered?(); self.gathered = nil }
+        }
+    }
     func peerConnection(_ pc: RTCPeerConnection, didRemove candidates: [RTCIceCandidate]) {}
     func peerConnection(_ pc: RTCPeerConnection, didChange s: RTCIceConnectionState) {}
     func peerConnection(_ pc: RTCPeerConnection, didChange s: RTCIceGatheringState) {
@@ -398,11 +404,11 @@ pc.setRemoteDescription(RTCSessionDescription(type: .offer, sdp: offerForUs)) { 
                         emit(["answer": d.sdp])
                         DispatchQueue.main.asyncAfter(deadline: .now() + 30) { if !peer.connected { end("never connected") } }
                     }
-                    // Gathering a relay candidate takes a round trip to the TURN server; four seconds is
-                    // enough for that and whatever has not arrived by then goes without it.
+                    // Sent once a relay candidate is in (above), or gathering is complete, or after 2.5 s
+                    // with whatever there is.
                     if pc.iceGatheringState == .complete { send() } else {
                         peer.gathered = send
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 4) { if let g = peer.gathered { peer.gathered = nil; g() } }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { if let g = peer.gathered { peer.gathered = nil; g() } }
                     }
                 }
             }
