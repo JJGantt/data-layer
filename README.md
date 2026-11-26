@@ -31,6 +31,7 @@ both call, which is why the MCP and the API can never disagree about what a writ
 | `health.ts` | profile, height, weight |
 | `recipes.ts` | saved recipes — see below |
 | `ingredients.ts` | the ingredient itself: validation, produce rules, rollup, scaling |
+| `pantry.ts` | the products he keeps at home, with label nutrition (`get_pantry`, `set_pantry_item`, `remove_pantry_item`; table `pantry_items`) — see below |
 | `reviews.ts` | as named |
 | `surf.ts` | the forecast read (`get_surf`) and a surf alarm's conditions (`set_surf_alarm`, table `surf_alarms`). It only stores them: the hub decides and owns the alarm — status-hub `docs/ALARMS.md` |
 | `location.ts` | where the user is and was (`get_location`): now = the freshest and the most precise recent fixes from the phone/watch history (`location_points`) and command fixes (`locations`); `at` or `from`/`to` = a timeline of stays and the fixes between them |
@@ -331,6 +332,27 @@ reported after the fact — "I finished that at 10:15", or a 10am thing finished
 in. Leaving it out stamps `now()`, which is what nearly every completion is. It takes a bare local
 wall-clock reading, refuses one carrying a zone, and refuses one in the future, which the band's
 replay would skip and so silently score at nothing. `lists.checkCompletedAt` decides that.
+
+## The pantry: his own products, at home only
+
+`pantry_items` is one row per product he keeps: `names` (what he calls it, "yum yum sauce"), the brand
+`product`, and the label's nutrition per serving (`serving_amount serving_unit`, `serving_g` when the label
+prints a weight). A food-writing tool (log, stage, both edits, `save_recipe`) takes an ingredient as
+`pantry_id` + amount + unit, and `applyPantry` replaces it with the label macros scaled to that portion:
+the label's own unit, any volume to a volume label, any weight to a weight label or through `serving_g`,
+or `serving`. Units that cannot be related are refused rather than given an invented density.
+
+The brands apply only AT HOME. `get_pantry` answers with whether he was home at the moment he ate (`at`,
+else now): the last location fix at or before it (`location.fixAt`), home within `HOME_RADIUS_M` of the
+`app_settings.home_location` row ("lat,lon", set directly and never committed, since this repo is public;
+change it when he moves). Away, its text tells the model to log a generic estimate unless he named the
+brand. No fix at all counts as home, and the reply says the brand was assumed. Every food tool's
+description leads with `PANTRY_NOTE` (mcp.ts), which is what makes the logger call `get_pantry` at all.
+
+Rows are added at CART time by the Walmart/Amazon sessions (the `shopping` skill), since checkout is done
+by hand. A brand switch is `set_pantry_item` with `replaces`, which retires the old row (`retired_at`,
+`replaced_by`) instead of editing it. Every write answers `PANTRY CHANGED — tell Jared…`, so the change
+reaches him in that session's reply.
 
 ## A recipe ingredient is a nutrition ingredient
 
