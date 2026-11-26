@@ -4,3 +4,4 @@ dist/
 .env
 supabase/.temp/
 hands/bin/
+hands/vendor/

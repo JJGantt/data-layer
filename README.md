@@ -40,6 +40,7 @@ both call, which is why the MCP and the API can never disagree about what a writ
 | `desk.ts` | dispatching Claude sessions to a machine, and the follow-up pointer |
 | `reports.ts` | the HTML write-ups a dispatched session publishes |
 | `handoff.ts`, `handoffAgent.ts` | `request_handoff`: a session hands Jared the screen it is stuck on (§ Handoffs) |
+| `screenAgent.ts` | live screen shares on the Mac: answers a `screen_shares` row by starting `hands/bin/screenshare` (WebRTC, ScreenCaptureKit, hardware H.264, input as events); status-hub `docs/SCREEN.md` |
 | `images.ts` | `share_image`: an image put in the `shared-images` bucket and shown inline in a reply (the hub serves `/img/<name>`) |
 | `bedroomTv.ts` | the bedroom TV (`bedroom_tv`, table `tv_commands`): inserts a command and awaits the TV's answer. The hub relays it to the TV's app; google-tv `docs/VOICE.md` |
 | `roomba.ts` | the Roomba i7+ (`roomba`): status, whole-house and per-room cleans, pause/resume/stop/dock/empty, over the robot's LOCAL MQTT (no iRobot cloud). A home-network job (`home_requests` kind `roomba`, below); room names in table `roomba_rooms`. § The Roomba |
@@ -121,6 +122,11 @@ how many times he typed.
 and Accessibility (posting the click and keys). macOS ties a grant to the binary's signature, so
 `hands/build.sh` builds the launcher only when it is missing; rebuilding it voids both grants. `hands`
 (`hands/hands.swift`) is rebuilt freely: it runs as the launcher's descendant and uses its grants.
+
+**The same process answers live screen shares** (`screenAgent.ts`, table `screen_shares`): the phone's
+WebRTC offer arrives as a row and `hands/bin/screenshare` (`hands/screenshare.swift`) answers it,
+streams the display and posts the phone's input, under the same two grants. `hands/build.sh` fetches the
+pinned WebRTC framework it links into `hands/vendor`. The whole design is status-hub `docs/SCREEN.md`.
 
 **The screenshot after an action waits `HANDOFF_SETTLE_MS` (1.2 s).** No event says a screen has
 finished changing after a click; a result still in motion is what the Refresh action is for.
