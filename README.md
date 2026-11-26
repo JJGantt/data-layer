@@ -73,8 +73,14 @@ the right product; a name matcher has to reject "milk" as ambiguous against a mi
 A session stuck on something only Jared can do (a sign-in, a 2FA code, a captcha) calls
 `request_handoff(target, note)`. He gets the screenshot on his phone and watch (status-hub
 `docs/HANDOFFS.md`); where he taps is clicked on the real screen, what he types is typed there, and a new
-screenshot follows each action until he presses Done or Cancel. The tool call is held open throughout
-and answers with how it ended.
+screenshot follows each action until he presses Done or Cancel.
+
+**Nothing waits for him.** The tool call returns once the screenshot is up and the session ends its
+turn. When the handoff ends (Done, Cancel, or a failure), the agent sends the session a follow-up
+starting `[Handoff <id>]` saying how it ended (`tellSession` in handoffAgent.ts), and that message starts
+its next turn. A call held open until he finished is the attractive design and it fails: Claude Code
+kills a tool call silent for 30 minutes, which leaves the handoff open with nobody behind it. Only a
+caller with no `HUB_SESSION_ID` (no session to wake) still waits for the end.
 
 | target | the screen | answered by |
 |---|---|---|
@@ -87,6 +93,13 @@ the session can crop further with `region` (fractions of the window or page) or,
 (that element plus a 24 px margin, followed as the page changes). His Full/Crop toggle is the `view`
 action, which flips `handoffs.whole`. A tap is placed in the rectangle the newest screenshot showed,
 which the agent keeps in memory: after an agent restart a tap fails until Refresh takes a new one.
+
+**A tap, typing or key is acted on only if the screen still matches the screenshot he made it on.** The
+agent captures the screen again first; if the window moved or resized, or more than
+`HANDOFF_CHANGED_FRACTION` (5%) of its pixels changed (`src/pngDiff.ts`), nothing is done, the action
+is marked `the screen changed`, and he is sent the screen as it is now. The tolerance passes a blinking
+caret or a small animation; a scrolled, navigated or covered page is stopped. On the Mac the window is
+brought to the front before every action, since another app may have come forward since the screenshot.
 
 A screen exists on one machine, so there is no fallback: a handoff whose machine is down is never
 claimed, and `sweepMissed` reports it.

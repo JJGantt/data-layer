@@ -7,8 +7,14 @@ import { ValidationError } from './helpers.js';
 // agent on the machine that owns that screen (handoffAgent.ts) screenshots it; the hub pushes it to his
 // phone and puts it on the session's view on the phone and the watch (status-hub routes/handoffs.js).
 // He taps on the screenshot, or types, and the agent clicks or types at that spot on the real screen,
-// then screenshots again, until he presses Done or Cancel. This call is held open for all of it and
-// answers with how it ended.
+// then screenshots again, until he presses Done or Cancel.
+//
+// NOTHING WAITS FOR HIM. The call returns as soon as the screenshot is up, and the session ends its turn.
+// When he presses Done or Cancel (or the handoff fails), the agent sends the session a follow-up saying
+// how it ended (`endedMessage`, sent by handoffAgent.ts), and that message is what starts its next turn.
+// A tool call held open until he finished was killed by Claude Code's 30-minute idle limit, left the
+// handoff open with nobody waiting on it, and blocked the session for as long as he took. Only a caller
+// with no session to wake (no HUB_SESSION_ID) still waits for the end.
 //
 // What he types goes from his device to the agent and is cleared once typed: it never reaches the
 // session, which is told only how many times he typed.
@@ -19,18 +25,18 @@ export type Target = typeof TARGETS[number];
 /** Backstop behind the realtime subscription: a channel can go deaf while reporting SUBSCRIBED. */
 const BACKSTOP_MS = 2 * 60_000;
 
-type Row = { id: string; status: string; taps: number; typed: number; error: string | null; seq: number };
+type Row = { id: string; status: string; taps: number; typed: number; error: string | null; seq: number; note?: string | null };
 
 const ended = (r: Row) => r.status === 'done' || r.status === 'cancelled' || r.status === 'failed';
 
 async function read(id: string): Promise<Row> {
-  const { data, error } = await getClient().from('handoffs').select('id,status,taps,typed,error,seq').eq('id', id).single();
+  const { data, error } = await getClient().from('handoffs').select('id,status,taps,typed,error,seq,note').eq('id', id).single();
   if (error) throw new Error(`could not read handoff ${id}: ${error.message}`);
   return data as Row;
 }
 
-/** Resolves with the row once it has ended, however long he takes. */
-function untilEnded(id: string): Promise<Row> {
+/** Resolves with the row once `done` says so, however long that takes. */
+function until(id: string, done: (r: Row) => boolean): Promise<Row> {
   return new Promise((resolve) => {
     const sb = getClient();
     let finished = false;
@@ -43,15 +49,15 @@ function untilEnded(id: string): Promise<Row> {
     };
     const ch = sb.channel(`handoff-${id}`)
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'handoffs', filter: `id=eq.${id}` },
-        (p: any) => { if (ended(p.new)) finish(p.new); })
+        (p: any) => { if (done(p.new)) finish(p.new); })
       .subscribe((status) => {
         // Read once subscribed, so an end that landed before the channel was up is not missed.
-        if (status === 'SUBSCRIBED') read(id).then((r) => { if (ended(r)) finish(r); }).catch(() => {});
+        if (status === 'SUBSCRIBED') read(id).then((r) => { if (done(r)) finish(r); }).catch(() => {});
       });
     const backstop = setInterval(() => {
       read(id).then((r) => {
-        if (!ended(r) || finished) return;
-        console.error(`[handoff] ${id} ended (${r.status}) without its update arriving over realtime`);
+        if (!done(r) || finished) return;
+        console.error(`[handoff] ${id} reached ${r.status} without its update arriving over realtime`);
         finish(r);
       }).catch((e) => { if (!finished) console.error(`[handoff] backstop read failed: ${e.message}`); });
     }, BACKSTOP_MS);
@@ -81,9 +87,19 @@ export async function requestHandoff(target: string, note: string, f: Framing = 
       app: f.app || null, region: reg || null, selector: f.selector || null })
     .select('id').single();
   if (error) throw new Error(`could not open the handoff: ${error.message}`);
-  const r = await untilEnded(data.id);
+  if (!process.env.HUB_SESSION_ID) return endedMessage(await until(data.id, ended));
+  // Up on his phone (or failed before it got there): that is all the session waits for.
+  const r = await until(data.id, (x) => x.status !== 'new');
+  if (ended(r)) return endedMessage(r);
+  return `Handed to Jared (handoff ${data.id}). End your turn now and do not wait for it: when he presses Done or `
+    + `Cancel, a message starting "[Handoff ${data.id}]" arrives saying how it ended, and that starts your next turn.`;
+}
+
+/** How a handoff ended, as the session is told it: the follow-up the agent sends, or the reply to a waiting call. */
+export function endedMessage(r: Row & { note?: string | null }): string {
   const did = `${r.taps} tap${r.taps === 1 ? '' : 's'}${r.typed ? `, typed ${r.typed} time${r.typed === 1 ? '' : 's'}` : ''}`;
-  if (r.status === 'done') return `Jared finished (${did}). Look at the screen again to see where it stands, then carry on.`;
-  if (r.status === 'cancelled') return `Jared cancelled the handoff (${did}). Do not ask again unless he says to.`;
-  return `The handoff failed: ${r.error || 'no reason given'} (${did}).`;
+  const what = r.note ? ` ("${r.note}")` : '';
+  if (r.status === 'done') return `[Handoff ${r.id}] Jared finished${what} (${did}). Look at the screen again to see where it stands, then carry on.`;
+  if (r.status === 'cancelled') return `[Handoff ${r.id}] Jared cancelled the handoff${what} (${did}). Do not ask again unless he says to.`;
+  return `[Handoff ${r.id}] The handoff failed${what}: ${r.error || 'no reason given'} (${did}).`;
 }

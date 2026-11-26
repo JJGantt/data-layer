@@ -23,6 +23,9 @@ import { getClient } from './client.js';
 import { onInserts } from './realtime.js';
 import { uuid } from './helpers.js';
 import { BUCKET } from './images.js';
+import { diffFraction } from './pngDiff.js';
+import { endedMessage } from './handoff.js';
+import { followUp } from './desk.js';
 
 const run = promisify(execFile);
 
@@ -220,8 +223,18 @@ const screenFor = (target: string) => {
   if (!screens.has(target)) screens.set(target, SCREENS[target]());
   return screens.get(target)!;
 };
-/** The rectangle each handoff's newest screenshot shows, which is what its next tap is measured in. */
-const shown = new Map<string, Rect>();
+/** Each handoff's newest screenshot and the rectangle it shows: what his next tap was made on and is
+ *  measured in, and what the screen is checked against before anything is done there. */
+const shown = new Map<string, { rect: Rect; png: Buffer }>();
+
+/**
+ * A tap or typing is acted on only while the screen still looks like the screenshot he made it on. A
+ * window moved or resized, another one in front, a page that scrolled or navigated: any of them puts
+ * the tap somewhere he did not mean, so the action is dropped and he is sent the screen as it is now.
+ * The tolerance lets a blinking caret or a small animation through and stops anything larger.
+ */
+const CHANGED = Number(process.env.HANDOFF_CHANGED_FRACTION || 0.05);
+const sameRect = (a: Rect, b: Rect) => ['x', 'y', 'w', 'h'].every((k) => Math.abs((a as any)[k] - (b as any)[k]) <= 2);
 
 // ---- the work ---------------------------------------------------------------------------------------
 
@@ -230,7 +243,7 @@ const ASK = 'id,target,app,region,selector,whole';
 async function publish(h: Ask, extra: Record<string, unknown> = {}): Promise<void> {
   const handoff = h.id;
   const f = await screenFor(h.target).shot(h);
-  shown.set(handoff, f.rect);
+  shown.set(handoff, { rect: f.rect, png: f.png });
   const name = `${uuid()}.png`;
   const { error: up } = await getClient().storage.from(BUCKET).upload(name, f.png, { contentType: 'image/png' });
   if (up) throw new Error(`could not store the screenshot: ${up.message}`);
@@ -244,6 +257,18 @@ async function publish(h: Ask, extra: Record<string, unknown> = {}): Promise<voi
 async function fail(handoff: string, why: string): Promise<void> {
   console.error(`[handoff] ${handoff} failed: ${why}`);
   await getClient().from('handoffs').update({ status: 'failed', error: why.slice(0, 300), updated_at: new Date().toISOString() }).eq('id', handoff);
+  await tellSession(handoff);
+}
+
+/** The session that asked is not waiting on the handoff (handoff.ts): this message is what wakes it. */
+async function tellSession(handoff: string): Promise<void> {
+  shown.delete(handoff);
+  const { data: r, error } = await getClient().from('handoffs')
+    .select('id,status,taps,typed,error,seq,note,session').eq('id', handoff).single();
+  if (error || !r) { console.error(`[handoff] ${handoff} ended but could not be read to tell its session: ${error?.message}`); return; }
+  if (!r.session) return;   // a caller with no session waited on the row itself
+  const sent = await followUp(endedMessage(r), r.session).catch((e: any) => ({ ok: false as const, error: String(e.message || e) }));
+  if (!sent.ok) console.error(`[handoff] ${handoff} ended (${r.status}) but session ${r.session} was not told: ${sent.error}`);
 }
 
 async function opened(row: any): Promise<void> {
@@ -262,15 +287,34 @@ async function act(a: any): Promise<void> {
   if (a.kind === 'done' || a.kind === 'cancel') {
     await sb.from('handoffs').update({ status: a.kind === 'done' ? 'done' : 'cancelled', updated_at: new Date().toISOString() }).eq('id', h.id);
     await finish({});
+    await tellSession(h.id);
     return;
   }
   const screen = screenFor(h.target);
+  if (a.kind === 'tap' || a.kind === 'text' || a.kind === 'key') {
+    const before = shown.get(h.id);
+    try {
+      if (!before) throw new Error('no screenshot of this handoff taken here to act on');
+      const now = await screen.shot(h);
+      const moved = !sameRect(before.rect, now.rect);
+      const diff = moved ? 1 : diffFraction(before.png, now.png);
+      if (moved || diff > CHANGED) {
+        // Not an error: the screen moving under him is ordinary. He gets the screen as it is now.
+        console.log(`[handoff] ${h.id} ${a.kind} dropped: the screen changed (${moved ? 'window moved' : `${Math.round(diff * 100)}% of it`})`);
+        await finish({ error: 'the screen changed since that screenshot; nothing was done' });
+        await publish(h);
+        return;
+      }
+    } catch (e: any) {
+      await finish({ error: String(e.message).slice(0, 300) });
+      await fail(h.id, `could not check ${h.target} before a ${a.kind}: ${e.message}`);
+      return;
+    }
+  }
   try {
     if (a.kind === 'tap') {
       if (!(a.x >= 0 && a.x <= 1 && a.y >= 0 && a.y <= 1)) throw new Error('tap outside the screenshot');
-      const rect = shown.get(h.id);
-      if (!rect) throw new Error('no screenshot of this handoff taken here to place the tap on');
-      await screen.tap(h, rect, a.x, a.y);
+      await screen.tap(h, shown.get(h.id)!.rect, a.x, a.y);
     } else if (a.kind === 'text') await screen.type(h, String(a.text || ''));
     else if (a.kind === 'key') await screen.key(h, String(a.key));
     else if (a.kind === 'view') {
