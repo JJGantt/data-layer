@@ -1061,28 +1061,42 @@ export async function sessionTurns(ref: string, limit = 3): Promise<string> {
   const { data: rows, error: rerr } = await getClient().from('desk_sessions').select('id')
     .or(`claude_session_id.eq.${conv},id.eq.${conv}`);
   if (rerr) throw new Error(`desk_sessions: ${rerr.message}`);
-  let q = getClient().from('desk_commands').select('created,payload')
+  let q = getClient().from('desk_commands').select('created,payload,status,detail')
     .in('payload->>session', (rows ?? []).map((x: any) => x.id)).order('created', { ascending: true });
   if (since) q = q.gt('created', since);
   const { data: cmds, error: cerr } = await q;
   if (cerr) throw new Error(`desk_commands: ${cerr.message}`);
   const sent = (cmds ?? []).filter((c: any) => typeof c.payload?.prompt === 'string' && c.payload.prompt.trim())
-    .map((c: any) => ({ at: c.created, prompt: c.payload.prompt }));
+    .map((c: any) => ({ at: c.created, prompt: c.payload.prompt, status: c.status, detail: c.detail }));
   return formatSessionTurns(`${(r.row as any).label || '(unnamed)'} \`${sessionHandle(r.row)}\``,
     turns, sent, (r.row as any).working === true && r.row.status === 'resident');
 }
 
 const said = (t: string) => t.replace(/\s+/g, ' ').trim().slice(0, 60);
 
+/** What became of a sent message no finished turn holds, from its command's status. */
+function delivery(s: { status?: string | null; detail?: string | null }): string {
+  const why = String(s.detail || '').split('\n').map((l) => l.trim()).filter(Boolean);
+  // A failed osascript's detail opens with the whole script (his words included) and ends with the
+  // actual error, so the last line is the reason.
+  const reason = (s.status === 'done' ? why[0] : why[why.length - 1] || '')?.slice(0, 160) || '';
+  if (s.status === 'done') return `(DELIVERED${reason ? ` (${reason})` : ''}, but no finished turn has answered it yet)`;
+  if (s.status === 'error' || s.status === 'failed') return `(NOT DELIVERED: the send failed${reason ? `: ${reason}` : ''}. The session never received this message.)`;
+  if (s.status === 'pending' || s.status === 'running') return `(NOT DELIVERED YET: its command is still ${s.status})`;
+  return `(delivery unknown: command status ${s.status ?? 'missing'}; no finished turn holds it)`;
+}
+
 /**
  * A session's turns as read_session prints them, with every message he sent it in its place:
  * the one that opened each turn, the ones it read while working (a message sent during a turn is
  * absorbed between its tool calls, recorded only in that turn's `events`), and any sent message no
- * finished turn holds, which is shown at the time it was sent as never answered.
+ * finished turn holds, shown at the time it was sent with what became of its command. "No turn holds
+ * it" alone cannot tell a message that never arrived from one that arrived and is not answered yet,
+ * and a reader takes it as whichever it expects, so the command's status says which.
  */
 export function formatSessionTurns(head: string,
   turns: { at: string; prompt: string | null; reply: string; events?: any[] | null }[],
-  sent: { at: string; prompt: string }[], working = false): string {
+  sent: { at: string; prompt: string; status?: string | null; detail?: string | null }[], working = false): string {
   const when = (at: string) => new Date(at).toLocaleString('en-US', { timeZone: 'America/New_York',
     month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
   const read = new Set<string>();
@@ -1103,7 +1117,7 @@ export function formatSessionTurns(head: string,
   for (const s of sent) {
     const key = said(s.prompt);
     if ([...read].some((r) => r.startsWith(key) || key.startsWith(r))) continue;
-    blocks.push({ at: s.at, text: `--- ${when(s.at)}\nJared: ${s.prompt}\n(no finished turn of the session holds this message)` });
+    blocks.push({ at: s.at, text: `--- ${when(s.at)}\nJared: ${s.prompt}\n${delivery(s)}` });
   }
   blocks.sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
   if (working) blocks.push({ at: '', text: '(it is working on a turn now)' });

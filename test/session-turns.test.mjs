@@ -33,3 +33,14 @@ test('a session working now says so, and an empty one says it has nothing', () =
   assert.equal(formatSessionTurns('S', [], []), 'S: no finished turns recorded.');
   assert.match(formatSessionTurns('S', [], [{ at: '2026-11-17T04:20:45Z', prompt: 'hi' }]), /Jared: hi/);
 });
+
+test('a message no turn holds says whether its send actually delivered it', () => {
+  const at = '2026-11-25T23:39:23Z';
+  const failed = formatSessionTurns('S', [], [{ at, prompt: 'Okay, couple things', status: 'error',
+    detail: 'Command failed: osascript -e tell application "Terminal"\n  do script "Okay, couple things"\n59:505: execution error: Terminal got an error: AppleEvent timed out. (-1712)' }]);
+  assert.match(failed, /NOT DELIVERED: the send failed: 59:505: execution error: Terminal got an error: AppleEvent timed out/);
+  assert.doesNotMatch(failed, /DELIVERED, but/);
+  assert.match(formatSessionTurns('S', [], [{ at, prompt: 'hi', status: 'done', detail: 'sent 2 chars to /dev/ttys014' }]),
+    /DELIVERED \(sent 2 chars to \/dev\/ttys014\), but no finished turn has answered it yet/);
+  assert.match(formatSessionTurns('S', [], [{ at, prompt: 'hi', status: 'running' }]), /NOT DELIVERED YET: its command is still running/);
+});
