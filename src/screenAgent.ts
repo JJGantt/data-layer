@@ -39,6 +39,7 @@ async function share(row: any): Promise<void> {
     await update(id, { status: 'failed', error: `${live.size} shares already live` });
     return;
   }
+  console.log(`[screen] ${id.slice(0, 8)} heard ${Date.now() - t0} ms after it was asked`);
   const child = spawn(BIN, [], { stdio: ['pipe', 'pipe', 'pipe'] });
   live.set(id, child);
   let ended = false;
@@ -49,7 +50,10 @@ async function share(row: any): Promise<void> {
   createInterface({ input: child.stdout! }).on('line', (l) => {
     let m: any;
     try { m = JSON.parse(l); } catch { return; }
-    if (m.answer) update(id, { status: 'answered', answer: m.answer });
+    if (m.answer) {
+      console.log(`[screen] ${id.slice(0, 8)} answered ${Date.now() - t0} ms after it was asked`);
+      update(id, { status: 'answered', answer: m.answer });
+    }
     else if (m.connected) {
       console.log(`[screen] ${id.slice(0, 8)} connected over ${m.path} after ${Date.now() - t0} ms`);
       update(id, { status: 'live', path: m.path, connect_ms: Date.now() - t0 });
