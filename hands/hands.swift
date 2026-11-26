@@ -11,10 +11,15 @@
 //   hands type                   → types stdin as it is (any characters; nothing is echoed)
 //   hands key enter|tab|backspace|escape
 //   hands activate <pid>         → brings that process's app to the front (one of two running Chromes)
+//   hands chrome-tab <pid> <id>  → in the Chrome running as <pid>, makes the tab with that id (the
+//                                  extension's tab id) the active tab of its window and that window the
+//                                  front one; "missing" on stdout when no tab has it. By pid, because
+//                                  AppleScript's "Google Chrome" means whichever copy it finds first
 //
 // Posting events needs Accessibility, which is held by the process that launched this (hands-launch),
 // so this is run only as that launcher's descendant. Every failure exits non-zero with a reason.
 import AppKit
+import ScriptingBridge
 import CoreGraphics
 import Foundation
 
@@ -97,6 +102,24 @@ case "activate":
         fail("usage: hands activate pid (a running app)")
     }
     guard app.activate(options: [.activateAllWindows]) else { fail("could not activate pid \(pid)") }
+
+case "chrome-tab":
+    let v = Array(args.dropFirst())
+    guard v.count == 2, let pid = Int32(v[0]), let want = Int(v[1]),
+          let chrome = SBApplication(processIdentifier: pid) else { fail("usage: hands chrome-tab pid tabid") }
+    var found = false
+    for case let w as NSObject in (chrome.value(forKey: "windows") as? SBElementArray) ?? [] {
+        let tabs = (w.value(forKey: "tabs") as? SBElementArray) ?? []
+        for (i, t) in tabs.enumerated() {
+            guard let tab = t as? NSObject, (tab.value(forKey: "id") as? Int) == want else { continue }
+            w.setValue(i + 1, forKey: "activeTabIndex")
+            w.setValue(1, forKey: "index")
+            found = true
+            break
+        }
+        if found { break }
+    }
+    print(found ? "ok" : "missing")
 
 case "click":
     let v = Array(args.dropFirst())

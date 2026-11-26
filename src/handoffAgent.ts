@@ -132,24 +132,6 @@ async function mainChromePid(): Promise<number | null> {
 }
 async function raisePid(pid: number): Promise<void> { await hands(['activate', String(pid)]); }
 
-const SELECT_TAB = `on run argv
-  set wanted to (item 1 of argv) as integer
-  tell application "Google Chrome"
-    repeat with w in (every window)
-      set i to 0
-      repeat with t in (every tab of w)
-        set i to i + 1
-        if (id of t) is wanted then
-          set active tab index of w to i
-          set index of w to 1
-          activate
-          return "ok"
-        end if
-      end repeat
-    end repeat
-  end tell
-  return "missing"
-end run`;
 
 /** The app brought to the front so what he taps on is its window, and the screen area its windows cover. The app is the owner name
  *  `hands windows` lists ('Google Chrome' for mac-chrome). */
@@ -161,11 +143,11 @@ function macWindow(fixedApp?: string): Screen {
       const pid = await mainChromePid();
       if (!pid) throw new Error('his Chrome is not running');
       const tab = await sessionTab(h);
-      // Selecting the tab goes through AppleScript, which may be talking to the other Chrome: a tab it
-      // cannot find is logged and his Chrome is raised as it stands.
+      // The tab is selected in THAT Chrome, by pid (`hands chrome-tab`); a tab it cannot find is logged
+      // and his Chrome is raised as it stands.
       if (tab != null) {
-        const { stdout } = await run('/usr/bin/osascript', ['-e', SELECT_TAB, String(tab)], { timeout: 10_000 }).catch((e) => ({ stdout: String(e.message) }));
-        if (stdout.trim() !== 'ok') console.warn(`[handoff] ${h.id}: could not select tab ${tab} (${stdout.trim().slice(0, 80)}); raising Chrome pid ${pid} as it is`);
+        const out = await hands(['chrome-tab', String(pid), String(tab)]).catch((e: any) => String(e.message));
+        if (out.trim() !== 'ok') console.warn(`[handoff] ${h.id}: could not select tab ${tab} (${out.trim().slice(0, 80)}); raising Chrome pid ${pid} as it is`);
       }
       await raisePid(pid);
     } else try {

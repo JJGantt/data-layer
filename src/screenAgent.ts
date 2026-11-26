@@ -25,6 +25,7 @@ const MAX_LIVE = 3;
 const NORMAL = new Set(['bye', 'stopped', 'disconnected', 'closed']);
 
 const live = new Map<string, ChildProcess>();
+const liveSource = new Map<string, string>();   // share id -> the device that asked (its user agent)
 
 async function update(id: string, fields: Record<string, unknown>): Promise<void> {
   const { error } = await getClient().from('screen_shares').update({ ...fields, updated_at: new Date().toISOString() }).eq('id', id);
@@ -34,6 +35,12 @@ async function update(id: string, fields: Record<string, unknown>): Promise<void
 async function share(row: any): Promise<void> {
   const id: string = row.id;
   const t0 = Date.parse(row.created_at) || Date.now();
+  // A device asking again (its page reloaded, or the app came back) has left its earlier share behind:
+  // that one is ended here as `stopped` rather than left running beside the new one, where its teardown
+  // would stop the new capture and its dead connection would end it as `failed`.
+  for (const [old, src] of liveSource) {
+    if (row.source && src === row.source) { console.log(`[screen] ${old.slice(0, 8)} replaced by ${id.slice(0, 8)} from the same device`); live.get(old)?.stdin?.end(); }
+  }
   if (live.size >= MAX_LIVE) {
     console.error(`[screen] ${id}: refused, ${live.size} shares already live`);
     await update(id, { status: 'failed', error: `${live.size} shares already live` });
@@ -42,6 +49,7 @@ async function share(row: any): Promise<void> {
   console.log(`[screen] ${id.slice(0, 8)} heard ${Date.now() - t0} ms after it was asked`);
   const child = spawn(BIN, [], { stdio: ['pipe', 'pipe', 'pipe'] });
   live.set(id, child);
+  if (row.source) liveSource.set(id, row.source);
   let ended = false;
   child.on('error', (e) => console.error(`[screen] ${id}: could not start ${BIN}: ${e.message}`));
   child.stdin!.on('error', () => {});
@@ -66,7 +74,7 @@ async function share(row: any): Promise<void> {
     }
   });
   child.on('exit', (code, sig) => {
-    live.delete(id);
+    live.delete(id); liveSource.delete(id);
     if (ended) return;
     console.error(`[screen] ${id}: screenshare exited without saying why (code ${code}, signal ${sig})`);
     update(id, { status: 'failed', error: `screenshare exited ${code ?? sig}` });
