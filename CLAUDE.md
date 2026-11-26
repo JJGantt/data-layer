@@ -157,6 +157,8 @@ from the last two hours; a capture never overwrites.
 
 ## A tool that throws is reported
 
-`mcp.ts` installs the ops reporter (service `data-mcp`). Any tool that throws, for any reason, bad input
-included, is answered with `isError: true` and reported to the responder, which decides what an error is
-worth. Never catch inside a tool to turn a failure into a normal-looking answer.
+`mcp.ts` installs the ops reporter (service `data-mcp`). Any tool that throws, for any reason, is answered
+with `isError: true` and reported to the responder. A `ValidationError` (a bad argument whose message
+says how to fix the call, which the model then does) is reported as an occurrence, counted against its
+watch; anything else is an error. Throw `ValidationError` only for input the caller can correct, never
+for a failure of ours. Never catch inside a tool to turn a failure into a normal-looking answer.

@@ -230,11 +230,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   function text(msg: string) {
     return { content: [{ type: 'text' as const, text: msg }] };
   }
-  // A tool that threw, whatever the reason (a bad argument, a timeout, Supabase, a bug): reported, so
-  // the responder sees it and decides what it is worth.
+  // A tool that threw (a timeout, Supabase, a bug): reported as an error, so the responder sees it.
+  // A ValidationError is a bad argument whose message tells the model how to correct the call, which it
+  // then does, so it is an occurrence: counted against its watch, not an incident each time.
   function failed(e: any, prefix = 'Error') {
     const msg = e?.message || String(e);
-    console.error(`[data-mcp] ${name} failed:`, e instanceof Error ? e : msg);
+    if (e?.name === 'ValidationError') console.warn(`[data-mcp] ${name} rejected: ${msg}`);
+    else console.error(`[data-mcp] ${name} failed:`, e instanceof Error ? e : msg);
     return { content: [{ type: 'text' as const, text: `${prefix}: ${msg}` }], isError: true };
   }
 
