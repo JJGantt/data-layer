@@ -155,9 +155,8 @@ from the last two hours; a capture never overwrites.
 - Transport files (`mcp.ts`, `http.ts`) hold no logic — put it in the domain module so the MCP and the
   HTTP API cannot disagree about what a write means.
 
-## A tool that throws opens an incident, unless it threw `ValidationError`
+## A tool that throws is reported
 
-`mcp.ts` installs the ops reporter (service `data-mcp`). Any tool that throws is answered with
-`isError: true` and reported, which opens an incident. The exception is `helpers.ValidationError`: the
-caller passed something wrong, and it is answered without being reported. Throw that for bad input,
-and a plain `Error` for anything that is a real failure.
+`mcp.ts` installs the ops reporter (service `data-mcp`). Any tool that throws, for any reason, bad input
+included, is answered with `isError: true` and reported to the responder, which decides what an error is
+worth. Never catch inside a tool to turn a failure into a normal-looking answer.

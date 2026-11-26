@@ -31,7 +31,6 @@ import * as homeRequests from './homeRequests.js';
 import * as roomba from './roomba.js';
 import * as conversation from './conversation.js';
 import { createRequire } from 'node:module';
-import { ValidationError } from './helpers.js';
 
 // Errors go to the ops responder (health/responder). ops_report.cjs is a copy of its reporter (edit
 // it there). This runs as a subprocess of every session and of the voice worker, not as a service, so
@@ -230,11 +229,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   function text(msg: string) {
     return { content: [{ type: 'text' as const, text: msg }] };
   }
-  // A tool that threw. A ValidationError is the caller's mistake, answered and not reported; anything
-  // else (a timeout, a Supabase or network failure, a bug) is reported, so it opens an incident.
+  // A tool that threw, whatever the reason (a bad argument, a timeout, Supabase, a bug): reported, so
+  // the responder sees it and decides what it is worth.
   function failed(e: any, prefix = 'Error') {
     const msg = e?.message || String(e);
-    if (!(e instanceof ValidationError)) console.error(`[data-mcp] ${name} failed:`, e instanceof Error ? e : msg);
+    console.error(`[data-mcp] ${name} failed:`, e instanceof Error ? e : msg);
     return { content: [{ type: 'text' as const, text: `${prefix}: ${msg}` }], isError: true };
   }
 
