@@ -98,8 +98,9 @@ of the screen or page) or, on the Pi, `selector` (that element plus a 24 px marg
 page changes), as fractions of it. The phone frames `full_image` on `focus`. `image` is the focus
 cropped out (`cropPng` in `src/pngDiff.ts`) for the watch, whose Full/Crop toggle is the `view` action,
 flipping `handoffs.whole`. A tap carries `full` when it was measured on `full_image`; it is placed in
-the rectangle the newest screenshot showed, which the agent keeps in memory: after an agent restart a
-tap fails until Refresh takes a new one.
+the rectangle the newest screenshot showed, which the agent keeps in memory. It takes a fresh screenshot of every open handoff
+when it starts, and an action on one with no screenshot held is dropped and answered with the screen as
+it is now, so a restart never ends a handoff.
 
 `suggest` ([{label, text}]) on the request is values he will type that the session knows (his email, a
 card number): buttons on the phone that fill his text box. Never a password or a one-time code; the
