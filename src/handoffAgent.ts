@@ -359,8 +359,16 @@ async function act(a: any): Promise<void> {
   const screen = screenFor(h.target);
   if (a.kind === 'tap' || a.kind === 'text' || a.kind === 'key') {
     const before = shown.get(h.id);
+    // No screenshot held for it here (this agent restarted while it was open): the action could not be
+    // checked against what he saw, so nothing is done and he gets the screen as it is now, as when the
+    // screen changed. Ending the handoff for it would wake the session over the agent's own restart.
+    if (!before) {
+      console.log(`[handoff] ${h.id} ${a.kind} dropped: no screenshot held here; sending a fresh one`);
+      await finish({ error: 'no screenshot to check against; here is the screen now' });
+      try { await publish(h); } catch (e: any) { await fail(h.id, `could not screenshot ${h.target}: ${e.message}`); }
+      return;
+    }
     try {
-      if (!before) throw new Error('no screenshot of this handoff taken here to act on');
       const now = await screen.shot(h);
       const moved = !sameRect(before.full, now.rect);
       const diff = moved ? 1 : diffFraction(before.png, now.png);
@@ -406,6 +414,13 @@ export function start(targets: string[]): void {
   if (!targets.length) throw new Error('no handoff targets to answer');
   const mine = (row: any) => targets.includes(row.target);
   onInserts('handoffs', opened, 0, mine);
+  // A handoff left open across a restart has no screenshot held here: one is taken now, so his next tap
+  // is checked against a screen this agent has seen.
+  getClient().from('handoffs').select(ASK).eq('status', 'open').in('target', targets)
+    .then(({ data, error }) => {
+      if (error) { console.error(`[handoff] could not read open handoffs at start: ${error.message}`); return; }
+      for (const h of data || []) publish(h as any).catch((e: any) => console.error(`[handoff] ${h.id}: fresh screenshot at start failed: ${e.message}`));
+    });
   onInserts('handoff_actions', act, 0, mine);
   console.log(`[handoff-agent] answering ${targets.join(', ')}`);
 }

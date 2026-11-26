@@ -117,7 +117,9 @@ case "chrome-tab":
     for case let w as NSObject in (chrome.value(forKey: "windows") as? SBElementArray) ?? [] {
         let tabs = (w.value(forKey: "tabs") as? SBElementArray) ?? []
         for (i, t) in tabs.enumerated() {
-            guard let tab = t as? NSObject, (tab.value(forKey: "id") as? Int) == want else { continue }
+            // Chrome's scripting bridge answers the id as a string or a number depending on the call, so
+            // it is compared by its text.
+            guard let tab = t as? NSObject, let id = tab.value(forKey: "id"), "\(id)" == String(want) else { continue }
             w.setValue(i + 1, forKey: "activeTabIndex")
             w.setValue(1, forKey: "index")
             found = true
