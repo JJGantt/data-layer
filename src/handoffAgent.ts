@@ -89,7 +89,7 @@ async function captureRect(rect: Rect): Promise<Buffer> {
   } finally { await rm(dir, { recursive: true, force: true }); }
 }
 
-/** The front window of one app, brought to the front so a click lands on it. The app is the owner name
+/** The screen area one app's windows cover, brought to the front so a click lands on it. The app is the owner name
  *  `hands windows` lists ('Google Chrome' for mac-chrome). */
 function macWindow(fixedApp?: string): Screen {
   const front = async (h: Ask) => {
@@ -105,7 +105,7 @@ function macWindow(fixedApp?: string): Screen {
     // An app on another Space has no window on screen until the switch to it finishes, so the window is
     // looked for again for a few seconds before the capture or the click gives up.
     for (let i = 0; ; i++) {
-      try { return JSON.parse(await hands(['window', app])) as Rect & { id: number }; }
+      try { return JSON.parse(await hands(['window', app])) as Rect; }
       catch (e) { if (i >= 10) throw e; await new Promise((r) => setTimeout(r, 300)); }
     }
   };
