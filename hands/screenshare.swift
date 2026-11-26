@@ -332,9 +332,25 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate {
         send(buf)
     }
 
+    // macOS can stop a capture from outside ("Stream was stopped by the system"); measured: another share's
+    // helper tearing down its capture of the same display stopped this one 75 ms later. The connection is
+    // still good, so the capture is started again on the same video source; only one that keeps stopping
+    // (three times within a minute) ends the share.
+    var restarts: [TimeInterval] = []
     func stream(_ s: SCStream, didStopWithError error: Error) {
         log("capture stopped: \(error.localizedDescription)")
-        DispatchQueue.main.async { end("capture stopped: \(error.localizedDescription)") }
+        let now = ProcessInfo.processInfo.systemUptime
+        restarts = restarts.filter { now - $0 < 60 } + [now]
+        if restarts.count > 3 {
+            DispatchQueue.main.async { end("capture stopped: \(error.localizedDescription)") }
+            return
+        }
+        stream = nil
+        Task {
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            do { try await self.start(); log("capture restarted") }
+            catch { DispatchQueue.main.async { end("capture stopped: \(error.localizedDescription)") } }
+        }
     }
 
     func start() async throws {
@@ -360,8 +376,9 @@ final class Capture: NSObject, SCStreamOutput, SCStreamDelegate {
         // A still screen produces no frames, and an encoder with no new frame cannot answer the phone's
         // request for a key frame (a lost packet, a resumed app) or sharpen a picture it sent soft. So
         // the newest frame is handed over again whenever the screen has been still for a second.
-        repeatIdle()
+        if !idling { idling = true; repeatIdle() }   // once, whatever number of restarts
     }
+    var idling = false
 
     func repeatIdle() {
         q.asyncAfter(deadline: .now() + 1) { [weak self] in
