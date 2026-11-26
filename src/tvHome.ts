@@ -20,7 +20,8 @@
 //       gets past it. The picker shows nothing an event could carry, so `bin/tv profile prime` reads
 //       the screen for up to 20 s and presses OK only on the words "Who's watching?".
 //       Apple TV and playing: `bin/tv check`. A link stops on Apple TV's title page, and Play is
-//       pressed there when nothing on the page is sold (google-tv docs/WATCHING.md). Playing is the
+//       pressed there when nothing on the page is sold (google-tv docs/WATCHING.md). A YouTube watch URL
+//       lands on the video paused, so a YouTube still silent 6 s in gets one OK press. Playing is the
 //       app's sound actually reaching the output, because a media session reports only what its app
 //       claims. These are bounded waits for an outcome (each gives up
 //       after 15-20 s), not a standing poll: none of these states raises an event the Pi can hear.
