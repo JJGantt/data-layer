@@ -6,7 +6,7 @@
 import { randomUUID } from 'crypto';
 import { getClient } from './client.js';
 
-export const OPS = ['power', 'brightness', 'contrast', 'night', 'volume', 'open', 'launch', 'sidebar', 'overlay', 'now', 'media', 'key', 'input', 'sleep'] as const;
+export const OPS = ['power', 'brightness', 'contrast', 'night', 'volume', 'open', 'launch', 'sidebar', 'overlay', 'now', 'media', 'key', 'input', 'sleep', 'played'] as const;
 export type Op = (typeof OPS)[number];
 
 // Long enough for a volume walk of many key steps. An op that may wake the TV first gets longer: the
@@ -165,4 +165,30 @@ export async function sidebarContent(): Promise<string> {
   const { data, error } = await getClient().from('app_settings').select('value').eq('key', 'tv_sidebar_content').maybeSingle();
   if (error) throw new Error(error.message);
   return String(data?.value ?? '');
+}
+
+const APP_NAMES = Object.fromEntries(Object.entries(APPS).map(([name, pkg]) => [pkg, name]));
+const clock = (s: number) => {
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  return (h ? `${h}:${String(m).padStart(2, '0')}` : `${m}`) + `:${String(sec).padStart(2, '0')}`;
+};
+
+/** The play log (`played`): what played on the TV, newest first (tv_plays, written by the hub from the
+ *  TV app's PlayWatcher; google-tv docs/WATCHING.md § The play log). Read straight from the table, so it
+ *  answers with the TV off. */
+export async function played(limit = 30): Promise<string> {
+  const n = Math.max(1, Math.min(500, Math.round(limit)));
+  const { data, error } = await getClient().from('tv_plays')
+    .select('started_at,ended_at,package,title,artist,duration_s,watched_s,url,video_id').order('started_at', { ascending: false }).limit(n);
+  if (error) throw new Error(error.message);
+  if (!data?.length) return 'Nothing has been logged as playing on the TV yet.';
+  const when = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  return data.map((p: any) => [
+    when.format(new Date(p.started_at)),
+    APP_NAMES[p.package] || p.package,
+    p.title || '(untitled)',
+    p.artist || '',
+    `watched ${clock(p.watched_s || 0)}${p.duration_s ? ` of ${clock(p.duration_s)}` : ''}${p.ended_at ? '' : ' (still on)'}`,
+    p.video_id ? `video ${p.video_id}` : p.url || '',
+  ].join(' | ')).join('\n');
 }
