@@ -30,6 +30,17 @@ import * as youtubeAccount from './youtubeAccount.js';
 import * as homeRequests from './homeRequests.js';
 import * as roomba from './roomba.js';
 import * as conversation from './conversation.js';
+import { createRequire } from 'node:module';
+import { ValidationError } from './helpers.js';
+
+// Errors go to the ops responder (health/responder). ops_report.cjs is a copy of its reporter (edit
+// it there). This runs as a subprocess of every session and of the voice worker, not as a service, so
+// it reports but never beats: no heartbeat could mean anything when a process lives for one session.
+const ops = createRequire(import.meta.url)('../ops_report.cjs');
+ops.install({
+  machine: process.env.OPS_MACHINE || (process.env.FLY_APP_NAME ? 'fly' : process.platform === 'darwin' ? 'mac' : 'pi'),
+  service: 'data-mcp',
+});
 
 const PRODUCE_TYPE_DESC = "Set ONLY for fruits and vegetables; pick exactly one, the three are mutually exclusive. 'dark_green_vegetable' is the USDA dark green vegetable subgroup, which is broader than leafy: alongside the dark leafy greens it includes broccoli, broccolini, Brussels sprouts, asparagus, green beans and green/snap peas. 'other_vegetable' is every other vegetable, including legumes, beans and starchy vegetables. 'fruit' includes avocado. Omit the field entirely for anything that is not a fruit or vegetable.";
 
@@ -69,7 +80,8 @@ async function listRoster(): Promise<{ ids: string[]; desc: string }> {
         return `${l.id} = "${l.name}"${path.length ? ` (inside ${path.map(p => p.name).join(' › ')})` : ''}`;
       }).join(', ')}.`,
     };
-  } catch {
+  } catch (e) {
+    console.error('[data-mcp] list roster unreadable, list tools have no enum:', e);
     // A roster that cannot be read must not take the tools down with it. No enum in that case, so the
     // server-side check in requireList is the only guard — which is why it exists.
     return { ids: [], desc: `Call get_lists for the list ids.` };
@@ -217,6 +229,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
   function text(msg: string) {
     return { content: [{ type: 'text' as const, text: msg }] };
+  }
+  // A tool that threw. A ValidationError is the caller's mistake, answered and not reported; anything
+  // else (a timeout, a Supabase or network failure, a bug) is reported, so it opens an incident.
+  function failed(e: any, prefix = 'Error') {
+    const msg = e?.message || String(e);
+    if (!(e instanceof ValidationError)) console.error(`[data-mcp] ${name} failed:`, e instanceof Error ? e : msg);
+    return { content: [{ type: 'text' as const, text: `${prefix}: ${msg}` }], isError: true };
   }
 
   try {
@@ -735,7 +754,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const op = String(a.op || '') as appleMusic.Op;
       if (!appleMusic.OPS.includes(op)) return text(`Unknown op ${op}.`);
       try { return text(await appleMusic.run(op, a as Record<string, any>)); }
-      catch (e: any) { return text(`apple_music ${op}: ${e.message || e}`); }
+      catch (e: any) { return failed(e, `apple_music ${op}`); }
     }
     if (name === 'roomba') {
       const op = String(a.op || '') as roomba.Op;
@@ -760,7 +779,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       try {
         if (op === 'show') return text(JSON.stringify(await bedroomTv.command('launch', { package: bedroomTv.APPS.guide })));
         return text(await tvGuide.run(op, a as Record<string, any>));
-      } catch (e: any) { return text(`tv_guide ${op}: ${e.message || e}`); }
+      } catch (e: any) { return failed(e, `tv_guide ${op}`); }
     }
     if (name === 'catalog') {
       const c = a as any;
@@ -845,7 +864,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     return text(`Unknown tool: ${name}`);
   } catch (err: any) {
-    return text(`Error: ${err.message}`);
+    return failed(err);
   }
 });
 
