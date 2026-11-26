@@ -4,8 +4,9 @@
 
 Uses IROBOT_EMAIL / IROBOT_PASSWORD from data-layer/.env; when they are not there it prompts for them
 and saves them there, so the first run is the only interactive one. Writes ROOMBA_BLID / ROOMBA_PASSWORD
-(and ROOMBA_IP when given) into .env, and replaces the roomba_rooms table with the rooms on every
-visible map. roomba.ts runs it on every `rooms` request, which is what keeps the room list current.
+(and ROOMBA_IP when given) into .env, and replaces the roomba_rooms table with the named rooms and Clean
+Zones on the home map (app_settings.roomba_map); the app's other maps are left alone and not saved.
+roomba.ts runs it for `update_rooms`.
 Standard library only, so it runs on the Mac or the Pi as is.
 
 The robot (i7+, firmware lewis 22.x) answers the local password request with "cloud only", so the
@@ -104,25 +105,37 @@ print(f"{robot.get('name')} ({robot.get('sku')}): login and local password saved
 
 maps = sigv4_get(f"{dep['httpBaseAuth']}/v1/{blid}/pmaps?activeDetails=1&visible=true",
                  irbt["credentials"], dep["awsRegion"])
-rows = []
-for m in maps:
-    d = m.get("active_pmapv_details") or {}
-    # A map nobody has edited in the app has no user version and unnamed rooms; only named rooms are kept.
-    for r in d.get("regions") or []:
-        if not r.get("name"):
-            continue
-        rows.append({"pmap_id": m["pmap_id"], "region_id": str(r["id"]), "name": r["name"],
-                     "region_type": r.get("region_type"), "map_name": (d.get("map_header") or {}).get("name"),
-                     "user_pmapv_id": m.get("user_pmapv_id") or m["active_pmapv_id"]})
-for r in rows:
-    print(f"  {r['map_name']}: {r['name']} (region {r['region_id']})")
-
 sb_url, sb_key = env("SUPABASE_URL"), env("SUPABASE_KEY")
 auth = {"apikey": sb_key, "Authorization": f"Bearer {sb_key}"}
+with urllib.request.urlopen(urllib.request.Request(
+        f"{sb_url}/rest/v1/app_settings?key=eq.roomba_map&select=value", headers=auth), timeout=20) as r:
+    setting = json.load(r)
+home = setting[0]["value"] if setting else ""
+if not home:
+    sys.exit("no home map set: app_settings.roomba_map is empty")
+home_map = next((m for m in maps if m["pmap_id"] == home), None)
+if not home_map:
+    names = ", ".join(f"{m['pmap_id']} ({(m.get('active_pmapv_details') or {}).get('map_header', {}).get('name')})" for m in maps)
+    sys.exit(f"the home map {home} (app_settings.roomba_map) is not in the iRobot app; its maps are: {names}")
+
+rows = []
+d = home_map.get("active_pmapv_details") or {}
+# A map nobody has edited in the app has no user version and unnamed rooms; only named ones are kept.
+for kind, key in (("room", "regions"), ("zone", "zones")):
+    for r in d.get(key) or []:
+        if not r.get("name"):
+            continue
+        rows.append({"pmap_id": home, "kind": kind, "region_id": str(r["id"]), "name": r["name"],
+                     "region_type": r.get("region_type") or r.get("zone_type"),
+                     "map_name": (d.get("map_header") or {}).get("name"),
+                     "user_pmapv_id": home_map.get("user_pmapv_id") or home_map["active_pmapv_id"]})
+for r in rows:
+    print(f"  {r['map_name']}: {r['name']} ({r['kind']} {r['region_id']})")
+
 urllib.request.urlopen(urllib.request.Request(f"{sb_url}/rest/v1/roomba_rooms?pmap_id=neq.", method="DELETE",
                                               headers=auth), timeout=20).close()
 if rows:
     urllib.request.urlopen(urllib.request.Request(f"{sb_url}/rest/v1/roomba_rooms", data=json.dumps(rows).encode(),
                                                   headers={**auth, "Content-Type": "application/json"}),
                            timeout=20).close()
-print(f"{len(rows)} rooms on {len(maps)} map(s) saved to roomba_rooms")
+print(f"{len(rows)} rooms and zones on the home map saved to roomba_rooms")

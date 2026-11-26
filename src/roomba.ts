@@ -8,9 +8,10 @@
  *
  * Needs ROOMBA_IP, ROOMBA_BLID and ROOMBA_PASSWORD in data-layer/.env (roomba/fetch-cloud.py writes the
  * last two). The IP is DHCP: when it stops answering, the robot is found again by its UDP discovery
- * broadcast and the new address is used for this process's life. Room names come from roomba_rooms,
- * which the same script fills from the iRobot app's map. `rooms` reads that saved list; only
- * `update_rooms`, asked for by name, re-runs the script with the iRobot login stored in .env.
+ * broadcast and the new address is used for this process's life. Room and zone names come from
+ * roomba_rooms, which the same script fills from the home map in the iRobot app (app_settings.roomba_map;
+ * the app keeps other maps, which are never saved or offered). `rooms` reads that saved list;
+ * `update_rooms` re-runs the script with the iRobot login stored in .env.
  */
 import dgram from 'node:dgram';
 import { execFile } from 'node:child_process';
@@ -18,8 +19,9 @@ import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
 import mqtt from 'mqtt';
 import { getClient } from './client.js';
+import { ValidationError } from './helpers.js';
 
-export const OPS = ['status', 'rooms', 'update_rooms', 'start', 'clean_rooms', 'pause', 'resume', 'stop', 'dock', 'empty_bin'] as const;
+export const OPS = ['status', 'rooms', 'update_rooms', 'start', 'clean_rooms', 'pause', 'resume', 'stop', 'dock', 'empty_bin', 'settings', 'set'] as const;
 export type Op = typeof OPS[number];
 
 type Reported = Record<string, any>;
@@ -56,7 +58,7 @@ function discover(blid: string): Promise<string | null> {
 
 type Conn = { client: mqtt.MqttClient; state: Reported; changed: () => Promise<void> };
 
-async function open(): Promise<Conn> {
+async function open(extra: string[] = []): Promise<Conn> {
   const { blid, password } = creds();
   // ciphers / secureOptions pass through to tls.connect; mqtt's option type does not list them.
   const connectTo = (host: string) => mqtt.connectAsync(`mqtts://${host}:8883`, {
@@ -82,7 +84,7 @@ async function open(): Promise<Conn> {
   });
   const changed = () => new Promise<void>((r) => { wake = () => { wake = null; r(); }; });
   // The robot publishes its whole state in pieces right after connect; status needs these keys.
-  const need = ['cleanMissionStatus', 'batPct', 'bin', 'pmaps'];
+  const need = ['cleanMissionStatus', 'batPct', 'bin', 'pmaps', ...extra];
   const deadline = Date.now() + 8000;
   while (!need.every((k) => k in state) && Date.now() < deadline) {
     await Promise.race([changed(), new Promise((r) => setTimeout(r, deadline - Date.now()))]);
@@ -102,10 +104,54 @@ function describe(s: Reported): string {
   return parts.join(' · ');
 }
 
-async function rooms(): Promise<any[]> {
-  const { data, error } = await getClient().from('roomba_rooms').select('*').order('map_name').order('region_id');
+type Area = { pmap_id: string; kind: 'room' | 'zone'; region_id: string; name: string; user_pmapv_id: string };
+
+/** The id an area is passed by: r<id> for a room, z<id> for a Clean Zone (the two are numbered apart). */
+const areaId = (a: Area) => `${a.kind === 'zone' ? 'z' : 'r'}${a.region_id}`;
+
+/** The rooms and zones on the home map. fetch-cloud.py saves no other map, so this is the whole table. */
+async function areas(): Promise<Area[]> {
+  const { data, error } = await getClient().from('roomba_rooms').select('*');
   if (error) throw new Error(`roomba_rooms: ${error.message}`);
-  return data || [];
+  return ((data || []) as Area[]).sort((x, y) => x.kind.localeCompare(y.kind) || Number(x.region_id) - Number(y.region_id));
+}
+
+/** Cleaning preferences as the robot reports them: how each one reads, and the state that sets each value. */
+const PREFS: Record<string, { read: (s: Reported) => string | null; values: Record<string, Reported> }> = {
+  passes: {
+    read: (s) => !('noAutoPasses' in s) ? null : !s.noAutoPasses ? 'auto' : s.twoPass ? '2' : '1',
+    values: { auto: { noAutoPasses: false, twoPass: false }, '1': { noAutoPasses: true, twoPass: false }, '2': { noAutoPasses: true, twoPass: true } },
+  },
+  edge_clean: {
+    read: (s) => !('openOnly' in s) ? null : s.openOnly ? 'off' : 'on',
+    values: { on: { openOnly: false }, off: { openOnly: true } },
+  },
+  power: {
+    read: (s) => !('carpetBoost' in s) ? null : s.carpetBoost ? 'auto' : s.vacHigh ? 'performance' : 'eco',
+    values: { auto: { carpetBoost: true, vacHigh: false }, performance: { carpetBoost: false, vacHigh: true }, eco: { carpetBoost: false, vacHigh: false } },
+  },
+  bin_full_pause: {
+    read: (s) => !('binPause' in s) ? null : s.binPause ? 'on' : 'off',
+    values: { on: { binPause: true }, off: { binPause: false } },
+  },
+};
+export const PREF_NAMES = Object.keys(PREFS);
+
+function describePrefs(s: Reported): string {
+  const shown = Object.entries(PREFS).map(([k, p]) => [k, p.read(s)] as const).filter(([, v]) => v !== null);
+  return shown.length ? shown.map(([k, v]) => `${k}: ${v}`).join(' · ') : 'the robot reports none of the known preferences';
+}
+
+/** The per-clean overrides a start command carries, from the `passes` / `edge_clean` arguments. */
+function cleanParams(args: Record<string, any>): Reported | null {
+  const p: Reported = {};
+  for (const k of ['passes', 'edge_clean'] as const) {
+    if (args[k] === undefined) continue;
+    const v = PREFS[k].values[String(args[k])];
+    if (!v) throw new ValidationError(`${k} must be one of ${Object.keys(PREFS[k].values).join(', ')}`);
+    Object.assign(p, v);
+  }
+  return Object.keys(p).length ? p : null;
 }
 
 /** What the robot's state must show for a command to have taken effect. */
@@ -150,38 +196,60 @@ function refreshRooms(): Promise<string | null> {
   }));
 }
 
-function listRooms(rs: any[]): string {
-  if (!rs.length) return 'No named rooms on any map.';
-  return rs.map((r) => `${r.name} — map ${r.pmap_id} (${r.map_name || 'unnamed map'}), room ${r.region_id}`).join('\n');
+function listAreas(as: Area[]): string {
+  if (!as.length) return 'No named rooms or zones on the home map.';
+  return as.map((a) => `${a.name} — ${a.kind} ${areaId(a)}`).join('\n');
+}
+
+/** Set saved preferences by publishing to `delta`, then wait for the robot's reported state to show them. */
+async function setPrefs(c: Conn, args: Record<string, any>): Promise<string> {
+  const want: Reported = {};
+  for (const k of PREF_NAMES) {
+    if (args[k] === undefined) continue;
+    if (PREFS[k].read(c.state) === null) throw new ValidationError(`this robot does not report ${k}, so it cannot be set`);
+    const v = PREFS[k].values[String(args[k])];
+    if (!v) throw new ValidationError(`${k} must be one of ${Object.keys(PREFS[k].values).join(', ')}`);
+    Object.assign(want, v);
+  }
+  if (!Object.keys(want).length) throw new ValidationError(`set needs at least one of ${PREF_NAMES.join(', ')}`);
+  await c.client.publishAsync('delta', JSON.stringify({ state: want }));
+  const deadline = Date.now() + EFFECT_MS;
+  while (Date.now() < deadline) {
+    if (Object.entries(want).every(([k, v]) => c.state[k] === v)) return `Saved — ${describePrefs(c.state)}`;
+    await Promise.race([c.changed(), new Promise((r) => setTimeout(r, deadline - Date.now()))]);
+  }
+  throw new Error(`preferences did not change in ${EFFECT_MS / 1000}s — ${describePrefs(c.state)}`);
 }
 
 export async function roomba(op: Op, args: Record<string, any> = {}): Promise<string> {
-  if (op === 'rooms') return listRooms(await rooms());
+  if (op === 'rooms') return listAreas(await areas());
   if (op === 'update_rooms') {
     const failed = await refreshRooms();
     if (failed) throw new Error(`could not update the rooms from the iRobot app: ${failed}`);
-    return `Updated from the iRobot app:\n${listRooms(await rooms())}`;
+    return `Updated from the iRobot app:\n${listAreas(await areas())}`;
   }
-  let regions: Record<string, unknown> | null = null;
+  const params = op === 'start' || op === 'clean_rooms' ? cleanParams(args) : null;
+  let start: Reported = params ? { params } : {};
+  let chosen: Area[] = [];
   if (op === 'clean_rooms') {
-    const want: string[] = (args.rooms || []).map(String);
-    if (!want.length) throw new Error('clean_rooms needs `rooms`: region ids from the rooms op');
-    const onMap = (await rooms()).filter((r) => r.pmap_id === args.map);
-    if (!onMap.length) throw new Error(`no saved map ${args.map}; pass a map id from the rooms op`);
-    const unknown = want.filter((w) => !onMap.some((r) => r.region_id === w));
-    if (unknown.length) throw new Error(`no room ${unknown.join(', ')} on map ${args.map}`);
-    regions = { ordered: 1, pmap_id: args.map, user_pmapv_id: onMap[0].user_pmapv_id,
-      regions: want.map((id) => ({ region_id: id, type: 'rid' })) };
+    const want: string[] = (args.areas || []).map(String);
+    if (!want.length) throw new ValidationError('clean_rooms needs `areas`: ids from the rooms op');
+    const all = await areas();
+    const unknown = want.filter((w) => !all.some((a) => areaId(a) === w));
+    if (unknown.length) throw new ValidationError(`no room or zone ${unknown.join(', ')} on the home map; the ids are:\n${listAreas(all)}`);
+    chosen = want.map((w) => all.find((a) => areaId(a) === w)!);
+    // The app's room-specific settings ride on each region; the same overrides go on every one.
+    start = { ordered: 1, pmap_id: chosen[0].pmap_id, user_pmapv_id: chosen[0].user_pmapv_id,
+      regions: chosen.map((a) => ({ region_id: a.region_id, type: a.kind === 'zone' ? 'zid' : 'rid', ...(params ? { params } : {}) })) };
   }
-  const c = await open();
+  const c = await open(op === 'settings' || op === 'set' ? ['noAutoPasses', 'openOnly', 'carpetBoost', 'binPause'] : []);
   try {
     switch (op) {
       case 'status': return describe(c.state);
-      case 'start': return await command(c, 'start');
-      case 'clean_rooms': {
-        const names = (await rooms()).filter((r) => r.pmap_id === args.map && (args.rooms as string[]).map(String).includes(r.region_id)).map((r) => r.name);
-        return `${names.join(', ')}: ${await command(c, 'start', regions!)}`;
-      }
+      case 'start': return await command(c, 'start', start);
+      case 'clean_rooms': return `${chosen.map((a) => a.name).join(', ')}: ${await command(c, 'start', start)}`;
+      case 'settings': return describePrefs(c.state);
+      case 'set': return await setPrefs(c, args);
       case 'pause': return await command(c, 'pause');
       case 'resume': return await command(c, 'resume');
       case 'stop': return await command(c, 'stop');

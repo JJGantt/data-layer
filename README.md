@@ -198,11 +198,23 @@ discovery broadcast (`irobotmcs` to port 5678) and the error log says to update 
 The local password comes only from the iRobot cloud: on this firmware (lewis 22.x) the robot answers
 the local password request with "cloud only", so the hold-HOME method that roombapy and dorita980
 describe does nothing. `python3 roomba/fetch-cloud.py` signs in to the iRobot account, writes the BLID
-and password to `.env`, and replaces `roomba_rooms` with the rooms on every visible map. Its first run
+and password to `.env`, and replaces `roomba_rooms` with the named rooms and Clean Zones on the HOME MAP,
+`app_settings.roomba_map`. The iRobot app also keeps maps of earlier homes; they stay in the app and are
+never saved, so nothing can be cleaned against them. Moving to a new map means changing that setting,
+and the script refuses when the setting names a map the app no longer has. Its first run
 prompts for the iRobot login and stores it in `.env` (`IROBOT_EMAIL`, `IROBOT_PASSWORD`); after that it
-runs unattended. The tool's `rooms` reads the saved list; `update_rooms` re-runs the script, and only
-when he asks for it, because rooms change rarely. Only named rooms are kept: a map never edited in the
-app has unnamed segments and no user version. Its discovery host is `disc-prod.iot.irobotapi.com`; the older `disc-prod.irobotapi.com`
+runs unattended. The tool's `rooms` reads the saved list; `update_rooms` re-runs the script. Only named
+rooms and zones are kept. A zone's id is numbered apart from the rooms' (both start low), so the tool
+names them `r<n>` and `z<n>`, and the robot is sent region type `rid` or `zid` accordingly.
+
+Cleaning preferences (`settings` / `set`) are the robot's own reported state: `noAutoPasses` +
+`twoPass` (passes: auto/1/2), `openOnly` (edge clean off), `carpetBoost` + `vacHigh` (power), `binPause`.
+`set` publishes them to the `delta` topic and answers once the reported state shows them; a preference
+the robot does not report is refused. `start` and `clean_rooms` take `passes` / `edge_clean` for one
+clean, sent as `params` on the start command (and on each region of a room clean, the shape the app
+uses for room-specific settings). The robot does not report per-clean params back, so unlike everything
+else that effect cannot be confirmed from its state.
+Its discovery host is `disc-prod.iot.irobotapi.com`; the older `disc-prod.irobotapi.com`
 no longer resolves.
 
 ## JaredBot switch
