@@ -10,6 +10,7 @@
 //   hands click <x> <y>          → a left click at that global point
 //   hands type                   → types stdin as it is (any characters; nothing is echoed)
 //   hands key enter|tab|backspace|escape
+//   hands activate <pid>         → brings that process's app to the front (one of two running Chromes)
 //
 // Posting events needs Accessibility, which is held by the process that launched this (hands-launch),
 // so this is run only as that launcher's descendant. Every failure exits non-zero with a reason.
@@ -90,6 +91,12 @@ case "screen":
     let d = n > 0 ? ids[0] : CGMainDisplayID()
     let b = CGDisplayBounds(d)
     json(["x": b.minX, "y": b.minY, "w": b.width, "h": b.height])
+
+case "activate":
+    guard let v = args.dropFirst().first, let pid = Int32(v), let app = NSRunningApplication(processIdentifier: pid) else {
+        fail("usage: hands activate pid (a running app)")
+    }
+    guard app.activate(options: [.activateAllWindows]) else { fail("could not activate pid \(pid)") }
 
 case "click":
     let v = Array(args.dropFirst())

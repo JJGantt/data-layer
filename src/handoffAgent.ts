@@ -45,7 +45,7 @@ type Frame = { png: Buffer; width: number; height: number; rect: Rect; focus: Re
 type Rect = { x: number; y: number; w: number; h: number };
 /** What a handoff asked to be shown: `app` (mac-screen), `region` (fractions of the screen or page),
  *  `selector` (pi-browser), and Jared's `whole` toggle. */
-type Ask = { id: string; target: string; app: string | null; region: Rect | null; selector: string | null; whole: boolean };
+type Ask = { id: string; target: string; app: string | null; region: Rect | null; selector: string | null; whole: boolean; session?: string | null };
 interface Screen {
   shot(h: Ask): Promise<Frame>;
   tap(h: Ask, rect: Rect, fx: number, fy: number): Promise<void>;
@@ -90,13 +90,85 @@ async function captureRect(rect: Rect): Promise<Buffer> {
   } finally { await rm(dir, { recursive: true, force: true }); }
 }
 
+// A mac-chrome handoff shows THE TAB OF THE SESSION THAT ASKED, not whatever window Chrome has in front: a
+// session's Claude tabs live in their own group, often in a window behind his own, and bringing Chrome
+// forward put him on a YouTube tab while the sign-in waited elsewhere. Each session's Chrome tool results
+// are recorded on the Mac by claude-config `mac/bin/chrome-tabs` (~/.claude/chrome-tabs/<claude session id>,
+// a tab id a line, newest last), and Chrome's AppleScript tab ids are the extension's, so the newest one
+// recorded is selected and its window raised. With no record (a session that never used Chrome) it is
+// Chrome's front window, as before, and that is logged.
+const tabOf = new Map<string, number | null>();   // handoff id -> its session's tab, looked up once
+async function sessionTab(h: Ask): Promise<number | null> {
+  if (tabOf.has(h.id)) return tabOf.get(h.id)!;
+  let tab: number | null = null;
+  try {
+    if (h.session) {
+      const { data } = await getClient().from('desk_sessions').select('claude_session_id').eq('id', h.session).maybeSingle();
+      const csid = data?.claude_session_id;
+      if (csid) {
+        const lines = (await readFile(path.join(process.env.HOME || '', '.claude/chrome-tabs', csid), 'utf8')).split('\n');
+        const ids = lines.slice(1).map((l) => Number(l.trim())).filter((n) => Number.isInteger(n) && n > 0);
+        tab = ids.length ? ids[ids.length - 1] : null;
+      }
+    }
+  } catch (e: any) { if (e.code !== 'ENOENT') console.error(`[handoff] ${h.id}: reading its session's Chrome tabs failed: ${e.message}`); }
+  if (tab == null) console.warn(`[handoff] ${h.id}: no Chrome tab recorded for session ${h.session}; showing Chrome's front window`);
+  tabOf.set(h.id, tab);
+  return tab;
+}
+
+// TWO CHROMES CAN BE RUNNING: his own, which the Claude extension drives, and an on-demand one started with
+// its own --user-data-dir (the YouTube sign-in browser, data-layer youtubeAccount.ts). AppleScript's
+// "Google Chrome" then resolves to either, and `activate` raised the YouTube one: he signed in to Google
+// there while the session's Tuya tab waited in the other. So his Chrome is found by PID — the main
+// `Google Chrome` process started without --user-data-dir — and raised by that pid (`hands activate`).
+async function mainChromePid(): Promise<number | null> {
+  const { stdout } = await run('/usr/bin/pgrep', ['-x', 'Google Chrome']).catch(() => ({ stdout: '' }));
+  for (const pid of stdout.split('\n').map((l) => Number(l.trim())).filter((n) => n > 0)) {
+    const { stdout: args } = await run('/bin/ps', ['-o', 'args=', '-p', String(pid)]).catch(() => ({ stdout: '' }));
+    if (args && !/--user-data-dir/.test(args)) return pid;
+  }
+  return null;
+}
+async function raisePid(pid: number): Promise<void> { await hands(['activate', String(pid)]); }
+
+const SELECT_TAB = `on run argv
+  set wanted to (item 1 of argv) as integer
+  tell application "Google Chrome"
+    repeat with w in (every window)
+      set i to 0
+      repeat with t in (every tab of w)
+        set i to i + 1
+        if (id of t) is wanted then
+          set active tab index of w to i
+          set index of w to 1
+          activate
+          return "ok"
+        end if
+      end repeat
+    end repeat
+  end tell
+  return "missing"
+end run`;
+
 /** The app brought to the front so what he taps on is its window, and the screen area its windows cover. The app is the owner name
  *  `hands windows` lists ('Google Chrome' for mac-chrome). */
 function macWindow(fixedApp?: string): Screen {
   const front = async (h: Ask) => {
     const app = fixedApp || h.app;
     if (!app) throw new Error('mac-screen needs the app whose window to show');
-    try {
+    if (h.target === 'mac-chrome') {
+      const pid = await mainChromePid();
+      if (!pid) throw new Error('his Chrome is not running');
+      const tab = await sessionTab(h);
+      // Selecting the tab goes through AppleScript, which may be talking to the other Chrome: a tab it
+      // cannot find is logged and his Chrome is raised as it stands.
+      if (tab != null) {
+        const { stdout } = await run('/usr/bin/osascript', ['-e', SELECT_TAB, String(tab)], { timeout: 10_000 }).catch((e) => ({ stdout: String(e.message) }));
+        if (stdout.trim() !== 'ok') console.warn(`[handoff] ${h.id}: could not select tab ${tab} (${stdout.trim().slice(0, 80)}); raising Chrome pid ${pid} as it is`);
+      }
+      await raisePid(pid);
+    } else try {
       await run('/usr/bin/osascript', ['-e', `tell application ${JSON.stringify(app)} to activate`], { timeout: 10_000 });
     } catch (e: any) {
       // A system dialog's owner (a SecurityAgent prompt) is not an app that takes `activate`; it is
@@ -237,7 +309,7 @@ const sameRect = (a: Rect, b: Rect) => ['x', 'y', 'w', 'h'].every((k) => Math.ab
 
 // ---- the work ---------------------------------------------------------------------------------------
 
-const ASK = 'id,target,app,region,selector,whole';
+const ASK = 'id,target,app,region,selector,whole,session';
 
 async function publish(h: Ask, extra: Record<string, unknown> = {}): Promise<void> {
   const handoff = h.id;

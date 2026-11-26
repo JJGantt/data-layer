@@ -89,7 +89,7 @@ caller with no `HUB_SESSION_ID` (no session to wake) still waits for the end.
 | target | the screen | answered by |
 |---|---|---|
 | `mac-screen` | one app's front window (`app`, its owner name as `hands windows` lists it), on whichever display | `handoffMain.js` on the Mac (launchd `com.jaredgantt.handoff-agent`) |
-| `mac-chrome` | Chrome's front window on the Mac, brought to the front (the Claude extension's tabs included) | the same |
+| `mac-chrome` | his Chrome, found by pid (the main `Google Chrome` process with no `--user-data-dir`, since an on-demand second Chrome can be running and AppleScript's "Google Chrome" may mean either) and raised with `hands activate`, on the tab the requesting session's Chrome tools touched last (claude-config `chrome-tabs` record); with no record, its front window | the same |
 | `pi-browser` | the Pi's automation browser, over CDP on :9223 | data-http on the Pi (`HOME_AGENT=1` turns it on; `HANDOFF_TARGETS` overrides) |
 
 **He starts on the part that matters, and can pinch out to the rest.** Each screenshot is the whole
