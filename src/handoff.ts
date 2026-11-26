@@ -76,6 +76,16 @@ export interface Framing {
   suggest?: { label: string; text: string }[];
 }
 
+async function standingSuggest(): Promise<{ label: string; text: string }[]> {
+  const { data, error } = await getClient().from('app_settings').select('value').eq('key', 'handoff_suggest').maybeSingle();
+  if (error) { console.error(`[handoff] could not read handoff_suggest: ${error.message}`); return []; }
+  try {
+    const list = JSON.parse(String(data?.value || '[]'));
+    return Array.isArray(list) ? list.filter((v) => v && typeof v.text === 'string' && v.text)
+      .map((v) => ({ label: String(v.label || v.text).slice(0, 40), text: v.text.slice(0, 500) })) : [];
+  } catch { console.error('[handoff] handoff_suggest is not JSON'); return []; }
+}
+
 export async function requestHandoff(target: string, note: string, f: Framing = {}): Promise<string> {
   if (!(TARGETS as readonly string[]).includes(target)) {
     throw new ValidationError(`target must be one of ${TARGETS.join(', ')}`);
@@ -87,6 +97,12 @@ export async function requestHandoff(target: string, note: string, f: Framing = 
   }
   const suggest = (f.suggest || []).filter((v) => v && typeof v.text === 'string' && v.text)
     .slice(0, 8).map((v) => ({ label: String(v.label || v.text).slice(0, 40), text: v.text.slice(0, 500) }));
+  // His standing values (his email): offered on EVERY handoff, after whatever the session gave, so a
+  // sign-in never depends on the session remembering to pass them. Kept in app_settings
+  // `handoff_suggest` ([{label, text}], JSON) rather than in this public repo. Never a password.
+  for (const v of await standingSuggest()) {
+    if (suggest.length < 8 && !suggest.some((x) => x.text === v.text)) suggest.push(v);
+  }
   const { data, error } = await getClient().from('handoffs')
     .insert({ target, note: note.slice(0, 300), session: process.env.HUB_SESSION_ID || null,
       app: f.app || null, region: reg || null, selector: f.selector || null, suggest: suggest.length ? suggest : null })
