@@ -350,7 +350,8 @@ brand. No fix at all counts as home, and the reply says the brand was assumed. E
 description leads with `PANTRY_NOTE` (mcp.ts), which is what makes the logger call `get_pantry` at all.
 
 Rows are added at CART time by the Walmart/Amazon sessions (the `shopping` skill), since checkout is done
-by hand. A brand switch is `set_pantry_item` with `replaces`, which retires the old row (`retired_at`,
+by hand. There is one row per KIND of food, named generically ("bagels", not "everything bagels"), so he
+never has to say which variety; a different variety or brand is a switch. A switch is `set_pantry_item` with `replaces`, which retires the old row (`retired_at`,
 `replaced_by`) instead of editing it. Every write answers `PANTRY CHANGED — tell Jared…`, so the change
 reaches him in that session's reply.
 
