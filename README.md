@@ -102,6 +102,11 @@ the rectangle the newest screenshot showed, which the agent keeps in memory. It 
 when it starts, and an action on one with no screenshot held is dropped and answered with the screen as
 it is now, so a restart never ends a handoff.
 
+**A handoff nobody answers expires** 30 minutes (`HANDOFF_EXPIRE_MS`) after its last activity: when it
+opened, or his last action on it. It is cancelled with `expired: …`, its session is told like any other
+end, and the expiry is counted as an occurrence. Screenshots are not activity, so the fresh ones taken at
+start never keep a forgotten handoff alive. The timer is held in memory per handoff and re-armed at start.
+
 `suggest` ([{label, text}]) on the request is values he will type that the session knows (his email, a
 card number): buttons on the phone that fill his text box. Never a password or a one-time code; the
 agent clears it when the handoff ends.

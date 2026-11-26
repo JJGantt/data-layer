@@ -282,6 +282,37 @@ const screenFor = (target: string) => {
  *  done there. */
 const shown = new Map<string, { full: Rect; rect: Rect; png: Buffer }>();
 
+// A HANDOFF HE NEVER ANSWERS EXPIRES: an open handoff is a start that needs an end, and one left for hours
+// is re-screenshotted on every restart and keeps a session asleep for nothing. EXPIRE_MS after its last
+// ACTIVITY — when it opened, or the last thing he did on it (a handoff_actions row) — it is cancelled as
+// expired, its session is told, and that is counted. A screenshot is not activity: the agent takes one of
+// every open handoff when it starts, and counting those would keep a forgotten one alive forever.
+// A timer held for that moment: the clock is the event here.
+const EXPIRE_MS = Number(process.env.HANDOFF_EXPIRE_MS || 30 * 60_000);
+const expiries = new Map<string, NodeJS.Timeout>();
+function arm(handoff: string, last = Date.now()): void {
+  clearTimeout(expiries.get(handoff));
+  expiries.set(handoff, setTimeout(() => expire(handoff).catch((e: any) => console.error(`[handoff] ${handoff}: expiring failed: ${e.message}`)),
+    Math.max(0, last + EXPIRE_MS - Date.now())));
+}
+async function lastActivity(handoff: string, created: string): Promise<number> {
+  const { data } = await getClient().from('handoff_actions').select('created_at').eq('handoff', handoff)
+    .order('created_at', { ascending: false }).limit(1);
+  return Math.max(Date.parse(created), data?.[0] ? Date.parse(data[0].created_at) : 0);
+}
+async function expire(handoff: string): Promise<void> {
+  expiries.delete(handoff);
+  const { data: r } = await getClient().from('handoffs').select('status,created_at').eq('id', handoff).single();
+  if (!r || r.status !== 'open') return;
+  const last = await lastActivity(handoff, r.created_at);
+  const idle = Date.now() - last;
+  if (idle < EXPIRE_MS) { arm(handoff, last); return; }   // acted on since the timer was set
+  console.warn(`[handoff] ${handoff} expired: no answer in ${Math.round(idle / 60_000)} min`);
+  await getClient().from('handoffs').update({ status: 'cancelled', error: `expired: no answer in ${Math.round(EXPIRE_MS / 60_000)} min`,
+    suggest: null, updated_at: new Date().toISOString() }).eq('id', handoff);
+  await tellSession(handoff);
+}
+
 /**
  * A tap or typing is acted on only while the screen still looks like the screenshot he made it on. A
  * window moved or resized, another one in front, a page that scrolled or navigated: any of them puts
@@ -318,6 +349,7 @@ async function publish(h: Ask, extra: Record<string, unknown> = {}): Promise<voi
     image, ...size, full_image: full, focus: f.focus, seq: (cur?.seq || 0) + 1, updated_at: new Date().toISOString(), ...extra,
   }).eq('id', handoff);
   if (error) throw new Error(`could not record the screenshot: ${error.message}`);
+  if (!expiries.has(handoff)) arm(handoff);
 }
 
 async function fail(handoff: string, why: string): Promise<void> {
@@ -329,6 +361,7 @@ async function fail(handoff: string, why: string): Promise<void> {
 /** The session that asked is not waiting on the handoff (handoff.ts): this message is what wakes it. */
 async function tellSession(handoff: string): Promise<void> {
   shown.delete(handoff);
+  clearTimeout(expiries.get(handoff)); expiries.delete(handoff);
   const { data: r, error } = await getClient().from('handoffs')
     .select('id,status,taps,typed,error,seq,note,session').eq('id', handoff).single();
   if (error || !r) { console.error(`[handoff] ${handoff} ended but could not be read to tell its session: ${error?.message}`); return; }
@@ -350,6 +383,7 @@ async function act(a: any): Promise<void> {
     if (error) console.error(`[handoff] action ${a.id} not marked done: ${error.message}`);
   };
   if (!h || h.status !== 'open') { await finish({ error: 'handoff is not open' }); return; }
+  arm(h.id);   // he did something: the expiry counts from now
   if (a.kind === 'done' || a.kind === 'cancel') {
     await sb.from('handoffs').update({ status: a.kind === 'done' ? 'done' : 'cancelled', suggest: null, updated_at: new Date().toISOString() }).eq('id', h.id);
     await finish({});
@@ -416,10 +450,16 @@ export function start(targets: string[]): void {
   onInserts('handoffs', opened, 0, mine);
   // A handoff left open across a restart has no screenshot held here: one is taken now, so his next tap
   // is checked against a screen this agent has seen.
-  getClient().from('handoffs').select(ASK).eq('status', 'open').in('target', targets)
-    .then(({ data, error }) => {
+  // One already past its expiry is expired instead, without a screenshot.
+  getClient().from('handoffs').select(`${ASK},created_at`).eq('status', 'open').in('target', targets)
+    .then(async ({ data, error }) => {
       if (error) { console.error(`[handoff] could not read open handoffs at start: ${error.message}`); return; }
-      for (const h of data || []) publish(h as any).catch((e: any) => console.error(`[handoff] ${h.id}: fresh screenshot at start failed: ${e.message}`));
+      for (const h of (data || []) as any[]) {
+        const last = await lastActivity(h.id, h.created_at);
+        if (Date.now() - last >= EXPIRE_MS) { expire(h.id).catch((e: any) => console.error(`[handoff] ${h.id}: expiring failed: ${e.message}`)); continue; }
+        arm(h.id, last);
+        publish(h).catch((e: any) => console.error(`[handoff] ${h.id}: fresh screenshot at start failed: ${e.message}`));
+      }
     });
   onInserts('handoff_actions', act, 0, mine);
   console.log(`[handoff-agent] answering ${targets.join(', ')}`);

@@ -15,6 +15,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import path from 'node:path';
+import { hostname } from 'node:os';
 import { getClient } from './client.js';
 import { onInserts } from './realtime.js';
 
@@ -83,6 +84,16 @@ async function share(row: any): Promise<void> {
 
 /** Answer every screen share for this machine, for the life of the process. */
 export function start(): void {
+  // Shares this machine was carrying when it stopped have no helper any more (it died with the agent) and
+  // no end written: they are ended here. One that was live had a viewer cut off, which is reported.
+  getClient().from('screen_shares').select('id,status').eq('claimed_by', hostname()).in('status', ['new', 'answered', 'live'])
+    .then(async ({ data, error }) => {
+      if (error) { console.error(`[screen] could not read unfinished shares at start: ${error.message}`); return; }
+      for (const r of data || []) {
+        if (r.status === 'live') console.error(`[screen] share ${r.id} was live when the screen agent stopped: its viewer was cut off`);
+        await update(r.id, { status: 'ended', ended_reason: 'agent restarted' });
+      }
+    });
   onInserts('screen_shares', share, 0, (row) => row.target === 'mac' && row.status === 'new');
   console.log('[screen-agent] answering screen shares');
 }
