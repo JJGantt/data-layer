@@ -16,7 +16,7 @@ export const OPS = ['status', 'lock', 'unlock', 'history'] as const;
 export type Op = typeof OPS[number];
 // Device types the API reports for a lock (Lock, Lock Pro, Lock Ultra, Lock Lite).
 const LOCK_TYPE = /lock/i;
-const CONFIRM_MS = 20_000;
+const CONFIRM_MS = 15_000;
 
 function config(): { token: string; secret: string } {
   const missing = ['SWITCHBOT_TOKEN', 'SWITCHBOT_SECRET'].filter((k) => !process.env[k]);
@@ -80,33 +80,22 @@ export async function readState(): Promise<DoorState> {
 const describe = (s: DoorState) =>
   `${s.lock}${s.door ? `, door ${s.door}` : ''}${s.battery !== null ? `, battery ${s.battery}%` : ''}`;
 
-/** Lock or unlock, answered once the lock's own state shows it. The webhook's door_events row is the
- *  confirmation; when none arrives in CONFIRM_MS, one status read decides, and a command that took
- *  effect without its event is still reported, because it means the webhook path is down. */
+/** Lock or unlock, answered once the lock's own state shows it: the command, then status reads until
+ *  the new state appears or CONFIRM_MS passes. A command SwitchBot accepted that never takes effect is
+ *  an error. */
 async function command(want: 'locked' | 'unlocked'): Promise<string> {
   const id = await findLock();
   const before = await readState();
   if (before.lock === want) return `Already ${want} (${describe(before)}).`;
-  const sb = getClient();
   const sent = Date.now();
-  const heard = new Promise<boolean>((resolve) => {
-    const ch = sb.channel(`door-${randomUUID()}`)
-      .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'door_events' }, (p: any) => {
-        if (p.new?.lock_state === want) { sb.removeChannel(ch); resolve(true); }
-      })
-      .subscribe(async (status) => {
-        if (status !== 'SUBSCRIBED') return;
-        try {
-          await call('POST', `/devices/${id}/commands`, { command: want === 'locked' ? 'lock' : 'unlock', parameter: 'default', commandType: 'command' });
-        } catch (e) { sb.removeChannel(ch); resolve(false); console.error(`[switchbot] ${want} command failed:`, e); }
-      });
-    setTimeout(() => { sb.removeChannel(ch); resolve(false); }, CONFIRM_MS);
-  });
-  const viaEvent = await heard;
-  const s = await readState();
-  if (s.lock !== want) throw new Error(`Sent ${want === 'locked' ? 'lock' : 'unlock'}, but the lock reports ${describe(s)}`);
-  if (!viaEvent) console.error(`[switchbot] ${want} took effect but no door_events row arrived within ${CONFIRM_MS / 1000}s; the webhook path may be down`);
-  return `Door ${want} (${describe(s)}), ${((Date.now() - sent) / 1000).toFixed(1)}s.`;
+  await call('POST', `/devices/${id}/commands`, { command: want === 'locked' ? 'lock' : 'unlock', parameter: 'default', commandType: 'command' });
+  let s = before;
+  while (Date.now() - sent < CONFIRM_MS) {
+    await new Promise((r) => setTimeout(r, 1500));
+    s = await readState();
+    if (s.lock === want) return `Door ${want} (${describe(s)}), ${((Date.now() - sent) / 1000).toFixed(1)}s.`;
+  }
+  throw new Error(`Sent ${want === 'locked' ? 'lock' : 'unlock'}, but after ${CONFIRM_MS / 1000}s the lock reports ${describe(s)}`);
 }
 
 async function history(limit: number): Promise<string> {

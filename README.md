@@ -508,9 +508,9 @@ Without the hub online, every call fails.
 - `status` reads the lock live: `lockState` (locked / unlocked / jammed), `doorState` (opened /
   closed, from the door-frame magnet calibrated in the SwitchBot app) and battery.
 - `lock` / `unlock` read the state first (already there is answered as such), send the command, then
-  wait up to 20s for the hub's `door_events` row showing the new state. With no row, one status read
-  decides: not in the new state is an error; in it, but with no row, still succeeds and logs an error,
-  because it means the webhook path is down.
+  read the status every 1.5s until the new state shows, about 5s in practice; not there after 15s is
+  an error. This is a bounded check of the command's effect: SwitchBot's webhook, which would carry
+  it, does not deliver the Lock Ultra's events (below).
 - `history` reads `door_events` (migration 00206). SwitchBot's API has no history of its own; the
   app's log is not reachable from the API.
 
@@ -520,6 +520,12 @@ signs nothing, so the secret path segment is the auth. The hub writes one `door_
 that changed (rules in its `lib/door.js`) and keeps `device_status` row `front-door` current
 (`data`: lock, door, battery). A backstop there reads the lock every five minutes and writes a
 `backstop` row, reported as an error, when the lock's state differs from the latest row.
+
+SwitchBot accepts the webhook registration (`queryDetails` shows it enabled) and the hub route records
+a hand-made `changeReport` correctly, but SwitchBot sends nothing for this Lock Ultra: no request
+reached the hub for keypad, manual or API locks and unlocks, or for the door opening and closing.
+Others report the same for the Lock Ultra (OpenWonderLabs/SwitchBotAPI issues #407, #502). Until
+that changes, every `door_events` row is a `backstop` row, five minutes coarse.
 
 | variable | where |
 |---|---|
