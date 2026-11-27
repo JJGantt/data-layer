@@ -515,7 +515,8 @@ Without the hub online, every call fails.
   read the status every 1.5s until the new state shows, about 5s in practice; not there after 15s is
   an error. This is a bounded check of the command's effect, from any machine; the row itself comes
   from the Bluetooth listener.
-- `history` reads `door_events` (migration 00206). SwitchBot's API has no history of its own; the
+- `history` reads `door_events` (migration 00206), with which sources reported each change and how long
+  after it was recorded (`door_event_sources`, below). SwitchBot's API has no history of its own; the
   app's log is not reachable from the API.
 
 **Events come from the lock's own Bluetooth advertisements.** The Lock Ultra advertises its state
@@ -534,6 +535,14 @@ latest row and writes one row per value that changed, so a command and the adver
 or two listeners hearing one advert, are one row. A `ble` report whose sequence byte is older than the
 latest `ble` row's is dropped (a slow listener's stale advert). It keeps `device_status` row
 `front-door` current, battery merged rather than nulled. `test/db/door-report.test.mjs` holds the rules.
+
+**Every report is also kept in `door_sightings`** (00211), duplicates included, so each source's
+reliability and lag can be measured: `outcome` is `new` (it wrote the row), `duplicate` or `stale`, and
+`lock_event` / `door_event` point at the `door_events` row holding what it reported. `sampled_at` is the
+webhook's own `timeOfSample`. The backstop's 5-minute read is kept only when it wrote a row. View
+`door_event_sources` gives, per change since sightings began, each source that heard it and the seconds
+after the recorded row (`heard_by`); a source missing from a change is a change it never reported.
+`door_events` stays the only thing anything acts on.
 
 The listener runs under `door/bin/door-launch` (built by `door/build.sh`, gitignored), a launcher with
 an embedded Info.plist that holds the Mac's Bluetooth grant, so the grant does not ride on the venv's

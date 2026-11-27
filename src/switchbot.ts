@@ -99,11 +99,20 @@ async function command(want: 'locked' | 'unlocked'): Promise<string> {
 }
 
 async function history(limit: number): Promise<string> {
-  const { data, error } = await getClient().from('door_events')
-    .select('at, event, lock_state, door_state, source').order('at', { ascending: false }).limit(limit);
+  const db = getClient();
+  const { data, error } = await db.from('door_events')
+    .select('id, at, event, lock_state, door_state, source').order('at', { ascending: false }).limit(limit);
   if (error) throw new Error(error.message);
   if (!data?.length) return 'No door events recorded yet.';
-  return data.map((r: any) => `${r.at}  ${r.event}  (lock ${r.lock_state ?? '?'}, door ${r.door_state ?? '?'})${r.source === 'backstop' ? '  [missed by webhook]' : ''}`).join('\n');
+  // Which sources reported each change and how many seconds after it was recorded (door_sightings, 00211).
+  const { data: heard, error: e2 } = await db.from('door_event_sources').select('id, heard_by').in('id', data.map((r: any) => r.id));
+  if (e2) throw new Error(e2.message);
+  const by = new Map((heard || []).map((h: any) => [h.id, h.heard_by]));
+  return data.map((r: any) => {
+    const h = by.get(r.id);
+    const sources = h ? `  heard by ${Object.entries(h).map(([s, d]) => `${s} +${d}s`).join(', ') || 'none'}` : '';
+    return `${r.at}  ${r.event}  (lock ${r.lock_state ?? '?'}, door ${r.door_state ?? '?'})  recorded by ${r.source}${r.source === 'backstop' ? ' [missed by every source]' : ''}${sources}`;
+  }).join('\n');
 }
 
 export async function run(op: Op, a: Record<string, any> = {}): Promise<string> {
