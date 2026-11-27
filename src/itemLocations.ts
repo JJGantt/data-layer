@@ -6,7 +6,7 @@
 
 import { createHash } from 'node:crypto';
 import { getClient } from './client.js';
-import { now } from './helpers.js';
+import { now, ValidationError } from './helpers.js';
 
 export type ItemLocation = { item: string; location: string; updated_at: string };
 
@@ -32,11 +32,12 @@ export async function all(): Promise<ItemLocation[]> {
 export async function set(item: string, location: string, seen: string): Promise<{ row: ItemLocation; previous: ItemLocation | null }> {
   item = String(item ?? '').trim();
   location = String(location ?? '').trim();
-  if (!item) throw new Error('item is required');
-  if (!location) throw new Error('location is required');
+  if (!item) throw new ValidationError('item is required');
+  if (!location) throw new ValidationError('location is required');
   const existing = await all();
   if (String(seen ?? '').trim() !== rosterToken(existing)) {
-    throw new Error(`Not saved: ${seen ? 'the saved items have changed since that list was read' : 'no \`seen\` token'}. ` +
+    // A refusal the model corrects on its next call: a ValidationError, counted rather than raised.
+    throw new ValidationError(`Not saved: ${seen ? 'the saved items have changed since that list was read' : 'no \`seen\` token'}. ` +
       `Here is everything saved now — if "${item}" is one of these under another name, use that exact name; ` +
       `otherwise it is new. Call again with seen="${rosterToken(existing)}".\n${format(existing)}`);
   }
