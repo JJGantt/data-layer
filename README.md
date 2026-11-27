@@ -519,7 +519,9 @@ The events come from SwitchBot's webhook, one URL per account, which points at t
 signs nothing, so the secret path segment is the auth. The hub writes one `door_events` row per value
 that changed (rules in its `lib/door.js`) and keeps `device_status` row `front-door` current
 (`data`: lock, door, battery). A backstop there reads the lock every five minutes and writes a
-`backstop` row, reported as an error, when the lock's state differs from the latest row.
+`backstop` row, reported as an error, when the lock's state differs from the latest row. The hub's own
+`GET` / `POST /api/door` (the watch's front-door complication and Control Center toggle) read and
+change the lock the same way; a change made there is written as a `command` row (migration 00207).
 
 SwitchBot accepts the webhook registration (`queryDetails` shows it enabled) and the hub route records
 a hand-made `changeReport` correctly, but SwitchBot sends nothing for this Lock Ultra: no request
