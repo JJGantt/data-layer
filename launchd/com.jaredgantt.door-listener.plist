@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.jaredgantt.door-listener</string>
+  <!-- The front door's Bluetooth listener; README § The front door.
+       Runs under door/bin/door-launch, which holds the Bluetooth grant. Install: door/build.sh,
+       cp this to ~/Library/LaunchAgents, launchctl bootstrap gui/$(id -u) <that file>. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/jaredgantt/repos/data-layer/door/bin/door-launch</string>
+    <string>/Users/jaredgantt/repos/data-layer/door/.venv/bin/python</string>
+    <string>-I</string>
+    <string>/Users/jaredgantt/repos/data-layer/door/listener.py</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/jaredgantt/repos/data-layer</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>OPS_MACHINE</key><string>mac</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>30</integer>
+  <key>StandardOutPath</key><string>/Users/jaredgantt/Library/Logs/door-listener.log</string>
+  <key>StandardErrorPath</key><string>/Users/jaredgantt/Library/Logs/door-listener.log</string>
+</dict>
+</plist>

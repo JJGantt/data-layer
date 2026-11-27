@@ -5,3 +5,5 @@ dist/
 supabase/.temp/
 hands/bin/
 hands/vendor/
+door/.venv/
+door/bin/
