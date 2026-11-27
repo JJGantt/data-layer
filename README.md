@@ -133,6 +133,8 @@ and Accessibility (posting the click and keys). macOS ties a grant to the binary
 
 ## Driving a screen
 
+One of the capabilities in the shared `~/CLAUDE.md` § What each machine can do (claude-config `shared/CLAUDE.md`), which lists the rest.
+
 `drive_screen` lets a session work a screen itself, from any machine, the Fly machine included: the
 Mac with one app in front (`mac-screen`, `app: "Terminal"` to run a command there), his Chrome on the
 Mac (`mac-chrome`, signed in to every account), or the Pi's automation browser (`pi-browser`). It is how
