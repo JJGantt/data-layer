@@ -358,8 +358,31 @@ async function fail(handoff: string, why: string): Promise<void> {
   await tellSession(handoff);
 }
 
+// The Terminal window a drive_screen session opened, by handoff: its tty, so the window can be closed
+// when the drive ends however it ends (closed, failed, expired). This agent has no Automation grant for
+// Terminal, so the Mac orchestrator closes it (`close_window`), and only while it holds nothing but an
+// idle shell: a command the session left running there keeps the window open.
+const terminalWindows = new Map<string, string>();
+
+/** The ttys every Terminal login shell is on now. */
+async function loginTtys(): Promise<Set<string>> {
+  const { stdout } = await run('/bin/ps', ['-Ao', 'tty=,comm='], { timeout: 5_000 });
+  return new Set(stdout.split('\n').map((l) => l.trim().split(/\s+/))
+    .filter(([tty, comm]) => tty && tty !== '??' && comm === 'login').map(([tty]) => `/dev/${tty}`));
+}
+
+async function closeTerminalOf(handoff: string): Promise<void> {
+  const tty = terminalWindows.get(handoff);
+  if (!tty) return;
+  terminalWindows.delete(handoff);
+  const { error } = await getClient().from('desk_commands')
+    .insert({ id: uuid(), kind: 'close_window', payload: { tty, target: 'mac' } });
+  if (error) console.error(`[handoff] ${handoff} ended but its Terminal window on ${tty} was not asked to close: ${error.message}`);
+}
+
 /** The session that asked is not waiting on the handoff (handoff.ts): this message is what wakes it. */
 async function tellSession(handoff: string): Promise<void> {
+  await closeTerminalOf(handoff);
   shown.delete(handoff);
   clearTimeout(expiries.get(handoff)); expiries.delete(handoff);
   const { data: r, error } = await getClient().from('handoffs')
@@ -389,10 +412,16 @@ async function opened(row: any): Promise<void> {
   // running something else (another session's prompt, his shell).
   if (row.driver === 'session' && row.target === 'mac-screen' && row.app === 'Terminal') {
     try {
+      const before = await loginTtys();
       // `open -a Terminal <folder>` opens a new window at that folder and brings it forward. AppleScript's
       // `do script` would too, but the agent has no Automation grant for Terminal, so it fails.
       await run('/usr/bin/open', ['-a', 'Terminal', process.env.HOME || '/Users/jaredgantt'], { timeout: 10_000 });
       await new Promise((r) => setTimeout(r, 800));   // the new window is drawn before the first screenshot
+      // Its shell, to close the window by when the drive ends. Exactly one new one, or none is recorded:
+      // a guess could name a window something else opened in the same moment.
+      const fresh = [...await loginTtys()].filter((t) => !before.has(t));
+      if (fresh.length === 1) terminalWindows.set(row.id, fresh[0]);
+      else console.warn(`[handoff] ${row.id}: ${fresh.length} new Terminal shells after opening one, so its window is not closed at the end`);
     } catch (e: any) { await fail(row.id, `could not open a Terminal window: ${e.message}`); return; }
   }
   try { await publish(row, { status: 'open', ...idle }); }

@@ -627,7 +627,7 @@ async function moveElsewhere(row: DeskSession, prompt?: string): Promise<
  * evacuate, or two follow-ups) would otherwise each resume it and fork the transcript; evacuate claims
  * with the same write, so only one of them proceeds.
  */
-async function resumeMirrored(row: DeskSession, source: Machine, dests: Machine[], extra: { prompt?: string } = {}):
+async function resumeMirrored(row: DeskSession, source: Machine, dests: Machine[], extra: { prompt?: string; show?: boolean } = {}):
   Promise<{ ok: true; id: string; machine: Machine; confirmed: boolean; rerouted: string | null } | { ok: false; error: string }> {
   const client = getClient();
   const { data: won, error } = await client.from('desk_sessions')
@@ -639,6 +639,8 @@ async function resumeMirrored(row: DeskSession, source: Machine, dests: Machine[
     claude_session_id: row.claude_session_id, repo: row.repo,
     label: (row as any).label ?? null, origin: (row as any).origin ?? 'dispatched', from: source,
     ...(extra.prompt ? { prompt: extra.prompt } : {}),
+    // Only the Mac has a screen; elsewhere the flag is ignored.
+    ...(extra.show ? { show: true } : {}),
   }, dests, liveDeps('claude'));
   if (!r.ok) {
     const { error: back } = await client.from('desk_sessions')
@@ -791,7 +793,8 @@ export async function resolveSession(ref: string, opts: { anyStatus?: boolean } 
  * the destination is asked directly. That is the case this whole mechanism exists for: the laptop is
  * shut and the work should carry on somewhere else, using the mirror as of the last completed turn.
  */
-export async function transferSession(ref: string, machine: Machine) {
+// `show`: on the Mac it comes up in a Terminal window as well; otherwise it runs there in the background.
+export async function transferSession(ref: string, machine: Machine, show = false) {
   const found = await resolveSession(ref);
   if (!found.ok) return { ok: false as const, error: found.error };
   const row = found.row;
@@ -825,7 +828,8 @@ export async function transferSession(ref: string, machine: Machine) {
       return { ok: false as const, saved, error: `Nothing was moved: ${why}. The request is saved.` };
     }
     const id = uuid();
-    const r = await settle(id, source, await dispatchConfirmed(id, 'transfer_session', { session: row.id, target: source, to: dest }), deps);
+    const r = await settle(id, source, await dispatchConfirmed(id, 'transfer_session',
+      { session: row.id, target: source, to: dest, ...(show && dest === 'mac' ? { show: true } : {}) }), deps);
     if (r.ok) {
       return { ok: true as const, id: r.id, repo: row.repo, machine: dest, live: true, confirmed: r.state === 'done',
                rerouted: passed.length ? passed.join(', and ') : null };
@@ -837,7 +841,7 @@ export async function transferSession(ref: string, machine: Machine) {
   }
 
   // Source unreachable: go straight to a destination with what was mirrored.
-  const r = await resumeMirrored(row, source, order);
+  const r = await resumeMirrored(row, source, order, { show });
   if (!r.ok) {
     console.error(`[desk] transfer_session ${row.id}: ${r.error}`);
     const saved = await deadLetter('transfer_session', { session: row.id, target: source, to: machine }, machine, r.error);
@@ -882,7 +886,7 @@ export async function selfConversation(): Promise<string | null> {
  * saw the command at all.
  */
 export async function sessionCommand(kind: 'resume_session' | 'end_session', session: string, prompt?: string, relay = false,
-                                     to?: Machine) {
+                                     to?: Machine, show = false) {
   // Takes whatever the user said — a number, a repo, an id — because these are spoken commands and the
   // id is the one form nobody says aloud.
   const found = await resolveSession(session);
@@ -901,14 +905,14 @@ export async function sessionCommand(kind: 'resume_session' | 'end_session', ses
   // mirror, which parking uploads, so no machine has to open it first only to close it again.
   if (kind === 'resume_session' && to && to !== machine) {
     if ((row as any).status === 'resident') {
-      const t = await transferSession(row.id, to);
+      const t = await transferSession(row.id, to, show);
       if (!t.ok) return { ok: false as const, error: t.error };
       return { ok: true as const, id: t.id, machine: t.machine, confirmed: t.confirmed, detail: '', handedOff: null, moved: t.machine,
                note: `it was running on the ${NAME[machine]}, so it is being moved to the ${NAME[t.machine]} with its whole conversation`
                  + (prompt ? '; the words were NOT sent, follow up once it is there' : '') };
     }
     if (row.agent === 'codex') return { ok: false as const, error: 'that is a Codex session, and Codex sessions stay on the machine that started them' };
-    const r = await resumeMirrored(row, machine, [to], { prompt });
+    const r = await resumeMirrored(row, machine, [to], { prompt, show });
     if (!r.ok) return { ok: false as const, error: `It was not resumed on the ${NAME[to]}: ${r.error}` };
     return { ok: true as const, id: r.id, machine: r.machine, confirmed: r.confirmed, detail: '', handedOff: null, moved: r.machine,
              note: `resumed on the ${NAME[r.machine]} with its whole conversation` + (prompt ? ' and the words sent there' : '')
@@ -925,7 +929,7 @@ export async function sessionCommand(kind: 'resume_session' | 'end_session', ses
     await unpinRow(session);
     return { ok: true as const, self: true as const, id: row.id, machine };
   }
-  const payload = { session, target: machine, ...(prompt ? { prompt } : {}) };
+  const payload = { session, target: machine, ...(prompt ? { prompt } : {}), ...(show && kind === 'resume_session' ? { show: true } : {}) };
   let why = `the ${NAME[machine]} is not responding`;
   if (await machineAwake(machine)) {
     const sent = uuid();
@@ -971,6 +975,29 @@ export async function sessionCommand(kind: 'resume_session' | 'end_session', ses
   const saved = await deadLetter(kind, payload, machine, `${why}, and ${m.why}`);
   return { ok: false as const, saved,
            error: `That did not happen: ${why}, and the session could not be moved (${m.why}). It is saved and can be retried.` };
+}
+
+/**
+ * Put a session on the Mac's screen, or take it off (`show` false). Every session the Mac runs is in the
+ * background unless shown; showing opens a Terminal window attached to it, and hiding closes that window
+ * while the session carries on (voice-pipeline orchestrator `show_session`). A session on another
+ * machine is moved to the Mac to be shown, and a parked one is resumed there; the Pi and Fly have no
+ * screen, so a session there is always in the background.
+ */
+export async function sessionWindow(ref: string, show: boolean) {
+  const found = await resolveSession(ref);
+  if (!found.ok) return { ok: false as const, error: found.error };
+  const row = found.row;
+  const machine = machineOf(row.worker);
+  if (machine !== 'mac') {
+    if (!show) return { ok: true as const, detail: `it is on the ${NAME[machine]}, which has no screen, so it is already in the background` };
+    return sessionCommand('resume_session', row.id, undefined, false, 'mac', true);
+  }
+  if (!(await machineAwake('mac'))) return { ok: false as const, error: 'the Mac is not responding' };
+  const id = uuid();
+  const v = await dispatchConfirmed(id, 'show_session', { session: row.id, show, target: 'mac' });
+  if (v.state === 'error') return { ok: false as const, error: v.detail };
+  return { ok: true as const, detail: v.state === 'done' ? v.detail : 'the Mac has not answered yet' };
 }
 
 /**
