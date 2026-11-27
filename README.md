@@ -131,6 +131,30 @@ and Accessibility (posting the click and keys). macOS ties a grant to the binary
 `hands/build.sh` builds the launcher only when it is missing; rebuilding it voids both grants. `hands`
 (`hands/hands.swift`) is rebuilt freely: it runs as the launcher's descendant and uses its grants.
 
+## Driving a screen
+
+`drive_screen` lets a session work a screen itself, from any machine, the Fly machine included: the
+Mac with one app in front (`mac-screen`, `app: "Terminal"` to run a command there), his Chrome on the
+Mac (`mac-chrome`, signed in to every account), or the Pi's automation browser (`pi-browser`). It is how
+work that needs the Mac gets done when the session cannot run on the Mac, for example renewing the
+Mac's Claude login from Fly when that login has expired.
+
+It rides the handoff machinery: `open` inserts a `handoffs` row with `driver = 'session'`, and each
+`tap` / `type` / `key` / `look` inserts a `handoff_actions` row and returns the agent's next
+screenshot, as an image. `close` ends it, and the session must close what it opens (an unclosed one
+expires after 30 minutes like any handoff). The differences from `request_handoff`:
+
+- **Jared is pushed but not asked.** The hub sends the usual handoff push, so he sees a session working
+  that screen and can watch it; its note says what the session is doing. Nothing waits on him.
+- **Its end is not reported to the session** (`tellSession` skips `driver = 'session'`), because the
+  session closed it itself; reporting it read as "Jared finished".
+- **`open` reports `idle_s`**, the seconds since the Mac last had input from him (`ioreg` `HIDIdleTime`,
+  read before the first action posts input of its own). A few minutes or less means he is at it.
+- A step on a screen that changed since the last screenshot is dropped and answered with the new
+  screen, exactly as for his taps; the caller looks and retries.
+- Keys are those `hands key` posts: enter, tab, backspace, escape. Anything else is typed text, or a
+  command run in a Terminal.
+
 **The same process answers live screen shares** (`screenAgent.ts`, table `screen_shares`): the phone's
 WebRTC offer arrives as a row and `hands/bin/screenshare` (`hands/screenshare.swift`) answers it,
 streams the display and posts the phone's input, under the same two grants. `hands/build.sh` fetches the

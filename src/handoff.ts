@@ -1,5 +1,6 @@
 import { getClient } from './client.js';
 import { ValidationError } from './helpers.js';
+import { BUCKET } from './images.js';
 
 // HANDOFFS — a session stuck on something only Jared can do hands him the screen it is stuck on.
 //
@@ -35,8 +36,9 @@ async function read(id: string): Promise<Row> {
   return data as Row;
 }
 
-/** Resolves with the row once `done` says so, however long that takes. */
-function until(id: string, done: (r: Row) => boolean): Promise<Row> {
+/** Resolves with the row once `done` says so, however long that takes. `backstopMs` is the read behind
+ *  the realtime subscription; a session driving a screen waits on it in seconds, not minutes. */
+function until(id: string, done: (r: Row) => boolean, backstopMs = BACKSTOP_MS): Promise<Row> {
   return new Promise((resolve) => {
     const sb = getClient();
     let finished = false;
@@ -60,7 +62,7 @@ function until(id: string, done: (r: Row) => boolean): Promise<Row> {
         console.error(`[handoff] ${id} reached ${r.status} without its update arriving over realtime`);
         finish(r);
       }).catch((e) => { if (!finished) console.error(`[handoff] backstop read failed: ${e.message}`); });
-    }, BACKSTOP_MS);
+    }, backstopMs);
   });
 }
 
@@ -107,4 +109,86 @@ export function endedMessage(r: Row & { note?: string | null }): string {
   if (r.status === 'done') return `[Handoff ${r.id}] Jared finished${what} (${did}). Look at the screen again to see where it stands, then carry on.`;
   if (r.status === 'cancelled') return `[Handoff ${r.id}] Jared cancelled the handoff${what} (${did}). Do not ask again unless he says to.`;
   return `[Handoff ${r.id}] The handoff failed${what}: ${r.error || 'no reason given'} (${did}).`;
+}
+
+// DRIVING A SCREEN — a session uses the same agents to work a screen itself, with nobody in the loop.
+//
+// The Mac's screen (a Terminal, his Chrome, any app) answers handoffs from every machine, Fly included,
+// because the agent on the Mac listens to Supabase rather than to a port. drive_screen opens a handoff
+// with driver 'session'. The hub still pushes it, so he sees a session working that screen and can watch,
+// but the agent tells no session it ended: the session that drives it is the one that closes it. Each step waits for the agent's next screenshot
+// and returns it, so the caller sees what its action did.
+
+export type DriveOp = 'open' | 'look' | 'tap' | 'type' | 'key' | 'close';
+export const DRIVE_KEYS = ['enter', 'tab', 'backspace', 'escape'] as const;
+
+/** How long a step may take before the caller is told the agent did not answer. */
+const STEP_MS = 30_000;
+/** A screenshot that changed nothing still arrives; this is only the read behind realtime. */
+const DRIVE_BACKSTOP_MS = 3_000;
+
+export interface Shot { id: string; seq: number; status: string; error: string | null; width: number;
+  height: number; idle_s: number | null; png: Buffer | null;
+  /** Set when the agent refused the step (the screen changed under a tap): it was NOT done. */
+  dropped?: string; }
+
+async function shot(id: string): Promise<Shot> {
+  const { data: r, error } = await getClient().from('handoffs')
+    .select('id,seq,status,error,full_image,width,height,idle_s').eq('id', id).single();
+  if (error || !r) throw new Error(`could not read handoff ${id}: ${error?.message}`);
+  let png: Buffer | null = null;
+  if (r.full_image) {
+    const { data, error: dl } = await getClient().storage.from(BUCKET).download(r.full_image);
+    if (dl) throw new Error(`could not fetch screenshot ${r.full_image}: ${dl.message}`);
+    png = Buffer.from(await data.arrayBuffer());
+  }
+  return { id: r.id, seq: r.seq || 0, status: r.status, error: r.error, width: r.width, height: r.height, idle_s: r.idle_s, png };
+}
+
+function within<T>(p: Promise<T>, what: string): Promise<T> {
+  let t: NodeJS.Timeout;
+  return Promise.race([p, new Promise<T>((_, no) => { t = setTimeout(() => no(new Error(`${what}: no answer from the screen's agent in ${STEP_MS / 1000}s (is the Mac awake?)`)), STEP_MS); })])
+    .finally(() => clearTimeout(t));
+}
+
+export async function driveScreen(op: DriveOp, a: { id?: string; target?: string; app?: string; x?: number; y?: number;
+  text?: string; key?: string; note?: string }): Promise<Shot> {
+  if (op === 'open') {
+    const target = a.target || '';
+    if (!(TARGETS as readonly string[]).includes(target)) throw new ValidationError(`target must be one of ${TARGETS.join(', ')}`);
+    if (target === 'mac-screen' && !a.app) throw new ValidationError('mac-screen needs `app`: the app to bring to the front (its owner name, e.g. Terminal)');
+    const { data, error } = await getClient().from('handoffs').insert({ target, app: a.app || null, driver: 'session',
+      note: (a.note || 'Driven by a session').slice(0, 300), session: process.env.HUB_SESSION_ID || null }).select('id').single();
+    if (error) throw new Error(`could not open the screen: ${error.message}`);
+    const r = await within(until(data.id, (x) => x.status !== 'new', DRIVE_BACKSTOP_MS), 'open');
+    if (r.status === 'failed') throw new Error(`the screen could not be opened: ${r.error}`);
+    return shot(data.id);
+  }
+  if (!a.id) throw new ValidationError('`id` is required: the handoff id that open returned');
+  const { data: h, error } = await getClient().from('handoffs').select('id,target,seq,status,driver').eq('id', a.id).single();
+  if (error || !h) throw new ValidationError(`no handoff ${a.id}`);
+  if (h.driver !== 'session') throw new ValidationError(`handoff ${a.id} was handed to Jared; drive only a screen you opened with drive_screen`);
+  if (['done', 'cancelled', 'failed'].includes(h.status)) throw new ValidationError(`handoff ${a.id} has already ended (${h.status}); open a new one`);
+  const row: Record<string, unknown> = { handoff: h.id, target: h.target, seq: h.seq, full: true, source: 'session' };
+  if (op === 'close') row.kind = 'done';
+  else if (op === 'look') row.kind = 'refresh';
+  else if (op === 'tap') {
+    if (![a.x, a.y].every((v) => typeof v === 'number' && v >= 0 && v <= 1)) throw new ValidationError('tap needs `x` and `y`, fractions 0-1 of the latest screenshot');
+    Object.assign(row, { kind: 'tap', x: a.x, y: a.y });
+  } else if (op === 'type') {
+    if (!a.text) throw new ValidationError('type needs `text`');
+    Object.assign(row, { kind: 'text', text: a.text });
+  } else if (op === 'key') {
+    if (!(DRIVE_KEYS as readonly string[]).includes(a.key || '')) throw new ValidationError(`key must be one of ${DRIVE_KEYS.join(', ')}`);
+    Object.assign(row, { kind: 'key', key: a.key });
+  } else throw new ValidationError('op must be open, look, tap, type, key or close');
+  const { data: act, error: ins } = await getClient().from('handoff_actions').insert(row).select('id').single();
+  if (ins) throw new Error(`could not send the ${op}: ${ins.message}`);
+  const r = await within(until(h.id, (x) => (x.seq || 0) > h.seq || ended(x), DRIVE_BACKSTOP_MS), op);
+  if (op === 'close') return { ...(await shot(h.id)), png: null };
+  if (r.status === 'failed') throw new Error(`the screen failed: ${r.error}`);
+  // A new screenshot arrives whether the step was done or refused; only the action row says which.
+  const { data: done } = await getClient().from('handoff_actions').select('error').eq('id', act.id).single();
+  const s = await shot(h.id);
+  return done?.error ? { ...s, dropped: done.error } : s;
 }

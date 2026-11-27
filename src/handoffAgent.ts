@@ -324,7 +324,7 @@ const sameRect = (a: Rect, b: Rect) => ['x', 'y', 'w', 'h'].every((k) => Math.ab
 
 // ---- the work ---------------------------------------------------------------------------------------
 
-const ASK = 'id,target,app,region,selector,whole,session';
+const ASK = 'id,target,app,region,selector,whole,session,driver';
 
 async function publish(h: Ask, extra: Record<string, unknown> = {}): Promise<void> {
   const handoff = h.id;
@@ -363,15 +363,37 @@ async function tellSession(handoff: string): Promise<void> {
   shown.delete(handoff);
   clearTimeout(expiries.get(handoff)); expiries.delete(handoff);
   const { data: r, error } = await getClient().from('handoffs')
-    .select('id,status,taps,typed,error,seq,note,session').eq('id', handoff).single();
+    .select('id,status,taps,typed,error,seq,note,session,driver').eq('id', handoff).single();
   if (error || !r) { console.error(`[handoff] ${handoff} ended but could not be read to tell its session: ${error?.message}`); return; }
   if (!r.session) return;   // a caller with no session waited on the row itself
+  if (r.driver === 'session') return;   // drive_screen: the session closed it and already knows
   const sent = await followUp(endedMessage(r), r.session).catch((e: any) => ({ ok: false as const, error: String(e.message || e) }));
   if (!sent.ok) console.error(`[handoff] ${handoff} ended (${r.status}) but session ${r.session} was not told: ${sent.error}`);
 }
 
+/** Seconds since the Mac last had keyboard or mouse input, or null where that cannot be read. */
+async function idleSeconds(): Promise<number | null> {
+  if (process.platform !== 'darwin') return null;
+  try {
+    const { stdout } = await run('/usr/sbin/ioreg', ['-c', 'IOHIDSystem', '-d', '4'], { timeout: 5_000, maxBuffer: 8 << 20 });
+    const m = stdout.match(/"HIDIdleTime" = (\d+)/);
+    return m ? Math.floor(Number(m[1]) / 1e9) : null;
+  } catch (e: any) { console.error(`[handoff] could not read idle time: ${e.message}`); return null; }
+}
+
 async function opened(row: any): Promise<void> {
-  try { await publish(row, { status: 'open' }); }
+  // A screen a session drives is opened with how long he has been away from it, read before the first
+  // action posts input of its own, so the session can leave a screen he is using alone.
+  const idle = row.driver === 'session' && row.target.startsWith('mac-') ? { idle_s: await idleSeconds() } : {};
+  // A session driving Terminal gets a window of its own, so its typing can never land in one that is
+  // running something else (another session's prompt, his shell).
+  if (row.driver === 'session' && row.target === 'mac-screen' && row.app === 'Terminal') {
+    try {
+      await run('/usr/bin/osascript', ['-e', 'tell application "Terminal" to do script ""', '-e', 'tell application "Terminal" to activate'], { timeout: 10_000 });
+      await new Promise((r) => setTimeout(r, 800));   // the new window is drawn before the first screenshot
+    } catch (e: any) { await fail(row.id, `could not open a Terminal window: ${e.message}`); return; }
+  }
+  try { await publish(row, { status: 'open', ...idle }); }
   catch (e: any) { await fail(row.id, `could not screenshot ${row.target}: ${e.message}`); }
 }
 
@@ -391,7 +413,12 @@ async function act(a: any): Promise<void> {
     return;
   }
   const screen = screenFor(h.target);
-  if (a.kind === 'tap' || a.kind === 'text' || a.kind === 'key') {
+  // Typing and keys from a session go to the focus it set up itself (a fresh Terminal window, a field it
+  // tapped), not to a spot it read off a screenshot, so they are not checked against one: a window that
+  // keeps changing (a command's output) would otherwise refuse every keystroke. His are always checked,
+  // and so is every tap, whose spot means something only on the screenshot it was measured on.
+  const checked = a.kind === 'tap' || ((a.kind === 'text' || a.kind === 'key') && h.driver !== 'session');
+  if (checked) {
     const before = shown.get(h.id);
     // No screenshot held for it here (this agent restarted while it was open): the action could not be
     // checked against what he saw, so nothing is done and he gets the screen as it is now, as when the
