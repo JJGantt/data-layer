@@ -157,6 +157,10 @@ expires after 30 minutes like any handoff). The differences from `request_handof
   screen, exactly as for his taps; the caller looks and retries.
 - Keys are those `hands key` posts: enter, tab, backspace, escape. Anything else is typed text, or a
   command run in a Terminal.
+- **A Terminal it opens is a window of its own, and closes when the drive ends** (closed, failed or
+  expired). The agent records the new window's shell tty at `open` and, at the end, asks the Mac
+  orchestrator to close it (`close_window`), because the agent has no Automation grant for Terminal.
+  The orchestrator closes it only while nothing but the shell is running there.
 
 **The same process answers live screen shares** (`screenAgent.ts`, table `screen_shares`): the phone's
 WebRTC offer arrives as a row and `hands/bin/screenshare` (`hands/screenshare.swift`) answers it,
