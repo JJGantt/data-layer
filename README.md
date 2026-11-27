@@ -44,6 +44,7 @@ both call, which is why the MCP and the API can never disagree about what a writ
 | `screenAgent.ts` | live screen shares on the Mac: answers a `screen_shares` row by starting `hands/bin/screenshare` (WebRTC, ScreenCaptureKit, hardware H.264, input as events); status-hub `docs/SCREEN.md` |
 | `images.ts` | `share_image`: an image put in the `shared-images` bucket and shown inline in a reply (the hub serves `/img/<name>`) |
 | `bedroomTv.ts` | the bedroom TV (`bedroom_tv`, table `tv_commands`): inserts a command and awaits the TV's answer. The hub relays it to the TV's app; google-tv `docs/VOICE.md`. Also `played`, the play log (table `tv_plays`, written by the hub from the TV app; google-tv `docs/WATCHING.md` § The play log) |
+| `switchbot.ts` | the front door (`front_door`): a SwitchBot Lock Ultra + Keypad Touch on a Hub Mini, through SwitchBot's cloud Open API v1.1 — status, lock, unlock, history. Runs on any machine; history is table `door_events`, written by the hub's webhook. § The front door |
 | `roomba.ts` | the Roomba i7+ (`roomba`): status, whole-house and room/zone cleans with per-clean passes and edge clean, the saved cleaning preferences, pause/resume/stop/dock/empty, over the robot's LOCAL MQTT (no iRobot cloud). A home-network job (`home_requests` kind `roomba`, below); home-map rooms and zones in table `roomba_rooms`. § The Roomba |
 | `feeder.ts` | the cat feeder (`feed_cats`, table `feeder_commands`): inserts a feed and awaits the Pi's `petlibro-collector` marking it done or failed. The feeder is LAN-only, so this relay is how a worker off the LAN (Fly) feeds; petlibro-mcp `CLAUDE.md` |
 | `youtube.ts` | public YouTube (`youtube` search / video / related / channel), parsed from the JSON YouTube embeds in its pages |
@@ -496,6 +497,38 @@ treated as an expired token at once. Some responses arrive gzipped without a `Co
 Catalog ids (numbers) are what adding, favoriting and playlists take; library ids (`i.`, `l.`, `p.`)
 name what is already in the library, and library songs print their catalog id beside them. `recent`
 is Apple's last ~90 tracks with no times; there is no fuller history in the API.
+
+## The front door
+
+`front_door` (`src/switchbot.ts`) drives the SwitchBot Lock Ultra on the front door through SwitchBot's
+cloud (Open API v1.1), so it needs no home network and runs on Fly, the Pi or the Mac alike. The lock
+and its Keypad Touch speak Bluetooth only; the Hub Mini near the door is what puts them on the cloud.
+Without the hub online, every call fails.
+
+- `status` reads the lock live: `lockState` (locked / unlocked / jammed), `doorState` (opened /
+  closed, from the door-frame magnet calibrated in the SwitchBot app) and battery.
+- `lock` / `unlock` read the state first (already there is answered as such), send the command, then
+  wait up to 20s for the hub's `door_events` row showing the new state. With no row, one status read
+  decides: not in the new state is an error; in it, but with no row, still succeeds and logs an error,
+  because it means the webhook path is down.
+- `history` reads `door_events` (migration 00206). SwitchBot's API has no history of its own; the
+  app's log is not reachable from the API.
+
+The events come from SwitchBot's webhook, one URL per account, which points at the status hub's
+`POST /api/switchbot/<SWITCHBOT_WEBHOOK_TOKEN>` (status-hub `server/routes/switchbot.js`). SwitchBot
+signs nothing, so the secret path segment is the auth. The hub writes one `door_events` row per value
+that changed (rules in its `lib/door.js`) and keeps `device_status` row `front-door` current
+(`data`: lock, door, battery). A backstop there reads the lock every five minutes and writes a
+`backstop` row, reported as an error, when the lock's state differs from the latest row.
+
+| variable | where |
+|---|---|
+| `SWITCHBOT_TOKEN`, `SWITCHBOT_SECRET` | the SwitchBot app: Profile → Preferences → About → tap App Version ten times → Developer Options. In `.env` on each machine, and Fly secrets on `jared-voice-worker` and `jared-status-hub` |
+| `SWITCHBOT_WEBHOOK_TOKEN` | random; Mac `.env` and Fly secret on `jared-status-hub` |
+| `SWITCHBOT_LOCK_ID` | optional; needed only once the account holds more than one lock |
+
+`bin/switchbot-webhook` registers the hub URL with SwitchBot (replacing any other) and checks
+SwitchBot reports it back. Rerun it whenever `SWITCHBOT_WEBHOOK_TOKEN` or the hub's address changes.
 
 ## Migrations
 

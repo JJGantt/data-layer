@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Point SwitchBot's webhook at the status hub (README § The front door). Reads SWITCHBOT_TOKEN,
+# SWITCHBOT_SECRET and SWITCHBOT_WEBHOOK_TOKEN from .env; the URL holds the last, so it is never printed.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+npm run --silent build
+node --input-type=module -e "
+import './dist/client.js';
+import { setWebhook } from './dist/switchbot.js';
+const t = process.env.SWITCHBOT_WEBHOOK_TOKEN;
+if (!t) { console.error('SWITCHBOT_WEBHOOK_TOKEN is not set in .env'); process.exit(1); }
+console.log(await setWebhook('https://jared-status-hub.fly.dev/api/switchbot/' + t));
+"
