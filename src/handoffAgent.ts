@@ -389,7 +389,9 @@ async function opened(row: any): Promise<void> {
   // running something else (another session's prompt, his shell).
   if (row.driver === 'session' && row.target === 'mac-screen' && row.app === 'Terminal') {
     try {
-      await run('/usr/bin/osascript', ['-e', 'tell application "Terminal" to do script ""', '-e', 'tell application "Terminal" to activate'], { timeout: 10_000 });
+      // `open -a Terminal <folder>` opens a new window at that folder and brings it forward. AppleScript's
+      // `do script` would too, but the agent has no Automation grant for Terminal, so it fails.
+      await run('/usr/bin/open', ['-a', 'Terminal', process.env.HOME || '/Users/jaredgantt'], { timeout: 10_000 });
       await new Promise((r) => setTimeout(r, 800));   // the new window is drawn before the first screenshot
     } catch (e: any) { await fail(row.id, `could not open a Terminal window: ${e.message}`); return; }
   }
