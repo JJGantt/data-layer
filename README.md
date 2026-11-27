@@ -44,7 +44,7 @@ both call, which is why the MCP and the API can never disagree about what a writ
 | `screenAgent.ts` | live screen shares on the Mac: answers a `screen_shares` row by starting `hands/bin/screenshare` (WebRTC, ScreenCaptureKit, hardware H.264, input as events); status-hub `docs/SCREEN.md` |
 | `images.ts` | `share_image`: an image put in the `shared-images` bucket and shown inline in a reply (the hub serves `/img/<name>`) |
 | `bedroomTv.ts` | the bedroom TV (`bedroom_tv`, table `tv_commands`): inserts a command and awaits the TV's answer. The hub relays it to the TV's app; google-tv `docs/VOICE.md`. Also `played`, the play log (table `tv_plays`, written by the hub from the TV app; google-tv `docs/WATCHING.md` § The play log) |
-| `switchbot.ts` | the front door (`front_door`): a SwitchBot Lock Ultra + Keypad Touch on a Hub Mini, through SwitchBot's cloud Open API v1.1 — status, lock, unlock, history. Runs on any machine; history is table `door_events`, written by the hub's webhook. § The front door |
+| `switchbot.ts` | the front door (`front_door`): a SwitchBot Lock Ultra + Keypad Touch on a Hub Mini, through SwitchBot's cloud Open API v1.1 — status, lock, unlock, history. Runs on any machine; history is table `door_events`, written by the Bluetooth listener (`door/`) through `door_report()`. § The front door |
 | `roomba.ts` | the Roomba i7+ (`roomba`): status, whole-house and room/zone cleans with per-clean passes and edge clean, the saved cleaning preferences, pause/resume/stop/dock/empty, over the robot's LOCAL MQTT (no iRobot cloud). A home-network job (`home_requests` kind `roomba`, below); home-map rooms and zones in table `roomba_rooms`. § The Roomba |
 | `feeder.ts` | the cat feeder (`feed_cats`, table `feeder_commands`): inserts a feed and awaits the Pi's `petlibro-collector` marking it done or failed. The feeder is LAN-only, so this relay is how a worker off the LAN (Fly) feeds; petlibro-mcp `CLAUDE.md` |
 | `youtube.ts` | public YouTube (`youtube` search / video / related / channel), parsed from the JSON YouTube embeds in its pages |
@@ -509,25 +509,46 @@ Without the hub online, every call fails.
   closed, from the door-frame magnet calibrated in the SwitchBot app) and battery.
 - `lock` / `unlock` read the state first (already there is answered as such), send the command, then
   read the status every 1.5s until the new state shows, about 5s in practice; not there after 15s is
-  an error. This is a bounded check of the command's effect: SwitchBot's webhook, which would carry
-  it, does not deliver the Lock Ultra's events (below).
+  an error. This is a bounded check of the command's effect, from any machine; the row itself comes
+  from the Bluetooth listener.
 - `history` reads `door_events` (migration 00206). SwitchBot's API has no history of its own; the
   app's log is not reachable from the API.
 
-The events come from SwitchBot's webhook, one URL per account, which points at the status hub's
-`POST /api/switchbot/<SWITCHBOT_WEBHOOK_TOKEN>` (status-hub `server/routes/switchbot.js`). SwitchBot
-signs nothing, so the secret path segment is the auth. The hub writes one `door_events` row per value
-that changed (rules in its `lib/door.js`) and keeps `device_status` row `front-door` current
-(`data`: lock, door, battery). A backstop there reads the lock every five minutes and writes a
-`backstop` row, reported as an error, when the lock's state differs from the latest row. The hub's own
-`GET` / `POST /api/door` (the watch's front-door complication and Control Center toggle) read and
-change the lock the same way; a change made there is written as a `command` row (migration 00207).
+**Events come from the lock's own Bluetooth advertisements.** The Lock Ultra advertises its state
+every second or two, in the clear (no key): `door/listener.py` scans passively on each machine near the
+door (the Mac now, `com.jaredgantt.door-listener`; the Pi joins as an equal peer when it is back) and,
+on each changed advert, calls Supabase's `door_report()` (migrations 00208, 00209). A change lands as a
+row about two seconds after it happens. Manufacturer data (company 2409), as pySwitchbot's
+`process_lock2` reads the Lock Ultra, verified live for the lock bits: `[6]` sequence (bumps on a
+change), `[7]` bit 7 calibrated and bits 6-3 status (0 locked, 1 unlocked, 2/3 moving, 4/5 jammed),
+`[8]` bit 4 door open, `[9]` bits 6-0 battery. The moving states are not recorded.
 
-SwitchBot accepts the webhook registration (`queryDetails` shows it enabled) and the hub route records
+`door_report(source, lock, door, …)` is the ONE writer of `door_events`, for every source: `ble` (the
+listeners), `command` (the hub's `POST /api/door`, the watch's toggle), `webhook` and `backstop` (the
+hub, status-hub `server/routes/switchbot.js`). Under an advisory lock it compares the report to the
+latest row and writes one row per value that changed, so a command and the advert of the same change,
+or two listeners hearing one advert, are one row. A `ble` report whose sequence byte is older than the
+latest `ble` row's is dropped (a slow listener's stale advert). It keeps `device_status` row
+`front-door` current, battery merged rather than nulled. `test/db/door-report.test.mjs` holds the rules.
+
+The listener runs under `door/bin/door-launch` (built by `door/build.sh`, gitignored), a launcher with
+an embedded Info.plist that holds the Mac's Bluetooth grant, so the grant does not ride on the venv's
+interpreter. Without the grant CoreBluetooth answers "Bluetooth device is turned off"; the listener
+reports Bluetooth unavailable once per outage and retries with backoff up to ten minutes. It beats to
+the responder only while the lock's adverts are being heard, and reports when none has arrived for five
+minutes. Resident memory, measured on the Mac: about 19 MB (Python with bleak) plus under 1 MB for the launcher.
+
+The hub's backstop reads the lock every five minutes through the cloud; a change it finds that no
+source recorded becomes a `backstop` row and is reported as an error, because every event path
+missed it.
+
+SwitchBot's webhook, one URL per account, points at the status hub's
+`POST /api/switchbot/<SWITCHBOT_WEBHOOK_TOKEN>`. SwitchBot signs nothing, so the secret path segment is
+the auth. SwitchBot accepts the registration (`queryDetails` shows it enabled) and the hub route records
 a hand-made `changeReport` correctly, but SwitchBot sends nothing for this Lock Ultra: no request
 reached the hub for keypad, manual or API locks and unlocks, or for the door opening and closing.
-Others report the same for the Lock Ultra (OpenWonderLabs/SwitchBotAPI issues #407, #502). Until
-that changes, every `door_events` row is a `backstop` row, five minutes coarse.
+Others report the same for the Lock Ultra (OpenWonderLabs/SwitchBotAPI issues #407, #502). The route
+stays in case SwitchBot starts delivering.
 
 | variable | where |
 |---|---|
@@ -560,8 +581,8 @@ Run both before pushing; CI (`.github/workflows/test.yml`) runs both again on ev
 They cover only what is easy to break and costly when it is: the ingredient rollup and produce
 totals, recipe and leftover scaling, the 4am eating day, repeat expansion and lateness on dated
 items, which completion times are honoured, the `now()` clock, the HTTP API's token gate, where a desk
-command fails over to (`desk-routing`), and the two
-SQL functions that hold shared rules, `muscle_volume()` and `desk_sessions_state()`. Transports and
+command fails over to (`desk-routing`), and the three
+SQL functions that hold shared rules, `muscle_volume()`, `desk_sessions_state()` and `door_report()`. Transports and
 the Supabase calls themselves are not tested.
 
 The unit tests import `dist/`, the code that actually runs, so `npm test` builds first. They run under

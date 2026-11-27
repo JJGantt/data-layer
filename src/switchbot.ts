@@ -3,9 +3,9 @@ import { getClient } from './client.js';
 
 // The front door: a SwitchBot Lock Ultra with a Keypad Touch, on the cloud through a Hub Mini
 // (`front_door`). SwitchBot's Open API v1.1 answers the lock's current state and takes lock/unlock;
-// it has no history endpoint, so the history is our own table `door_events` (migration 00206), written
-// by the status hub from SwitchBot's webhook (status-hub server/routes/switchbot.js), with a slow
-// backstop there that fills in and reports any event the webhook missed.
+// it has no history endpoint, so the history is our own table `door_events`, written through
+// door_report() by the Bluetooth listener (door/listener.py) and the status hub, whose slow backstop
+// fills in and reports any change no source recorded.
 //
 // Credentials: SWITCHBOT_TOKEN and SWITCHBOT_SECRET (the app's Profile → Preferences → About → tap App
 // Version ten times → Developer Options), in each machine's data-layer/.env and as Fly secrets on
