@@ -25,6 +25,7 @@ MACHINE = os.environ.get("OPS_MACHINE") or ("mac" if os.uname().sysname == "Darw
 DEVICES = {"2C:57:CE:14:03:5B": "phone", "10:A4:C9:16:61:6A": "watch"}
 # Loose to start; measured: both are heard every few seconds when in the apartment.
 AWAY_S = 180
+GAP_LOG_S = 15
 BEAT_S = 60
 log = logging.getLogger("presence-ble")
 
@@ -72,6 +73,9 @@ async def listen():
         if name in away:
             away.discard(name)
             event(name, "arrive", adv.rssi, int(now - last[name]))
+        elif name in last and now - last[name] >= GAP_LOG_S:
+            # Shorter than an absence, but worth seeing when tuning AWAY_S.
+            log.info("%s heard again after %ds (rssi %s)", name, int(now - last[name]), adv.rssi)
         last[name] = now
 
     scanner = BleakScanner(cb, cb={"use_bdaddr": True})
