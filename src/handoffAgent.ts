@@ -418,6 +418,23 @@ async function retireOlder(session: string, keep: string): Promise<void> {
   }
 }
 
+/**
+ * Whether a new ask on that screen can open now. Only an ask he is WORKING on holds the line: one with no
+ * activity for ACTIVE_MS (an action, share input, being opened) is put back in the queue and the new one
+ * opens, because an ask nobody is touching held the screen and his newest one never reached him.
+ */
+const ACTIVE_MS = Number(process.env.HANDOFF_ACTIVE_MS || 2 * 60_000);
+async function takeFront(target: string, id: string): Promise<boolean> {
+  const cur = await frontAsk(target, id);
+  if (!cur) return true;
+  const { data: r } = await getClient().from('handoffs').select('created_at,active_at').eq('id', cur).single();
+  if (r && Date.now() - await lastActivity(cur, r.created_at, r.active_at) < ACTIVE_MS) return false;
+  await getClient().from('handoffs').update({ status: 'queued', updated_at: new Date().toISOString() }).eq('id', cur).eq('status', 'open');
+  clearTimeout(expiries.get(cur)); expiries.delete(cur);
+  console.log(`[handoff] ${cur} idle: back in the queue so ${id} can open`);
+  return true;
+}
+
 /** Open the oldest queued ask on that screen when none is open there. */
 async function promote(target: string): Promise<void> {
   if (await frontAsk(target)) return;
@@ -549,8 +566,8 @@ async function opened(row: any): Promise<void> {
   }
   try {
     if (!row.driver && row.session) await retireOlder(row.session, row.id);
-    if (!row.driver && await frontAsk(row.target, row.id)) {
-      console.log(`[handoff] ${row.id} queued behind another handoff on ${screenOf(row.target)}`);
+    if (!row.driver && !(await takeFront(row.target, row.id))) {
+      console.log(`[handoff] ${row.id} queued behind another handoff on ${screenOf(row.target)}, which he is working on`);
       await getClient().from('handoffs').update({ status: 'queued', updated_at: new Date().toISOString() }).eq('id', row.id).eq('status', 'new');
       return;
     }
@@ -645,31 +662,42 @@ export function start(targets: string[]): void {
   // A handoff left open across a restart has no screenshot held here: one is taken now, so his next tap
   // is checked against a screen this agent has seen.
   // One already past its expiry is expired instead, without a screenshot.
-  getClient().from('handoffs').select(`${ASK},created_at,active_at`).eq('status', 'open').in('target', targets)
+  getClient().from('handoffs').select(`${ASK},status,created_at,active_at`).in('status', ['open', 'queued']).in('target', targets)
     .order('created_at', { ascending: false })
     .then(async ({ data, error }) => {
       if (error) { console.error(`[handoff] could not read open handoffs at start: ${error.message}`); return; }
-      // Asks left open across the restart obey the same rules as new ones: a session's newest only, then
-      // one open per screen (the oldest), the rest queued behind it.
-      const front = new Set<string>();
-      const newest = new Map<string, string>();
-      for (const h of (data || []) as any[]) if (!h.driver && h.session && !newest.has(h.session)) newest.set(h.session, h.id);
+      // Asks left across the restart obey the same rules as new ones: each session's newest ask only, and
+      // on each screen the newest ask in front with the rest queued (the restart waits for no share to be
+      // open, so nobody is in the middle of one).
+      const sb = getClient();
+      const newest = new Map<string, string>(), front = new Set<string>();
       const live: any[] = [];
-      for (const h of [...(data || [])].reverse() as any[]) {   // oldest first
-        if (!h.driver && h.session && newest.get(h.session) !== h.id) {
-          await getClient().from('handoffs').update({ status: 'cancelled', error: 'superseded: the session asked again', suggest: null,
-            updated_at: new Date().toISOString() }).eq('id', h.id).eq('status', 'open');
+      for (const h of (data || []) as any[]) {   // newest first
+        if (h.driver) { if (h.status === 'open') live.push(h); continue; }
+        if (h.session && newest.has(h.session)) {
+          await sb.from('handoffs').update({ status: 'cancelled', error: 'superseded: the session asked again', suggest: null,
+            updated_at: new Date().toISOString() }).eq('id', h.id).in('status', ['open', 'queued']);
           console.log(`[handoff] ${h.id} superseded at start by ${newest.get(h.session)}`);
           continue;
         }
-        if (!h.driver) {
-          const scr = screenOf(h.target);
-          if (front.has(scr)) {
-            await getClient().from('handoffs').update({ status: 'queued', updated_at: new Date().toISOString() }).eq('id', h.id).eq('status', 'open');
-            console.log(`[handoff] ${h.id} queued at start behind another handoff on ${scr}`);
-            continue;
+        if (h.session) newest.set(h.session, h.id);
+        const scr = screenOf(h.target);
+        if (front.has(scr)) {
+          if (h.status === 'open') {
+            await sb.from('handoffs').update({ status: 'queued', updated_at: new Date().toISOString() }).eq('id', h.id).eq('status', 'open');
+            console.log(`[handoff] ${h.id} queued at start behind a newer handoff on ${scr}`);
           }
-          front.add(scr);
+          continue;
+        }
+        front.add(scr);
+        if (h.status === 'queued') {
+          try {
+            h.window_id = await pickWindow(h);
+            await publish(h, { status: 'open', active_at: new Date().toISOString(), window_id: h.window_id });
+            arm(h.id);
+            console.log(`[handoff] ${h.id} opened at start, the newest on ${scr}`);
+          } catch (e: any) { await fail(h.id, `could not screenshot ${h.target}: ${e.message}`); }
+          continue;
         }
         live.push(h);
       }

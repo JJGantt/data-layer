@@ -117,14 +117,17 @@ through the agent (a `cancel` action with `source` `session`), so it is what ope
 an end the session made itself is never sent back to it as a follow-up. Without this every re-ask stays
 on his phone until it expires.
 
-**At start the agent applies the same rules to asks left open across the restart**: each session's newest
-only, then the oldest open per screen, the rest queued. A screen share opened on a handoff brings its
+**At start the agent applies the same rules to asks left across the restart** (open and queued): each
+session's newest only, then the newest per screen in front, the rest queued. A screen share opened on a handoff brings its
 window forward without waiting on it: the share's answer never waits on a window.
 
 **A screen takes one ask at a time.** The Mac's display has one keyboard focus, so another session's ask
 open there (its keychain dialog holding the focus) would take his typing. An ask made while another is
 open on the same screen (both Mac targets are one screen) is `queued`: no screenshot, no push, and
-`request_handoff` answers that it is queued. When the open one ends however it ends, `tellSession` opens
+`request_handoff` answers that it is queued. Only an ask he is working on holds the line: one with no
+activity for `HANDOFF_ACTIVE_MS` (2 min; an action, screen-share input, or being opened) goes back to the
+queue and the new one opens, because a forgotten ask holding the screen means the one he is waiting for
+never reaches his phone. When the open one ends however it ends, `tellSession` opens
 the oldest queued one, which is when it is pushed. A session's own drives never queue. The agent also retires a session's other waiting asks whenever that session's new one arrives, so a session whose tools predate `supersede` obeys the rule too.
 
 `suggest` ([{label, text}]) on the request is values he will type that the session knows (his email, a
