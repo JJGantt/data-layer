@@ -190,8 +190,10 @@ async function handle(row: any): Promise<void> {
     const { stdout } = await run(TV, ['power', state], { timeout: 30_000 });
     const now = stdout.trim().split('\n').pop();
     result = { ok: now === state, power: now };
+    if (!result.ok) console.error(`[tv] power ${state}: the TV reports ${now}`);
   } catch (e: any) {
     result = { ok: false, error: String(e.stderr || e.message).trim() };
+    console.error('[tv] power', state, result.error);
   }
   await answer(row.id, result);
 }
