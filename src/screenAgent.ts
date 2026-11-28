@@ -26,6 +26,29 @@ const MAX_LIVE = 3;
 /** Ways a share ends that are nobody's failure. */
 const NORMAL = new Set(['bye', 'stopped', 'disconnected', 'closed']);
 
+/**
+ * How long a `failed` end waits for the phone's own report before it is raised. iOS can freeze the
+ * phone's page while it stays visible; the frozen viewer stops answering, so the helper sees a dead peer
+ * and ends the share `failed`. The page measures that freeze itself and, once it thaws, posts it in
+ * `phone_stats.frozen_ms` and counts it (status-hub public/screen.js). A failure the phone has accounted
+ * for is counted here too rather than raised a second time; one the phone has not reported by then, or
+ * reported with no freeze, is an error.
+ */
+export const PHONE_REPORT_WAIT_MS = 45_000;
+/** The freeze the phone reported for a share, in ms, or 0 when it reported none. */
+export function phoneFrozeMs(stats: unknown): number {
+  const f = Number((stats as { frozen_ms?: unknown } | null)?.frozen_ms);
+  return Number.isFinite(f) && f > 0 ? f : 0;
+}
+
+async function reportFailedEnd(id: string, end: string): Promise<void> {
+  const { data, error } = await getClient().from('screen_shares').select('phone_stats').eq('id', id).maybeSingle();
+  if (error) console.error(`[screen] could not read the phone's report on ${id}: ${error.message}`);
+  const f = phoneFrozeMs(data?.phone_stats);
+  if (f) console.warn(`[screen] ${id}: share ended: ${end}: the phone's page was frozen ${Math.round(f / 1000)}s`);
+  else console.error(`[screen] ${id}: share ended: ${end}`);
+}
+
 const live = new Map<string, ChildProcess>();
 const liveSource = new Map<string, string>();   // share id -> the device that asked (its user agent)
 
@@ -72,7 +95,7 @@ async function share(row: any): Promise<void> {
     else if (m.end) {
       ended = true;
       const ok = NORMAL.has(m.end);
-      if (!ok) console.error(`[screen] ${id}: share ended: ${m.end}`);
+      if (!ok) setTimeout(() => { reportFailedEnd(id, m.end).catch((e) => console.error(`[screen] ${id}: share ended: ${m.end} (${e.message || e})`)); }, PHONE_REPORT_WAIT_MS);
       update(id, { status: ok ? 'ended' : 'failed', ended_reason: m.end, ...(ok ? {} : { error: m.end }), stats: m.stats || null });
     }
   });
