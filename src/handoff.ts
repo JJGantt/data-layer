@@ -32,16 +32,21 @@ type Row = { id: string; status: string; taps: number; typed: number; error: str
 /** How long realtime gets to deliver a change it could see before the backstop calls the channel deaf. */
 export const DELIVERY_GRACE_MS = 2_000;
 
-/** What a backstop read that found the row already there means. `deaf` (an error) only when the channel
- *  was SUBSCRIBED and the change had been visible to it for DELIVERY_GRACE_MS with no event. A change
- *  made before the channel was up, or within the grace, is a race the backstop won (an occurrence): the
- *  drive path's 3 s backstop races a fresh channel's join on every `open`. */
+/** What a backstop read that found the row already there means. `deaf` (an error) only when the change
+ *  landed at least JOIN_SETTLE_MS after the channel was SUBSCRIBED and then went DELIVERY_GRACE_MS with no
+ *  event. A change made before that, or within the grace, is a race the backstop won (an occurrence): the
+ *  drive path's 3 s backstop races a fresh channel's join on every step. */
 export function backstopMiss(subscribedAt: number | null, updatedAt: string | undefined, now: number): 'deaf' | 'race' {
   if (subscribedAt == null) return 'race';
   const changed = updatedAt ? Date.parse(updatedAt) : NaN;
-  const visibleSince = Number.isFinite(changed) ? Math.max(changed, subscribedAt) : subscribedAt;
-  return now - visibleSince >= DELIVERY_GRACE_MS ? 'deaf' : 'race';
+  if (!Number.isFinite(changed)) return now - subscribedAt >= DELIVERY_GRACE_MS ? 'deaf' : 'race';
+  // Realtime never replays a change made before the channel listened, and its listener is still settling
+  // just after SUBSCRIBED: a change in that window is the subscribe-time read's to catch, not a deaf channel.
+  if (changed < subscribedAt + JOIN_SETTLE_MS) return 'race';
+  return now - changed >= DELIVERY_GRACE_MS ? 'deaf' : 'race';
 }
+/** How long after SUBSCRIBED a change may still be missed by a healthy channel. */
+export const JOIN_SETTLE_MS = 1_500;
 
 const ended = (r: Row) => r.status === 'done' || r.status === 'cancelled' || r.status === 'failed';
 
