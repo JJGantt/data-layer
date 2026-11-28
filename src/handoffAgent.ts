@@ -420,11 +420,17 @@ async function publish(h: Ask, extra: Record<string, unknown> = {}): Promise<voi
   const fo = crop ? f.focus! : null;
   shown.set(handoff, { full: f.rect, png: f.png, rect: fo
     ? { x: f.rect.x + fo.x * f.rect.w, y: f.rect.y + fo.y * f.rect.h, w: fo.w * f.rect.w, h: fo.h * f.rect.h } : f.rect });
+  // A dropped request on the Mac's network (`fetch failed`) is tried again twice, 1 s then 3 s later,
+  // each retry counted; only a third failure fails the handoff.
   const store = async (png: Buffer) => {
     const name = `${uuid()}.png`;
-    const { error: up } = await getClient().storage.from(BUCKET).upload(name, png, { contentType: 'image/png' });
-    if (up) throw new Error(`could not store the screenshot: ${up.message}`);
-    return name;
+    for (let attempt = 1; ; attempt++) {
+      const { error: up } = await getClient().storage.from(BUCKET).upload(name, png, { contentType: 'image/png', upsert: true });
+      if (!up) return name;
+      if (attempt >= 3) throw new Error(`could not store the screenshot: ${up.message}`);
+      console.warn(`[handoff] ${handoff}: storing the screenshot failed (${up.message}); trying again`);
+      await new Promise((r) => setTimeout(r, attempt === 1 ? 1000 : 3000));
+    }
   };
   // Where his typing will go (Mac): the focused field, in fractions of the whole screen, so the phone can
   // outline it and name it before he types. Read after the capture, from the same moment.
