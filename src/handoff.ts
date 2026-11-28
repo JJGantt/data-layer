@@ -241,9 +241,12 @@ export async function driveScreen(op: DriveOp, a: { id?: string; target?: string
     return shot(data.id);
   }
   if (!a.id) throw new ValidationError('`id` is required: the handoff id that open returned');
-  const { data: h, error } = await getClient().from('handoffs').select('id,target,seq,status,driver').eq('id', a.id).single();
+  const { data: h, error } = await getClient().from('handoffs').select('id,target,seq,status,driver,session').eq('id', a.id).single();
   if (error || !h) throw new ValidationError(`no handoff ${a.id}`);
-  if (h.driver !== 'session') throw new ValidationError(`handoff ${a.id} was handed to Jared; drive only a screen you opened with drive_screen`);
+  // A handoff this session gave him can be ended by it too: when the session can see the step is done
+  // (a file written, a page moved on), it closes the handoff rather than asking him to press Done.
+  const ownHandoff = op === 'close' && !!h.session && h.session === process.env.HUB_SESSION_ID;
+  if (h.driver !== 'session' && !ownHandoff) throw new ValidationError(`handoff ${a.id} was handed to Jared; drive only a screen you opened with drive_screen`);
   if (['done', 'cancelled', 'failed'].includes(h.status)) throw new ValidationError(`handoff ${a.id} has already ended (${h.status}); open a new one`);
   const row: Record<string, unknown> = { handoff: h.id, target: h.target, seq: h.seq, full: true, source: 'session' };
   if (op === 'close') row.kind = 'done';
