@@ -40,6 +40,17 @@ export function onInserts(table: string, handle: (row: any) => Promise<void>, de
     if (deferMs) console.error(`[${table}] ${row.id} (${row.op || row.kind}) unclaimed after ${deferMs / 1000}s: answering it here, the primary is not`);
     await handle(row);
   };
+  // A row inserted while no channel was subscribed (the process starting, a reconnect) is never pushed
+  // to it, and the sweep below is minutes away. Each SUBSCRIBED reads what arrived in that gap and is
+  // still unclaimed, so it goes through the same claim as a pushed row.
+  let gapFrom = Date.now();
+  const catchUp = async () => {
+    const from = catchUpFrom(gapFrom, Date.now());
+    const { data, error } = await getClient().from(table).select('*').is('claimed_by', null)
+      .gte('created_at', new Date(from).toISOString());
+    if (error) throw new Error(error.message);
+    for (const row of data || []) if (!heard.has(row.id)) await take(row);
+  };
   let backoff = 1000;
   const connect = () => {
     const sb = getClient();
@@ -48,16 +59,21 @@ export function onInserts(table: string, handle: (row: any) => Promise<void>, de
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table },
         (p: any) => { take(p.new).catch((e) => console.error(`[${table}] handler failed`, e.message)); })
       .subscribe((status) => {
-        if (status === 'SUBSCRIBED') { backoff = 1000; subscribedAt = Date.now(); console.log(`[${table}] subscribed`); return; }
+        if (status === 'SUBSCRIBED') {
+          backoff = 1000; subscribedAt = Date.now(); console.log(`[${table}] subscribed`);
+          catchUp().catch((e) => console.error(`[${table}] catch-up after subscribing failed:`, e.message));
+          return;
+        }
         if (!replaced && (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED')) {
           replaced = true;  // removeChannel reports CLOSED too; reconnect once per channel
+          if (subscribedAt) gapFrom = Date.now();
           subscribedAt = 0;
           sb.removeChannel(ch);
           setTimeout(connect, backoff);
           backoff = Math.min(backoff * 2, 60_000);
         }
       });
-    recycle = () => { if (!replaced) { replaced = true; subscribedAt = 0; sb.removeChannel(ch); setTimeout(connect, 1000); } };
+    recycle = () => { if (!replaced) { replaced = true; gapFrom = 0; subscribedAt = 0; sb.removeChannel(ch); setTimeout(connect, 1000); } };
   };
   connect();
   // A Mac wake fires this overdue timer before the network is back, so one failed sweep is a warning;
@@ -98,6 +114,14 @@ export async function sweepUnheard(table: string, heard: Map<string, number>, si
   if (error) throw new Error(error.message);
   return (data || []).map((r: any) => r.id).filter((id: string) => !heard.has(id));
 }
+
+/** Where a catch-up read starts: a little before the gap began, but never more than CATCHUP_MAX_MS back.
+ *  Older rows are the sweep's, and a request that old (a share, a TV command) is past answering. */
+export function catchUpFrom(gapFrom: number, now: number): number {
+  return Math.max(gapFrom - CATCHUP_MARGIN_MS, now - CATCHUP_MAX_MS);
+}
+const CATCHUP_MARGIN_MS = 2_000;
+const CATCHUP_MAX_MS = 30_000;
 
 // Minutes, as a backstop must be. A row is "missed" once it is older than any claim could take (the Mac
 // defers 4 s), and rows older than the window were already swept or predate this process.

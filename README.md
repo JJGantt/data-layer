@@ -212,6 +212,11 @@ home, subscribed to inserts, does the work and fills in the answer. Realtime bot
 the row taken and does nothing; a row it does win means the Pi is down, and it reports that as an
 error. The Mac answers only while it is awake.
 
+**A row inserted while no channel is subscribed is still answered.** A channel only hears inserts made
+after it subscribes, so a row written while the agent was starting or reconnecting is never pushed to it.
+Each SUBSCRIBED reads the rows created in that gap (back to 30 s at most, `catchUpFrom`) that are still
+unclaimed, and takes them through the same claim.
+
 **A row nobody claims is reported.** Every row is claimed by whichever machine answers it, so one still
 unclaimed after a minute means no machine heard it: the realtime channel went deaf, or every agent was
 down. Each agent sweeps for those every 10 minutes (`sweepMissed` in `realtime.ts`), claims each as
