@@ -136,7 +136,9 @@ that field and names it on the Type button: a tap that lands a field away from w
 focus, and without this the next thing he types goes into a field he cannot see is focused.
 
 `suggest` ([{label, text}]) on the request is values he will type that the session knows (his email, a
-card number): buttons on the phone that fill his text box. Never a password or a one-time code; the
+card number): buttons on the phone that fill his text box. Never a password or a one-time code (a code is
+always his to enter: the session says so up front, and the `note` says where the code is, e.g. tap From
+Messages above the iPhone keyboard); the
 agent clears it when the handoff ends.
 
 **A tap, typing or key is acted on only if the screen still matches the screenshot he made it on.** The
