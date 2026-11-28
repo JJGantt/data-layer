@@ -597,7 +597,7 @@ docs/DOOR.md § Arrival): which MAC is the phone or the watch is `app_settings.p
 every second or so behind rotating private addresses. On the Mac, which shares his iCloud account,
 CoreBluetooth resolves those itself, so a scan with bleak's `use_bdaddr` reports them under their real
 addresses (each device's Settings > General > About > Bluetooth; listed in `DEVICES`), no key needed.
-Unheard for `AWAY_S` (180 s) is away; the next advert is an `arrive` row (with `away_s`), and going
+Unheard for `AWAY_S` (30 s) is away; the next advert is an `arrive` row (with `away_s`), and going
 quiet is a `leave` row. A device not yet heard since start is unknown, so a restart is never an
 arrival. LaunchAgent `com.jaredgantt.presence-ble` (plist in `presence/`, log
 `~/Library/Logs/presence-ble.log`), under `door/bin/door-launch` for the Bluetooth grant; reports as

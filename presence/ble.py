@@ -23,8 +23,9 @@ from bleak import BleakScanner
 MACHINE = os.environ.get("OPS_MACHINE") or ("mac" if os.uname().sysname == "Darwin" else "pi")
 # Real Bluetooth addresses, from each device's Settings > General > About > Bluetooth.
 DEVICES = {"2C:57:CE:14:03:5B": "phone", "10:A4:C9:16:61:6A": "watch"}
-# Loose to start; measured: both are heard every few seconds when in the apartment.
-AWAY_S = 180
+# Short: whether a silence means he left is decided by the hub, which also requires the door to
+# have opened first (status-hub lib/door.js leftAndCameBack). Both are heard every few seconds at home.
+AWAY_S = 30
 GAP_LOG_S = 15
 BEAT_S = 60
 log = logging.getLogger("presence-ble")
