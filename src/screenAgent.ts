@@ -50,7 +50,8 @@ async function share(row: any): Promise<void> {
   }
   console.log(`[screen] ${id.slice(0, 8)} heard ${Date.now() - t0} ms after it was asked`);
   // A share opened on a handoff starts on that handoff's window, not on whatever is in front.
-  if (row.handoff) await showHandoff(row.handoff).catch((e: any) => console.error(`[screen] ${id.slice(0, 8)}: could not bring handoff ${row.handoff}'s window forward: ${e.message}`));
+  // Not awaited: the answer must never wait on a window that may not be there.
+  if (row.handoff) showHandoff(row.handoff).catch((e: any) => console.error(`[screen] ${id.slice(0, 8)}: could not bring handoff ${row.handoff}'s window forward: ${e.message}`));
   const child = spawn(BIN, [], { stdio: ['pipe', 'pipe', 'pipe'] });
   live.set(id, child);
   if (row.source) liveSource.set(id, row.source);

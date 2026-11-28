@@ -89,7 +89,7 @@ caller with no `HUB_SESSION_ID` (no session to wake) still waits for the end.
 
 | target | the screen | answered by |
 |---|---|---|
-| `mac-screen` | one window of `app` (its owner name as `hands windows` lists it), on whichever display: `handoffs.window_id`, raised by id (`hands raise`) before every screenshot and input, so another window of that app in front is never what he sees or types into. Chosen when it opens: the Terminal window a drive opened (recorded at `open`, kept when the drive is handed over), else this session's newest window of that app, else that app's front window. A window Accessibility cannot raise (a system dialog's owner) is not recorded, and the app is shown as it stands. A recorded window that is gone fails the handoff | `handoffMain.js` on the Mac (launchd `com.jaredgantt.handoff-agent`) |
+| `mac-screen` | one window of `app` (its owner name as `hands windows` lists it), on whichever display: `handoffs.window_id`, raised by id (`hands raise`) before every screenshot and input, so another window of that app in front is never what he sees or types into. Chosen when it opens: the Terminal window a drive opened (recorded at `open`, kept when the drive is handed over), else this session's newest window of that app, else that app's front window. A window Accessibility cannot raise (a system dialog's owner) is not recorded, and the app is shown as it stands. A recorded window that is gone fails the handoff. An app with no window at all (Keychain Access between its prompts, whose dialog another process draws) shows the main display | `handoffMain.js` on the Mac (launchd `com.jaredgantt.handoff-agent`) |
 | `mac-chrome` | his Chrome, found by pid (the main `Google Chrome` process with no `--user-data-dir`, since an on-demand second Chrome can be running and AppleScript's "Google Chrome" may mean either) and raised with `hands activate`, on the tab the requesting session's Chrome tools touched last (selected in that Chrome by pid, `hands chrome-tab`) (claude-config `chrome-tabs` record); with no record, its front window | the same |
 | `pi-browser` | the Pi's automation browser, over CDP on :9223 | data-http on the Pi (`HOME_AGENT=1` turns it on; `HANDOFF_TARGETS` overrides) |
 
@@ -117,11 +117,15 @@ through the agent (a `cancel` action with `source` `session`), so it is what ope
 an end the session made itself is never sent back to it as a follow-up. Without this every re-ask stays
 on his phone until it expires.
 
+**At start the agent applies the same rules to asks left open across the restart**: each session's newest
+only, then the oldest open per screen, the rest queued. A screen share opened on a handoff brings its
+window forward without waiting on it: the share's answer never waits on a window.
+
 **A screen takes one ask at a time.** The Mac's display has one keyboard focus, so another session's ask
 open there (its keychain dialog holding the focus) would take his typing. An ask made while another is
 open on the same screen (both Mac targets are one screen) is `queued`: no screenshot, no push, and
 `request_handoff` answers that it is queued. When the open one ends however it ends, `tellSession` opens
-the oldest queued one, which is when it is pushed. A session's own drives never queue.
+the oldest queued one, which is when it is pushed. A session's own drives never queue. The agent also retires a session's other waiting asks whenever that session's new one arrives, so a session whose tools predate `supersede` obeys the rule too.
 
 `suggest` ([{label, text}]) on the request is values he will type that the session knows (his email, a
 card number): buttons on the phone that fill his text box. Never a password or a one-time code; the

@@ -169,10 +169,15 @@ function macWindow(fixedApp?: string): Screen {
       console.warn(`[handoff] could not bring ${app} to the front: ${String(e.message).split('\n')[0]}`);
     }
     // An app on another Space has no window on screen until the switch to it finishes, so the window is
-    // looked for again for a few seconds before the capture or the click gives up.
+    // looked for again for a few seconds. An app with none at all (Keychain Access between its password
+    // prompts, whose dialog another process draws) is null: the handoff then shows the main display as it
+    // stands rather than failing, since what he is asked about is on screen, just not in that app's window.
     for (let i = 0; ; i++) {
       try { return JSON.parse(await hands(['window', app])) as Rect; }
-      catch (e) { if (i >= 10) throw e; await new Promise((r) => setTimeout(r, 300)); }
+      catch (e: any) {
+        if (i >= 6) { console.warn(`[handoff] ${h.id}: ${app} has no window on screen; showing the main display`); return null; }
+        await new Promise((r) => setTimeout(r, 300));
+      }
     }
   };
   return {
@@ -180,7 +185,8 @@ function macWindow(fixedApp?: string): Screen {
       // The whole display the app is on, or the part of it the session asked for. The app is only
       // brought to the front; what he sees and taps on is the screen itself.
       const win = await front(h);
-      const scr = JSON.parse(await hands(['screen', String(win.x + win.w / 2), String(win.y + win.h / 2)])) as Rect;
+      const at = win ? [win.x + win.w / 2, win.y + win.h / 2] : [1, 1];   // no window: the main display
+      const scr = JSON.parse(await hands(['screen', String(at[0]), String(at[1])])) as Rect;
       const png = await captureRect(scr);
       return { png, ...pngSize(png), rect: scr, focus: regionOf(h) };
     },
@@ -384,6 +390,24 @@ async function frontAsk(target: string, except?: string): Promise<string | null>
   return data?.[0]?.id || null;
 }
 
+/**
+ * A session waits on one ask at a time (handoff.ts `supersede` does this when it asks; this is the same rule
+ * kept by the agent, so a session whose tools predate it, and asks left open across a restart, obey it
+ * too): every other ask of that session still waiting is ended, quietly, since it is the one asking again.
+ */
+async function retireOlder(session: string, keep: string): Promise<void> {
+  const why = 'superseded: the session asked again';
+  const { data, error } = await getClient().from('handoffs').select('id').eq('session', session).is('driver', null)
+    .in('status', ['new', 'queued', 'open']).neq('id', keep).in('target', answering);
+  if (error) throw new Error(`could not read session ${session}'s other handoffs: ${error.message}`);
+  for (const h of data || []) {
+    await getClient().from('handoffs').update({ status: 'cancelled', error: why, suggest: null, updated_at: new Date().toISOString() })
+      .eq('id', h.id).in('status', ['new', 'queued', 'open']);
+    console.log(`[handoff] ${h.id} ${why} (${keep})`);
+    await tellSession(h.id, true);
+  }
+}
+
 /** Open the oldest queued ask on that screen when none is open there. */
 async function promote(target: string): Promise<void> {
   if (await frontAsk(target)) return;
@@ -514,6 +538,7 @@ async function opened(row: any): Promise<void> {
     } catch (e: any) { await fail(row.id, `could not open a Terminal window: ${e.message}`); return; }
   }
   try {
+    if (!row.driver && row.session) await retireOlder(row.session, row.id);
     if (!row.driver && await frontAsk(row.target, row.id)) {
       console.log(`[handoff] ${row.id} queued behind another handoff on ${screenOf(row.target)}`);
       await getClient().from('handoffs').update({ status: 'queued', updated_at: new Date().toISOString() }).eq('id', row.id).eq('status', 'new');
@@ -611,9 +636,34 @@ export function start(targets: string[]): void {
   // is checked against a screen this agent has seen.
   // One already past its expiry is expired instead, without a screenshot.
   getClient().from('handoffs').select(`${ASK},created_at,active_at`).eq('status', 'open').in('target', targets)
+    .order('created_at', { ascending: false })
     .then(async ({ data, error }) => {
       if (error) { console.error(`[handoff] could not read open handoffs at start: ${error.message}`); return; }
-      for (const h of (data || []) as any[]) {
+      // Asks left open across the restart obey the same rules as new ones: a session's newest only, then
+      // one open per screen (the oldest), the rest queued behind it.
+      const front = new Set<string>();
+      const newest = new Map<string, string>();
+      for (const h of (data || []) as any[]) if (!h.driver && h.session && !newest.has(h.session)) newest.set(h.session, h.id);
+      const live: any[] = [];
+      for (const h of [...(data || [])].reverse() as any[]) {   // oldest first
+        if (!h.driver && h.session && newest.get(h.session) !== h.id) {
+          await getClient().from('handoffs').update({ status: 'cancelled', error: 'superseded: the session asked again', suggest: null,
+            updated_at: new Date().toISOString() }).eq('id', h.id).eq('status', 'open');
+          console.log(`[handoff] ${h.id} superseded at start by ${newest.get(h.session)}`);
+          continue;
+        }
+        if (!h.driver) {
+          const scr = screenOf(h.target);
+          if (front.has(scr)) {
+            await getClient().from('handoffs').update({ status: 'queued', updated_at: new Date().toISOString() }).eq('id', h.id).eq('status', 'open');
+            console.log(`[handoff] ${h.id} queued at start behind another handoff on ${scr}`);
+            continue;
+          }
+          front.add(scr);
+        }
+        live.push(h);
+      }
+      for (const h of live) {
         const last = await lastActivity(h.id, h.created_at, h.active_at);
         if (Date.now() - last >= EXPIRE_MS) { expire(h.id).catch((e: any) => console.error(`[handoff] ${h.id}: expiring failed: ${e.message}`)); continue; }
         arm(h.id, last);
