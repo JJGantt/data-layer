@@ -24,7 +24,7 @@ import { onInserts } from './realtime.js';
 import { uuid } from './helpers.js';
 import { BUCKET } from './images.js';
 import { cropPng, diffFraction } from './pngDiff.js';
-import { endedMessage } from './handoff.js';
+import { activityMessage, endedMessage } from './handoff.js';
 import { followUp } from './desk.js';
 
 const run = promisify(execFile);
@@ -478,6 +478,28 @@ async function closeTerminalOf(handoff: string): Promise<void> {
   if (error) console.error(`[handoff] ${handoff} ended but its Terminal window on ${tty} was not asked to close: ${error.message}`);
 }
 
+// THE SESSION WATCHES THROUGH HIS INPUT. A step he finishes on the screen (a code typed, a sign-in, a card
+// entered) usually shows no end the session could wait on from a shell, and he should never have to press
+// Done or say so himself. So once his input on an ask goes quiet for QUIET_MS, the session that asked is
+// told once (activityMessage): it looks at the screen and ends the handoff itself when the step is done.
+// One message per burst of input, never a timer of its own: no input, no message.
+const QUIET_MS = 5_000;
+const nudges = new Map<string, ReturnType<typeof setTimeout>>();
+function nudge(handoff: string): void {
+  clearTimeout(nudges.get(handoff));
+  nudges.set(handoff, setTimeout(() => {
+    nudges.delete(handoff);
+    (async () => {
+      const { data: r, error } = await getClient().from('handoffs')
+        .select('id,status,taps,typed,note,session,driver').eq('id', handoff).single();
+      if (error || !r) throw new Error(error?.message || 'row gone');
+      if (r.status !== 'open' || !r.session || r.driver === 'session') return;
+      const sent = await followUp(activityMessage(r), r.session);
+      if (!sent.ok) throw new Error(sent.error);
+    })().catch((e: any) => console.error(`[handoff] ${handoff}: his input went quiet but the session was not told to look: ${e.message || e}`));
+  }, QUIET_MS));
+}
+
 /** The session that asked is not waiting on the handoff (handoff.ts): this message is what wakes it. Every
  *  end passes through here, so it is also where the next queued ask on that screen opens. An end the
  *  session made itself (`bySession`: it asked again, or closed it on seeing the step done) is not sent
@@ -493,6 +515,7 @@ async function told(handoff: string, bySession: boolean): Promise<void> {
   await closeTerminalOf(handoff);
   shown.delete(handoff);
   clearTimeout(expiries.get(handoff)); expiries.delete(handoff);
+  clearTimeout(nudges.get(handoff)); nudges.delete(handoff);
   const { data: r, error } = await getClient().from('handoffs')
     .select('id,status,taps,typed,error,seq,note,session,driver').eq('id', handoff).single();
   if (error || !r) { console.error(`[handoff] ${handoff} ended but could not be read to tell its session: ${error?.message}`); return; }
@@ -553,6 +576,7 @@ async function act(a: any): Promise<void> {
   const ending = a.kind === 'done' || a.kind === 'cancel';
   if (!h || !(h.status === 'open' || (ending && h.status === 'queued'))) { await finish({ error: `handoff is ${h ? h.status : 'missing'}` }); return; }
   if (h.status === 'open') arm(h.id);   // something was done on it: the expiry counts from now
+  if (h.status === 'open' && !ending && a.source !== 'session' && !h.driver && a.kind !== 'refresh') nudge(h.id);
   if (ending) {
     const bySession = a.source === 'session';
     await sb.from('handoffs').update({ status: a.kind === 'done' ? 'done' : 'cancelled', suggest: null, updated_at: new Date().toISOString(),
@@ -703,6 +727,7 @@ export function shareInput(handoff: string | null, kind: string): void {
     const { error } = await sb.from('handoffs').update({ ...count, active_at: new Date().toISOString() }).eq('id', id).eq('status', 'open');
     if (error) throw new Error(error.message);
     arm(id);
+    nudge(id);
   }).catch((e: any) => console.error(`[handoff] screen-share input on ${handoff || 'the open handoff'} not recorded: ${e.message}`));
   inputChain.set(key, next);
 }

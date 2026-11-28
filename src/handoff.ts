@@ -213,6 +213,16 @@ export function endedMessage(r: Row & { note?: string | null }): string {
   return `[Handoff ${r.id}] The handoff failed${what}: ${r.error || 'no reason given'} (${did}).`;
 }
 
+/** Sent to the asking session once his input on an open ask goes quiet (handoffAgent `nudge`). */
+export function activityMessage(r: { id: string; taps: number; typed: number; note?: string | null }): string {
+  const did = `${r.taps} tap${r.taps === 1 ? '' : 's'}${r.typed ? `, typed ${r.typed} time${r.typed === 1 ? '' : 's'}` : ''}`;
+  const what = r.note ? ` ("${r.note}")` : '';
+  return `[Handoff ${r.id}] Jared has been working the handoff${what} and has paused (${did} so far); it is still open. ` +
+    `Look at the screen now (drive_screen look with this id, or your Chrome tools on his Chrome). If the step is done, ` +
+    `end the handoff yourself with drive_screen close and this id and carry on; never ask him to press Done or to tell you. ` +
+    `If it is not done yet, end your turn without replying: another message comes when he pauses again.`;
+}
+
 // DRIVING A SCREEN — a session uses the same agents to work a screen itself, with nobody in the loop.
 //
 // The Mac's screen (a Terminal, his Chrome, any app) answers handoffs from every machine, Fly included,
@@ -271,9 +281,9 @@ export async function driveScreen(op: DriveOp, a: { id?: string; target?: string
   if (!a.id) throw new ValidationError('`id` is required: the handoff id that open returned');
   const { data: h, error } = await getClient().from('handoffs').select('id,target,seq,status,driver,session').eq('id', a.id).single();
   if (error || !h) throw new ValidationError(`no handoff ${a.id}`);
-  // A handoff this session gave him can be ended by it too: when the session can see the step is done
-  // (a file written, a page moved on), it closes the handoff rather than asking him to press Done.
-  const ownHandoff = op === 'close' && !!h.session && h.session === process.env.HUB_SESSION_ID;
+  // A handoff this session gave him can be looked at and ended by it too: when the session can see the step
+  // is done (a file written, a page moved on), it closes the handoff rather than asking him to press Done.
+  const ownHandoff = (op === 'close' || op === 'look') && !!h.session && h.session === process.env.HUB_SESSION_ID;
   if (h.driver !== 'session' && !ownHandoff) throw new ValidationError(`handoff ${a.id} was handed to Jared; drive only a screen you opened with drive_screen`);
   if (['done', 'cancelled', 'failed'].includes(h.status)) throw new ValidationError(`handoff ${a.id} has already ended (${h.status}); open a new one`);
   const row: Record<string, unknown> = { handoff: h.id, target: h.target, seq: h.seq, full: true, source: 'session' };

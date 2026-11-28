@@ -179,8 +179,12 @@ expires after 30 minutes like any handoff). The differences from `request_handof
 - **Jared is pushed but not asked.** The hub sends the usual handoff push, so he sees a session working
   that screen and can watch it; its note says what the session is doing. Nothing waits on him.
 - **A session ends its own handoff when it can see the step is done** (`drive_screen` `close` with the
-  handoff's id, allowed for any handoff whose `session` is the caller's): a sign-in script that writes its
-  file, a page that moves on. Asking him to press Done is only for a step whose end nothing can detect.
+  handoff's id; `look` too, for any handoff whose `session` is the caller's). It is told when to look: each
+  time his input on an open ask (tap screen or live share) goes quiet for 5 s, the agent sends it one
+  `[Handoff <id>]` message (`nudge`, `activityMessage`), so a typed code or a page that moves on is seen
+  without him pressing Done or saying so. A shell `until` loop on the Mac's Chrome tabs is no substitute:
+  `osascript` lists no tab the Claude extension is driving. The check runs in the MCP process, so a
+  session whose MCP server started before an ownership change still refuses until it is restarted.
 - **Handing him a screen the session is already driving reuses it.** `request_handoff` on the same
   target (and app) as this session's open drive converts that row in place (driver cleared, the new note,
   framing and suggestions set, a refresh taken), so his phone shows one handoff for one screen, never a
