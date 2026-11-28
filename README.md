@@ -594,6 +594,19 @@ sudo (a LaunchDaemon that opens `/dev/bpf*` to `admin` at every boot). The Pi ru
 back (interface `wlan0`, `PRESENCE_IFACE` to override). The hub acts on the rows (status-hub
 docs/DOOR.md § Arrival): which MAC is the phone or the watch is `app_settings.presence_devices`.
 
+**Phone and watch over Bluetooth** (`presence/ble.py`, table `presence_events`, 00217): both advertise
+every second or so behind rotating private addresses. On the Mac, which shares his iCloud account,
+CoreBluetooth resolves those itself, so a scan with bleak's `use_bdaddr` reports them under their real
+addresses (each device's Settings > General > About > Bluetooth; listed in `DEVICES`), no key needed.
+Unheard for `AWAY_S` (180 s) is away; the next advert is an `arrive` row (with `away_s`), and going
+quiet is a `leave` row. A device not yet heard since start is unknown, so a restart is never an
+arrival. LaunchAgent `com.jaredgantt.presence-ble` (plist in `presence/`, log
+`~/Library/Logs/presence-ble.log`), under `door/bin/door-launch` for the Bluetooth grant; reports as
+`presence-ble`. The Pi has no such pairing and would need each device's identity key:
+`presence/read-ble-irks.sh` (sudo) copies them from the Mac's System keychain (service `BluetoothLE`,
+`Remote IRK`) into `~/.config/presence/irks.json`; the phone's is there, the watch's not yet, and no
+Pi listener uses them yet.
+
 The listener runs under `door/bin/door-launch` (built by `door/build.sh`, gitignored), a launcher with
 an embedded Info.plist that holds the Mac's Bluetooth grant, so the grant does not ride on the venv's
 interpreter. Without the grant CoreBluetooth answers "Bluetooth device is turned off"; the listener
