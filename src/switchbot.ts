@@ -1,5 +1,6 @@
 import { createHmac, randomUUID } from 'node:crypto';
 import { getClient } from './client.js';
+import { startRace } from './lobby.js';
 
 // The front door: a SwitchBot Lock Ultra with a Keypad Touch, on the cloud through a Hub Mini
 // (`front_door`). SwitchBot's Open API v1.1 answers the lock's current state and takes lock/unlock;
@@ -12,7 +13,7 @@ import { getClient } from './client.js';
 // jared-voice-worker and jared-status-hub. README § The front door.
 
 const API = 'https://api.switch-bot.com/v1.1';
-export const OPS = ['status', 'lock', 'unlock', 'history'] as const;
+export const OPS = ['status', 'lock', 'unlock', 'history', 'lobby'] as const;
 export type Op = typeof OPS[number];
 // Device types the API reports for a lock (Lock, Lock Pro, Lock Ultra, Lock Lite).
 const LOCK_TYPE = /lock/i;
@@ -118,6 +119,7 @@ export async function run(op: Op, a: Record<string, any> = {}): Promise<string> 
   if (op === 'status') return `Front door: ${describe(await readState())}.`;
   if (op === 'lock') return command('locked');
   if (op === 'unlock') return command('unlocked');
+  if (op === 'lobby') return startRace('voice');
   return history(Math.min(Math.max(Number(a.limit) || 20, 1), 200));
 }
 
