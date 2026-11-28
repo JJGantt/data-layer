@@ -544,6 +544,16 @@ webhook's own `timeOfSample`. The backstop's 5-minute read is kept only when it 
 after the recorded row (`heard_by`); a source missing from a change is a change it never reported.
 `door_events` stays the only thing anything acts on.
 
+**Presence on the home network** (`presence/listener.py`, table `lan_joins`, 00214): a phone or watch
+joining the Wi-Fi sends a DHCP Discover or Request, broadcast to the whole LAN. The listener runs
+tcpdump on that traffic and writes every message, an event rather than a poll; it reports to the
+responder as `presence-listener` and beats on a timer while tcpdump is alive. Mac: LaunchAgent
+`com.jaredgantt.presence-listener` (plist in `presence/`, log `~/Library/Logs/presence-listener.log`),
+on the door listener's venv; reading packets needs `presence/install-capture-access.sh` run once with
+sudo (a LaunchDaemon that opens `/dev/bpf*` to `admin` at every boot). The Pi runs it too when it is
+back (interface `wlan0`, `PRESENCE_IFACE` to override). The hub acts on the rows (status-hub
+docs/DOOR.md § Arrival): which MAC is the phone or the watch is `app_settings.presence_devices`.
+
 The listener runs under `door/bin/door-launch` (built by `door/build.sh`, gitignored), a launcher with
 an embedded Info.plist that holds the Mac's Bluetooth grant, so the grant does not ride on the venv's
 interpreter. Without the grant CoreBluetooth answers "Bluetooth device is turned off"; the listener
