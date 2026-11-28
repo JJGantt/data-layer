@@ -120,6 +120,7 @@ export async function requestHandoff(target: string, note: string, f: Framing = 
   // his, with this note and framing, so his phone shows one handoff for one screen rather than a second
   // copy of it. A refresh takes the screenshot again with the new framing, and the phone picks up the
   // suggestions with it.
+  if (sid) await supersede(sid);
   const drivenId = sid ? await drivenScreen(sid, target, f.app || null) : null;
   if (drivenId) {
     const { data: h, error } = await getClient().from('handoffs')
@@ -149,6 +150,21 @@ export async function requestHandoff(target: string, note: string, f: Framing = 
     + `Cancel, a message starting "[Handoff ${data.id}]" arrives saying how it ended, and that starts your next turn.`;
 }
 
+/**
+ * A session waits on one thing from Jared at a time, so a new ask (or driving that screen again) retires
+ * every earlier one still open: he answered it some other way (at the Mac itself, most often) or the session
+ * moved on, and left open it sits on his phone until it expires. Ended silently, since the session asking
+ * again already knows. `target` narrows it to the asks on one screen.
+ */
+async function supersede(session: string, target?: string): Promise<void> {
+  let q = getClient().from('handoffs')
+    .update({ status: 'cancelled', error: 'superseded: the session asked again', suggest: null, updated_at: new Date().toISOString() })
+    .eq('session', session).is('driver', null).in('status', ['new', 'open']);
+  if (target) q = q.eq('target', target);
+  const { error } = await q;
+  if (error) console.error(`[handoff] could not retire session ${session}'s earlier handoffs: ${error.message}`);
+}
+
 /** The newest screen this session is driving on that target (and app), still open, or null. */
 async function drivenScreen(session: string, target: string, app: string | null): Promise<string | null> {
   let q = getClient().from('handoffs').select('id').eq('session', session).eq('driver', 'session')
@@ -164,6 +180,7 @@ export function endedMessage(r: Row & { note?: string | null }): string {
   const did = `${r.taps} tap${r.taps === 1 ? '' : 's'}${r.typed ? `, typed ${r.typed} time${r.typed === 1 ? '' : 's'}` : ''}`;
   const what = r.note ? ` ("${r.note}")` : '';
   if (r.status === 'done') return `[Handoff ${r.id}] Jared finished${what} (${did}). Look at the screen again to see where it stands, then carry on.`;
+  if (r.status === 'cancelled' && /^expired/.test(r.error || '')) return `[Handoff ${r.id}] The handoff${what} expired with no answer from Jared (${did}). Look at the screen to see whether it was done another way.`;
   if (r.status === 'cancelled') return `[Handoff ${r.id}] Jared cancelled the handoff${what} (${did}). Do not ask again unless he says to.`;
   return `[Handoff ${r.id}] The handoff failed${what}: ${r.error || 'no reason given'} (${did}).`;
 }
@@ -214,8 +231,10 @@ export async function driveScreen(op: DriveOp, a: { id?: string; target?: string
     const target = a.target || '';
     if (!(TARGETS as readonly string[]).includes(target)) throw new ValidationError(`target must be one of ${TARGETS.join(', ')}`);
     if (target === 'mac-screen' && !a.app) throw new ValidationError('mac-screen needs `app`: the app to bring to the front (its owner name, e.g. Terminal)');
+    const sid = process.env.HUB_SESSION_ID;
+    if (sid) await supersede(sid, target);
     const { data, error } = await getClient().from('handoffs').insert({ target, app: a.app || null, driver: 'session',
-      note: (a.note || 'Driven by a session').slice(0, 300), session: process.env.HUB_SESSION_ID || null }).select('id').single();
+      note: (a.note || 'Driven by a session').slice(0, 300), session: sid || null }).select('id').single();
     if (error) throw new Error(`could not open the screen: ${error.message}`);
     const r = await within(until(data.id, (x) => x.status !== 'new', DRIVE_BACKSTOP_MS), 'open');
     if (r.status === 'failed') throw new Error(`the screen could not be opened: ${r.error}`);

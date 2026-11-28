@@ -108,6 +108,11 @@ opened, or his last action on it. It is cancelled with `expired: …`, its sessi
 end, and the expiry is counted as an occurrence. Screenshots are not activity, so the fresh ones taken at
 start never keep a forgotten handoff alive. The timer is held in memory per handoff and re-armed at start.
 
+**A session has one ask open at a time.** A new `request_handoff` from a session cancels its earlier asks
+still open (`superseded: …`), and `drive_screen` `open` cancels its asks on that target: he answered the
+old one some other way (at the Mac itself, usually) or the session moved on. The session is not told,
+since it is the one asking again. Without this every re-ask stays on his phone until it expires.
+
 `suggest` ([{label, text}]) on the request is values he will type that the session knows (his email, a
 card number): buttons on the phone that fill his text box. Never a password or a one-time code; the
 agent clears it when the handoff ends.
