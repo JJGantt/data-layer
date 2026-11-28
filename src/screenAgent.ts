@@ -100,5 +100,14 @@ export function start(): void {
       }
     });
   onInserts('screen_shares', share, 0, (row) => row.target === 'mac' && row.status === 'new');
+  // A share asked while this agent was restarting was inserted with nobody subscribed, and nothing answers
+  // it: the phone waits out its timeout and falls back to screenshots. Any still unclaimed and young enough
+  // for the phone to be waiting are claimed and answered now.
+  getClient().from('screen_shares').update({ claimed_by: hostname() }).eq('status', 'new').eq('target', 'mac').is('claimed_by', null)
+    .gt('created_at', new Date(Date.now() - 20_000).toISOString()).select('*')
+    .then(({ data, error }) => {
+      if (error) { console.error(`[screen] could not claim shares asked during the restart: ${error.message}`); return; }
+      for (const r of data || []) { console.log(`[screen] ${String(r.id).slice(0, 8)} was asked during the restart; answering it`); share(r); }
+    });
   console.log('[screen-agent] answering screen shares');
 }

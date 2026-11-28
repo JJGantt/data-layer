@@ -466,12 +466,25 @@ async function publish(h: Ask, extra: Record<string, unknown> = {}): Promise<voi
     if (up) throw new Error(`could not store the screenshot: ${up.message}`);
     return name;
   };
+  // Where his typing will go (Mac): the focused field, in fractions of the whole screen, so the phone can
+  // outline it and name it before he types. Read after the capture, from the same moment.
+  let typing_into: Record<string, unknown> | null = null;
+  if (h.target.startsWith('mac-')) {
+    try {
+      const out = (await hands(['focused'])).trim();
+      if (out) {
+        const z = JSON.parse(out);
+        if (z.w > 0 && z.h > 0 && /Text|Combo|Search/.test(z.role)) typing_into = { label: z.label || null, secure: !!z.secure,
+          x: (z.x - f.rect.x) / f.rect.w, y: (z.y - f.rect.y) / f.rect.h, w: z.w / f.rect.w, h: z.h / f.rect.h };
+      }
+    } catch (e: any) { console.error(`[handoff] ${handoff}: could not read where typing goes: ${e.message}`); }
+  }
   const full = await store(f.png);
   const image = crop ? await store(crop) : full;
   const size = crop ? pngSize(crop) : { width: f.width, height: f.height };
   const { data: cur } = await getClient().from('handoffs').select('seq').eq('id', handoff).single();
   const { error } = await getClient().from('handoffs').update({
-    image, ...size, full_image: full, focus: f.focus, seq: (cur?.seq || 0) + 1, updated_at: new Date().toISOString(), ...extra,
+    image, ...size, full_image: full, focus: f.focus, typing_into, seq: (cur?.seq || 0) + 1, updated_at: new Date().toISOString(), ...extra,
   }).eq('id', handoff);
   if (error) throw new Error(`could not record the screenshot: ${error.message}`);
   if (!expiries.has(handoff)) arm(handoff);

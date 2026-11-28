@@ -6,6 +6,7 @@
 //   hands window <app> [title]   → {"app","x","y","w","h"}: the screen area covering every on-screen
 //                                  window of that app (exact owner name, as `windows` lists it), only
 //                                  those whose title contains `title` when one is given
+//   hands focused                → {"app","role","secure","label","x","y","w","h"}: where typing goes now
 //   hands dialog                 → {"app","x","y","w","h"} of a system authentication dialog on screen, or nothing
 //   hands screen <x> <y>         → {"x","y","w","h"}: the whole display that point is on
 //   hands click <x> <y>          → a left click at that global point
@@ -103,6 +104,26 @@ case "dialog":
         json(["app": app, "x": r["X"] ?? 0, "y": r["Y"] ?? 0, "w": r["Width"] ?? 0, "h": r["Height"] ?? 0])
         break
     }
+
+case "focused":
+    // Where typing goes now: the frontmost app's focused element, as {"app","role","secure","label","x","y",
+    // "w","h"} (points), or nothing. `secure` is a password field; `label` is its placeholder, title or
+    // description ("Password").
+    guard let front = NSWorkspace.shared.frontmostApplication else { break }
+    let ax = AXUIElementCreateApplication(front.processIdentifier)
+    var el: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(ax, kAXFocusedUIElementAttribute as CFString, &el) == .success, let e = el else { break }
+    let f = e as! AXUIElement
+    func str(_ a: String) -> String? { var v: CFTypeRef?; AXUIElementCopyAttributeValue(f, a as CFString, &v); return (v as? String).flatMap { $0.isEmpty ? nil : $0 } }
+    var pv: CFTypeRef?, sv: CFTypeRef?
+    AXUIElementCopyAttributeValue(f, kAXPositionAttribute as CFString, &pv)
+    AXUIElementCopyAttributeValue(f, kAXSizeAttribute as CFString, &sv)
+    var p = CGPoint.zero, z = CGSize.zero
+    if let pv { AXValueGetValue(pv as! AXValue, .cgPoint, &p) }
+    if let sv { AXValueGetValue(sv as! AXValue, .cgSize, &z) }
+    json(["app": front.localizedName ?? "", "role": str(kAXRoleAttribute) ?? "", "secure": str(kAXSubroleAttribute) == "AXSecureTextField",
+          "label": str(kAXPlaceholderValueAttribute) ?? str(kAXTitleAttribute) ?? str(kAXDescriptionAttribute) ?? "",
+          "x": p.x, "y": p.y, "w": z.width, "h": z.height])
 
 case "screen":
     // The display a point is on, in global points (top-left origin, like the window list).

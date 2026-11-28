@@ -101,7 +101,7 @@ cropped out (`cropPng` in `src/pngDiff.ts`) for the watch, whose Full/Crop toggl
 flipping `handoffs.whole`. A tap carries `full` when it was measured on `full_image`; it is placed in
 the rectangle the newest screenshot showed, which the agent keeps in memory. It takes a fresh screenshot of every open handoff
 when it starts, and an action on one with no screenshot held is dropped and answered with the screen as
-it is now, so a restart never ends a handoff. A restart does end every live screen share (its helper
+it is now, so a restart never ends a handoff. A share asked while the agent restarts (nobody subscribed) is claimed and answered at start if it is under 20 s old. A restart does end every live screen share (its helper
 dies with the agent), so restart it with `bin/restart-handoff-agent`, which waits until no share is open.
 
 **A handoff nobody answers expires** 30 minutes (`HANDOFF_EXPIRE_MS`) after its last activity: when it
@@ -129,6 +129,12 @@ activity for `HANDOFF_ACTIVE_MS` (2 min; an action, screen-share input, or being
 queue and the new one opens, because a forgotten ask holding the screen means the one he is waiting for
 never reaches his phone. When the open one ends however it ends, `tellSession` opens
 the oldest queued one, which is when it is pushed. A session's own drives never queue. The agent also retires a session's other waiting asks whenever that session's new one arrives, so a session whose tools predate `supersede` obeys the rule too.
+
+**Where his typing will go is read with every Mac screenshot** (`hands focused`: the front app's focused
+field through Accessibility, which reaches a SecurityAgent dialog's fields too) and stored as
+`typing_into` {label, secure, x, y, w, h}, the rectangle in fractions of `full_image`. The phone outlines
+that field and names it on the Type button: a tap that lands a field away from where he aimed moves the
+focus, and without this the next thing he types goes into a field he cannot see is focused.
 
 `suggest` ([{label, text}]) on the request is values he will type that the session knows (his email, a
 card number): buttons on the phone that fill his text box. Never a password or a one-time code; the
