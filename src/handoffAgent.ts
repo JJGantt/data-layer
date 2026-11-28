@@ -212,10 +212,12 @@ function macWindow(fixedApp?: string): Screen {
   };
 }
 
-/** The ids of an app's windows on screen now, front first. */
+/** The ids of an app's windows on screen now that hold content, front first. A full-screen app has a
+ *  second, untitled window for its tab bar (Terminal's is 1280x68 at the top), which is never the one. */
 async function windowIds(app: string): Promise<number[]> {
   const out = await hands(['windows']);
-  return out.split('\n').filter(Boolean).map((l) => JSON.parse(l)).filter((w) => w.app === app).map((w) => Number(w.id));
+  return out.split('\n').filter(Boolean).map((l) => JSON.parse(l))
+    .filter((w) => w.app === app && w.h >= 120 && w.w >= 120).map((w) => Number(w.id));
 }
 
 /** Whether `hands raise` can bring that window forward (it exists and Accessibility reaches it). */
@@ -237,8 +239,7 @@ async function pickWindow(h: Ask): Promise<number | null> {
     const mine = data?.[0]?.window_id;
     if (mine && await raises(Number(mine))) return Number(mine);
   }
-  const front = (await windowIds(h.app).catch(() => []))[0];
-  if (front && await raises(front)) return front;
+  for (const id of await windowIds(h.app).catch(() => [] as number[])) if (await raises(id)) return id;
   console.warn(`[handoff] ${h.id}: no window of ${h.app} it can raise; showing the app as it stands`);
   return null;
 }
