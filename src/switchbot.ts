@@ -81,21 +81,20 @@ const describe = (s: DoorState) =>
   `${s.lock}${s.door ? `, door ${s.door}` : ''}${s.battery !== null ? `, battery ${s.battery}%` : ''}`;
 
 /** Lock or unlock, answered once the lock's own state shows it: the command, then status reads until
- *  the new state appears or CONFIRM_MS passes. A command SwitchBot accepted that never takes effect is
- *  an error. */
+ *  the new state appears or CONFIRM_MS passes. No read goes before the command: one sent to a lock
+ *  already in that state does nothing, and a read first adds its round trip to every command. A
+ *  command SwitchBot accepted that never takes effect is an error. */
 async function command(want: 'locked' | 'unlocked'): Promise<string> {
   const id = await findLock();
-  const before = await readState();
-  if (before.lock === want) return `Already ${want} (${describe(before)}).`;
-  const sent = Date.now();
   await call('POST', `/devices/${id}/commands`, { command: want === 'locked' ? 'lock' : 'unlock', parameter: 'default', commandType: 'command' });
-  let s = before;
+  const sent = Date.now();
+  let s: DoorState | null = null;
   while (Date.now() - sent < CONFIRM_MS) {
     await new Promise((r) => setTimeout(r, 1500));
     s = await readState();
     if (s.lock === want) return `Door ${want} (${describe(s)}), ${((Date.now() - sent) / 1000).toFixed(1)}s.`;
   }
-  throw new Error(`Sent ${want === 'locked' ? 'lock' : 'unlock'}, but after ${CONFIRM_MS / 1000}s the lock reports ${describe(s)}`);
+  throw new Error(`Sent ${want === 'locked' ? 'lock' : 'unlock'}, but after ${CONFIRM_MS / 1000}s the lock reports ${s ? describe(s) : 'nothing'}`);
 }
 
 async function history(limit: number): Promise<string> {
