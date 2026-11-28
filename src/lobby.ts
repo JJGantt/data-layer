@@ -14,8 +14,8 @@ import { onInserts } from './realtime.js';
 
 const CODEWORD = 'open-lobby-7731';
 
-export async function startRace(reason: string): Promise<string> {
-  const { data, error } = await getClient().from('lobby_races').insert({ reason }).select('id, created_at').single();
+export async function startRace(reason: string, door: 'main' | 'north' | 'south' = 'main'): Promise<string> {
+  const { data, error } = await getClient().from('lobby_races').insert({ reason, door }).select('id, created_at').single();
   if (error) throw new Error(`Starting the lobby door race failed: ${error.message}`);
   return `Lobby door: sent (race ${data.id}). It opens when the phone's shortcut runs; the race shows on the hub's elevator page.`;
 }
@@ -58,7 +58,7 @@ async function answer(race: any): Promise<void> {
       console.error(`[lobby] ${race.id} imessage not sent: MESSAGES_MCP_TOKEN is not set for the home agent`);
       return event(race.id, { ok: false, skipped: true, error: 'MESSAGES_MCP_TOKEN not set for the home agent' });
     }
-    await sendImessage(to, token, `${CODEWORD} ${race.nonce} imessage`);
+    await sendImessage(to, token, `${CODEWORD} ${race.door || 'main'} ${race.nonce} imessage`);
     await event(race.id, { ok: true });
   } catch (e: any) {
     console.error(`[lobby] ${race.id} iMessage send failed: ${e.message || e}`);

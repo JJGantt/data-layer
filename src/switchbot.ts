@@ -119,7 +119,11 @@ export async function run(op: Op, a: Record<string, any> = {}): Promise<string> 
   if (op === 'status') return `Front door: ${describe(await readState())}.`;
   if (op === 'lock') return command('locked');
   if (op === 'unlock') return command('unlocked');
-  if (op === 'lobby') return startRace('voice');
+  if (op === 'lobby') {
+    const door = a.door ?? 'main';
+    if (!['main', 'north', 'south'].includes(door)) throw new Error(`lobby door must be main, north or south, not ${door}`);
+    return startRace('voice', door);
+  }
   return history(Math.min(Math.max(Number(a.limit) || 20, 1), 200));
 }
 
