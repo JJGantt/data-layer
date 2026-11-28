@@ -101,7 +101,8 @@ cropped out (`cropPng` in `src/pngDiff.ts`) for the watch, whose Full/Crop toggl
 flipping `handoffs.whole`. A tap carries `full` when it was measured on `full_image`; it is placed in
 the rectangle the newest screenshot showed, which the agent keeps in memory. It takes a fresh screenshot of every open handoff
 when it starts, and an action on one with no screenshot held is dropped and answered with the screen as
-it is now, so a restart never ends a handoff.
+it is now, so a restart never ends a handoff. A restart does end every live screen share (its helper
+dies with the agent), so restart it with `bin/restart-handoff-agent`, which waits until no share is open.
 
 **A handoff nobody answers expires** 30 minutes (`HANDOFF_EXPIRE_MS`) after its last activity: when it
 opened, or his last action on it. It is cancelled with `expired: …`, its session is told like any other

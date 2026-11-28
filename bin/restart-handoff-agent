@@ -1,0 +1,18 @@
+#!/bin/zsh
+# Restart the Mac's handoff agent (and its screen agent) without cutting off a live screen share: a
+# restart ends every share this Mac holds, so it waits until none is new, answered or live. A share
+# waited on is Jared looking at the Mac's screen right now.
+set -eu
+cd "$(dirname "$0")/.."
+KEY=$(grep -E '^[A-Z_]*=sb_secret' .env | head -1 | cut -d= -f2-)
+U=https://felyggqjjhltwokdfhop.supabase.co/rest/v1
+said=0
+while true; do
+  n=$(curl -sf "$U/screen_shares?status=in.(new,answered,live)&claimed_by=eq.$(hostname)&select=id" \
+        -H "apikey: $KEY" -H "Authorization: Bearer $KEY" | python3 -c 'import json,sys;print(len(json.load(sys.stdin)))')
+  [ "$n" = "0" ] && break
+  [ $said = 0 ] && echo "waiting for $n live screen share(s) to end" && said=1
+  sleep 15
+done
+launchctl kickstart -k "gui/$(id -u)/com.jaredgantt.handoff-agent"
+echo "handoff-agent restarted"
