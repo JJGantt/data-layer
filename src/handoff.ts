@@ -115,17 +115,48 @@ export async function requestHandoff(target: string, note: string, f: Framing = 
   }
   const suggest = (f.suggest || []).filter((v) => v && typeof v.text === 'string' && v.text)
     .slice(0, 8).map((v) => ({ label: String(v.label || v.text).slice(0, 40), text: v.text.slice(0, 500) }));
+  const sid = process.env.HUB_SESSION_ID;
+  // A screen this session is already driving (drive_screen) is handed over in place: the same row becomes
+  // his, with this note and framing, so his phone shows one handoff for one screen rather than a second
+  // copy of it. A refresh takes the screenshot again with the new framing, and the phone picks up the
+  // suggestions with it.
+  const drivenId = sid ? await drivenScreen(sid, target, f.app || null) : null;
+  if (drivenId) {
+    const { data: h, error } = await getClient().from('handoffs')
+      .update({ driver: null, note: note.slice(0, 300), region: reg || null, selector: f.selector || null,
+        suggest: suggest.length ? suggest : null, updated_at: new Date().toISOString() })
+      .eq('id', drivenId).eq('driver', 'session').in('status', ['new', 'open']).select('id,target,seq').maybeSingle();
+    if (error) console.error(`[handoff] could not hand over driven screen ${drivenId}: ${error.message}`);
+    if (h) {
+      const { error: ins } = await getClient().from('handoff_actions')
+        .insert({ handoff: h.id, target: h.target, seq: h.seq, full: true, source: 'session', kind: 'refresh' });
+      if (ins) console.error(`[handoff] ${h.id} handed over, but its refresh failed: ${ins.message}`);
+      return `Handed to Jared (handoff ${h.id}, the screen you were driving). End your turn now and do not wait for it: `
+        + `when he presses Done or Cancel, a message starting "[Handoff ${h.id}]" arrives saying how it ended, and that starts your next turn.`;
+    }
+    // It ended between the read and the update: a new handoff follows.
+  }
   const { data, error } = await getClient().from('handoffs')
-    .insert({ target, note: note.slice(0, 300), session: process.env.HUB_SESSION_ID || null,
+    .insert({ target, note: note.slice(0, 300), session: sid || null,
       app: f.app || null, region: reg || null, selector: f.selector || null, suggest: suggest.length ? suggest : null })
     .select('id').single();
   if (error) throw new Error(`could not open the handoff: ${error.message}`);
-  if (!process.env.HUB_SESSION_ID) return endedMessage(await until(data.id, ended));
+  if (!sid) return endedMessage(await until(data.id, ended));
   // Up on his phone (or failed before it got there): that is all the session waits for.
   const r = await until(data.id, (x) => x.status !== 'new');
   if (ended(r)) return endedMessage(r);
   return `Handed to Jared (handoff ${data.id}). End your turn now and do not wait for it: when he presses Done or `
     + `Cancel, a message starting "[Handoff ${data.id}]" arrives saying how it ended, and that starts your next turn.`;
+}
+
+/** The newest screen this session is driving on that target (and app), still open, or null. */
+async function drivenScreen(session: string, target: string, app: string | null): Promise<string | null> {
+  let q = getClient().from('handoffs').select('id').eq('session', session).eq('driver', 'session')
+    .eq('target', target).in('status', ['new', 'open']);
+  q = app ? q.eq('app', app) : q.is('app', null);
+  const { data, error } = await q.order('created_at', { ascending: false }).limit(1);
+  if (error) { console.error(`[handoff] could not look for a screen this session drives: ${error.message}`); return null; }
+  return data?.[0]?.id || null;
 }
 
 /** How a handoff ended, as the session is told it: the follow-up the agent sends, or the reply to a waiting call. */

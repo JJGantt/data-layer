@@ -149,6 +149,10 @@ expires after 30 minutes like any handoff). The differences from `request_handof
 
 - **Jared is pushed but not asked.** The hub sends the usual handoff push, so he sees a session working
   that screen and can watch it; its note says what the session is doing. Nothing waits on him.
+- **Handing him a screen the session is already driving reuses it.** `request_handoff` on the same
+  target (and app) as this session's open drive converts that row in place (driver cleared, the new note,
+  framing and suggestions set, a refresh taken), so his phone shows one handoff for one screen, never a
+  second copy of the drive. The session cannot drive it after that.
 - **Its end is not reported to the session** (`tellSession` skips `driver = 'session'`), because the
   session closed it itself; reporting it read as "Jared finished".
 - **`open` reports `idle_s`**, the seconds since the Mac last had input from him (`ioreg` `HIDIdleTime`,
