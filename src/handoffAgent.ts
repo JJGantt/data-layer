@@ -46,14 +46,12 @@ type Rect = { x: number; y: number; w: number; h: number };
 /** What a handoff asked to be shown: `app` (mac-screen), `region` (fractions of the screen or page),
  *  `selector` (pi-browser), and Jared's `whole` toggle. */
 type Ask = { id: string; target: string; app: string | null; region: Rect | null; selector: string | null; whole: boolean;
-  session?: string | null; window_id?: number | null };
+  session?: string | null };
 interface Screen {
   shot(h: Ask): Promise<Frame>;
   tap(h: Ask, rect: Rect, fx: number, fy: number): Promise<void>;
   type(h: Ask, text: string): Promise<void>;
   key(h: Ask, name: string): Promise<void>;
-  /** Bring what the handoff is about to the front, without capturing it (a screen share opening on it). */
-  show?(h: Ask): Promise<void>;
 }
 
 /** A region the session gave, as fractions, clamped to the window or page; null when there is none. */
@@ -161,12 +159,6 @@ function macWindow(fixedApp?: string): Screen {
         if (out.trim() !== 'ok') console.warn(`[handoff] ${h.id}: could not select tab ${tab} (${out.trim().slice(0, 80)}); raising Chrome pid ${pid} as it is`);
       }
       await raisePid(pid);
-    } else if (h.window_id) {
-      // ITS window, raised by id, never the app's front one: another session's window of the same app can
-      // be in front, and showing or typing into that one is the failure this exists for. A window that is
-      // gone ends the handoff rather than falling back to whichever window is there now.
-      try { return JSON.parse(await hands(['raise', String(h.window_id)])) as Rect; }
-      catch (e: any) { throw new Error(`its window (${app}, ${h.window_id}) is gone: ${String(e.stderr || e.message).trim().split('\n')[0]}`); }
     } else try {
       await run('/usr/bin/osascript', ['-e', `tell application ${JSON.stringify(app)} to activate`], { timeout: 10_000 });
     } catch (e: any) {
@@ -208,41 +200,9 @@ function macWindow(fixedApp?: string): Screen {
     },
     async type(h, text) { await front(h); await hands(['type'], text); },
     async key(h, name) { await front(h); await hands(['key', name]); },
-    async show(h) { await front(h); },
   };
 }
 
-/** The ids of an app's windows on screen now that hold content, front first. A full-screen app has a
- *  second, untitled window for its tab bar (Terminal's is 1280x68 at the top), which is never the one. */
-async function windowIds(app: string): Promise<number[]> {
-  const out = await hands(['windows']);
-  return out.split('\n').filter(Boolean).map((l) => JSON.parse(l))
-    .filter((w) => w.app === app && w.h >= 120 && w.w >= 120).map((w) => Number(w.id));
-}
-
-/** Whether `hands raise` can bring that window forward (it exists and Accessibility reaches it). */
-async function raises(id: number): Promise<boolean> {
-  try { await hands(['raise', String(id)]); return true; } catch { return false; }
-}
-
-/**
- * The window a mac-screen ask is for, chosen when it opens: the newest window of that app this session
- * itself had (a Terminal it drove), else that app's front window at the moment it asked. Only a window
- * `hands raise` can actually reach is recorded; with none (a system dialog's owner, which Accessibility
- * does not raise) the handoff shows the app as it stands, as before.
- */
-async function pickWindow(h: Ask): Promise<number | null> {
-  if (h.target !== 'mac-screen' || !h.app || h.window_id) return h.window_id || null;
-  if (h.session) {
-    const { data } = await getClient().from('handoffs').select('window_id').eq('session', h.session).eq('app', h.app)
-      .not('window_id', 'is', null).neq('id', h.id).order('created_at', { ascending: false }).limit(1);
-    const mine = data?.[0]?.window_id;
-    if (mine && await raises(Number(mine))) return Number(mine);
-  }
-  for (const id of await windowIds(h.app).catch(() => [] as number[])) if (await raises(id)) return id;
-  console.warn(`[handoff] ${h.id}: no window of ${h.app} it can raise; showing the app as it stands`);
-  return null;
-}
 
 // ---- the Pi's automation browser, over the DevTools protocol ---------------------------------------
 
@@ -382,7 +342,7 @@ const sameRect = (a: Rect, b: Rect) => ['x', 'y', 'w', 'h'].every((k) => Math.ab
 
 // ---- the work ---------------------------------------------------------------------------------------
 
-const ASK = 'id,target,app,region,selector,whole,session,driver,window_id';
+const ASK = 'id,target,app,region,selector,whole,session,driver';
 
 // ONE AT A TIME ON ONE SCREEN. The Mac's display has one keyboard focus, so two sessions' asks open on it
 // at once take each other's typing (one session's keychain dialog held the focus while another's sign-in
@@ -446,8 +406,7 @@ async function promote(target: string): Promise<void> {
   console.log(`[handoff] ${h.id} opens from the queue`);
   const active_at = new Date().toISOString();
   try {
-    h.window_id = await pickWindow(h);
-    await publish(h, { status: 'open', active_at, window_id: h.window_id });
+    await publish(h, { status: 'open', active_at });
     arm(h.id);
   } catch (e: any) { await fail(h.id, `could not screenshot ${h.target}: ${e.message}`); }
 }
@@ -562,7 +521,6 @@ async function opened(row: any): Promise<void> {
   if (row.driver === 'session' && row.target === 'mac-screen' && row.app === 'Terminal') {
     try {
       const before = await loginTtys();
-      const wins = new Set(await windowIds('Terminal').catch(() => [] as number[]));
       // `open -a Terminal <folder>` opens a new window at that folder and brings it forward. AppleScript's
       // `do script` would too, but the agent has no Automation grant for Terminal, so it fails.
       await run('/usr/bin/open', ['-a', 'Terminal', process.env.HOME || '/Users/jaredgantt'], { timeout: 10_000 });
@@ -572,10 +530,6 @@ async function opened(row: any): Promise<void> {
       const fresh = [...await loginTtys()].filter((t) => !before.has(t));
       if (fresh.length === 1) terminalWindows.set(row.id, fresh[0]);
       else console.warn(`[handoff] ${row.id}: ${fresh.length} new Terminal shells after opening one, so its window is not closed at the end`);
-      // Its window, so a handoff of this screen later shows and types into this window and no other.
-      const made = (await windowIds('Terminal').catch(() => [] as number[])).filter((w) => !wins.has(w));
-      if (made.length === 1) row.window_id = made[0];
-      else console.warn(`[handoff] ${row.id}: ${made.length} new Terminal windows after opening one, so it is not tied to one`);
     } catch (e: any) { await fail(row.id, `could not open a Terminal window: ${e.message}`); return; }
   }
   try {
@@ -585,9 +539,7 @@ async function opened(row: any): Promise<void> {
       await getClient().from('handoffs').update({ status: 'queued', updated_at: new Date().toISOString() }).eq('id', row.id).eq('status', 'new');
       return;
     }
-    const win = row.driver ? (row.window_id || null) : await pickWindow(row);
-    row.window_id = win;
-    await publish(row, { status: 'open', ...idle, ...(win ? { window_id: win } : {}) });
+    await publish(row, { status: 'open', ...idle });
   } catch (e: any) { await fail(row.id, `could not screenshot ${row.target}: ${e.message}`); }
 }
 
@@ -706,8 +658,7 @@ export function start(targets: string[]): void {
         front.add(scr);
         if (h.status === 'queued') {
           try {
-            h.window_id = await pickWindow(h);
-            await publish(h, { status: 'open', active_at: new Date().toISOString(), window_id: h.window_id });
+            await publish(h, { status: 'open', active_at: new Date().toISOString() });
             arm(h.id);
             console.log(`[handoff] ${h.id} opened at start, the newest on ${scr}`);
           } catch (e: any) { await fail(h.id, `could not screenshot ${h.target}: ${e.message}`); }
@@ -756,10 +707,3 @@ export function shareInput(handoff: string | null, kind: string): void {
   inputChain.set(key, next);
 }
 
-/** A screen share opening on a handoff brings that handoff's window forward, so the share starts on it. */
-export async function showHandoff(id: string): Promise<void> {
-  const { data: h } = await getClient().from('handoffs').select(`${ASK},status`).eq('id', id).maybeSingle();
-  if (!h || h.status !== 'open') return;
-  const screen = screenFor(h.target);
-  if (screen.show) await screen.show(h);
-}
