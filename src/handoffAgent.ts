@@ -45,12 +45,15 @@ type Frame = { png: Buffer; width: number; height: number; rect: Rect; focus: Re
 type Rect = { x: number; y: number; w: number; h: number };
 /** What a handoff asked to be shown: `app` (mac-screen), `region` (fractions of the screen or page),
  *  `selector` (pi-browser), and Jared's `whole` toggle. */
-type Ask = { id: string; target: string; app: string | null; region: Rect | null; selector: string | null; whole: boolean; session?: string | null };
+type Ask = { id: string; target: string; app: string | null; region: Rect | null; selector: string | null; whole: boolean;
+  session?: string | null; window_id?: number | null };
 interface Screen {
   shot(h: Ask): Promise<Frame>;
   tap(h: Ask, rect: Rect, fx: number, fy: number): Promise<void>;
   type(h: Ask, text: string): Promise<void>;
   key(h: Ask, name: string): Promise<void>;
+  /** Bring what the handoff is about to the front, without capturing it (a screen share opening on it). */
+  show?(h: Ask): Promise<void>;
 }
 
 /** A region the session gave, as fractions, clamped to the window or page; null when there is none. */
@@ -152,6 +155,12 @@ function macWindow(fixedApp?: string): Screen {
         if (out.trim() !== 'ok') console.warn(`[handoff] ${h.id}: could not select tab ${tab} (${out.trim().slice(0, 80)}); raising Chrome pid ${pid} as it is`);
       }
       await raisePid(pid);
+    } else if (h.window_id) {
+      // ITS window, raised by id, never the app's front one: another session's window of the same app can
+      // be in front, and showing or typing into that one is the failure this exists for. A window that is
+      // gone ends the handoff rather than falling back to whichever window is there now.
+      try { return JSON.parse(await hands(['raise', String(h.window_id)])) as Rect; }
+      catch (e: any) { throw new Error(`its window (${app}, ${h.window_id}) is gone: ${String(e.stderr || e.message).trim().split('\n')[0]}`); }
     } else try {
       await run('/usr/bin/osascript', ['-e', `tell application ${JSON.stringify(app)} to activate`], { timeout: 10_000 });
     } catch (e: any) {
@@ -183,7 +192,39 @@ function macWindow(fixedApp?: string): Screen {
     },
     async type(h, text) { await front(h); await hands(['type'], text); },
     async key(h, name) { await front(h); await hands(['key', name]); },
+    async show(h) { await front(h); },
   };
+}
+
+/** The ids of an app's windows on screen now, front first. */
+async function windowIds(app: string): Promise<number[]> {
+  const out = await hands(['windows']);
+  return out.split('\n').filter(Boolean).map((l) => JSON.parse(l)).filter((w) => w.app === app).map((w) => Number(w.id));
+}
+
+/** Whether `hands raise` can bring that window forward (it exists and Accessibility reaches it). */
+async function raises(id: number): Promise<boolean> {
+  try { await hands(['raise', String(id)]); return true; } catch { return false; }
+}
+
+/**
+ * The window a mac-screen ask is for, chosen when it opens: the newest window of that app this session
+ * itself had (a Terminal it drove), else that app's front window at the moment it asked. Only a window
+ * `hands raise` can actually reach is recorded; with none (a system dialog's owner, which Accessibility
+ * does not raise) the handoff shows the app as it stands, as before.
+ */
+async function pickWindow(h: Ask): Promise<number | null> {
+  if (h.target !== 'mac-screen' || !h.app || h.window_id) return h.window_id || null;
+  if (h.session) {
+    const { data } = await getClient().from('handoffs').select('window_id').eq('session', h.session).eq('app', h.app)
+      .not('window_id', 'is', null).neq('id', h.id).order('created_at', { ascending: false }).limit(1);
+    const mine = data?.[0]?.window_id;
+    if (mine && await raises(Number(mine))) return Number(mine);
+  }
+  const front = (await windowIds(h.app).catch(() => []))[0];
+  if (front && await raises(front)) return front;
+  console.warn(`[handoff] ${h.id}: no window of ${h.app} it can raise; showing the app as it stands`);
+  return null;
 }
 
 // ---- the Pi's automation browser, over the DevTools protocol ---------------------------------------
@@ -295,16 +336,16 @@ function arm(handoff: string, last = Date.now()): void {
   expiries.set(handoff, setTimeout(() => expire(handoff).catch((e: any) => console.error(`[handoff] ${handoff}: expiring failed: ${e.message}`)),
     Math.max(0, last + EXPIRE_MS - Date.now())));
 }
-async function lastActivity(handoff: string, created: string): Promise<number> {
+async function lastActivity(handoff: string, created: string, active?: string | null): Promise<number> {
   const { data } = await getClient().from('handoff_actions').select('created_at').eq('handoff', handoff)
     .order('created_at', { ascending: false }).limit(1);
-  return Math.max(Date.parse(created), data?.[0] ? Date.parse(data[0].created_at) : 0);
+  return Math.max(Date.parse(created), active ? Date.parse(active) : 0, data?.[0] ? Date.parse(data[0].created_at) : 0);
 }
 async function expire(handoff: string): Promise<void> {
   expiries.delete(handoff);
-  const { data: r } = await getClient().from('handoffs').select('status,created_at').eq('id', handoff).single();
+  const { data: r } = await getClient().from('handoffs').select('status,created_at,active_at').eq('id', handoff).single();
   if (!r || r.status !== 'open') return;
-  const last = await lastActivity(handoff, r.created_at);
+  const last = await lastActivity(handoff, r.created_at, r.active_at);
   const idle = Date.now() - last;
   if (idle < EXPIRE_MS) { arm(handoff, last); return; }   // acted on since the timer was set
   console.warn(`[handoff] ${handoff} expired: no answer in ${Math.round(idle / 60_000)} min`);
@@ -324,7 +365,40 @@ const sameRect = (a: Rect, b: Rect) => ['x', 'y', 'w', 'h'].every((k) => Math.ab
 
 // ---- the work ---------------------------------------------------------------------------------------
 
-const ASK = 'id,target,app,region,selector,whole,session,driver';
+const ASK = 'id,target,app,region,selector,whole,session,driver,window_id';
+
+// ONE AT A TIME ON ONE SCREEN. The Mac's display has one keyboard focus, so two sessions' asks open on it
+// at once take each other's typing (one session's keychain dialog held the focus while another's sign-in
+// was on his phone). An ask that arrives while another is open on the same screen is `queued`: no
+// screenshot, no push. When the one in front ends, the oldest queued one opens (`promote`). Both Mac
+// targets are one screen; a session's own drives (driver 'session') are not asks and never queue.
+const screenOf = (target: string) => (target.startsWith('mac-') ? 'mac' : target);
+const sameScreen = (target: string) => Object.keys(SCREENS).filter((t) => screenOf(t) === screenOf(target));
+let answering: string[] = [];
+
+async function frontAsk(target: string, except?: string): Promise<string | null> {
+  let q = getClient().from('handoffs').select('id').is('driver', null).eq('status', 'open').in('target', sameScreen(target));
+  if (except) q = q.neq('id', except);
+  const { data, error } = await q.limit(1);
+  if (error) throw new Error(`could not read the open handoffs: ${error.message}`);
+  return data?.[0]?.id || null;
+}
+
+/** Open the oldest queued ask on that screen when none is open there. */
+async function promote(target: string): Promise<void> {
+  if (await frontAsk(target)) return;
+  const { data } = await getClient().from('handoffs').select(`${ASK},status`).eq('status', 'queued')
+    .in('target', sameScreen(target).filter((t) => answering.includes(t))).order('created_at', { ascending: true }).limit(1);
+  const h = data?.[0];
+  if (!h) return;
+  console.log(`[handoff] ${h.id} opens from the queue`);
+  const active_at = new Date().toISOString();
+  try {
+    h.window_id = await pickWindow(h);
+    await publish(h, { status: 'open', active_at, window_id: h.window_id });
+    arm(h.id);
+  } catch (e: any) { await fail(h.id, `could not screenshot ${h.target}: ${e.message}`); }
+}
 
 async function publish(h: Ask, extra: Record<string, unknown> = {}): Promise<void> {
   const handoff = h.id;
@@ -380,8 +454,18 @@ async function closeTerminalOf(handoff: string): Promise<void> {
   if (error) console.error(`[handoff] ${handoff} ended but its Terminal window on ${tty} was not asked to close: ${error.message}`);
 }
 
-/** The session that asked is not waiting on the handoff (handoff.ts): this message is what wakes it. */
-async function tellSession(handoff: string): Promise<void> {
+/** The session that asked is not waiting on the handoff (handoff.ts): this message is what wakes it. Every
+ *  end passes through here, so it is also where the next queued ask on that screen opens. An end the
+ *  session made itself (`bySession`: it asked again, or closed it on seeing the step done) is not sent
+ *  back to it. */
+async function tellSession(handoff: string, bySession = false): Promise<void> {
+  try { await told(handoff, bySession); }
+  finally {
+    const { data } = await getClient().from('handoffs').select('target').eq('id', handoff).maybeSingle();
+    if (data) await promote(data.target).catch((e: any) => console.error(`[handoff] opening the next queued handoff after ${handoff} failed: ${e.message}`));
+  }
+}
+async function told(handoff: string, bySession: boolean): Promise<void> {
   await closeTerminalOf(handoff);
   shown.delete(handoff);
   clearTimeout(expiries.get(handoff)); expiries.delete(handoff);
@@ -389,7 +473,7 @@ async function tellSession(handoff: string): Promise<void> {
     .select('id,status,taps,typed,error,seq,note,session,driver').eq('id', handoff).single();
   if (error || !r) { console.error(`[handoff] ${handoff} ended but could not be read to tell its session: ${error?.message}`); return; }
   if (!r.session) return;   // a caller with no session waited on the row itself
-  if (r.driver === 'session') return;   // drive_screen: the session closed it and already knows
+  if (r.driver === 'session' || bySession) return;   // the session ended it itself and already knows
   const sent = await followUp(endedMessage(r), r.session).catch((e: any) => ({ ok: false as const, error: String(e.message || e) }));
   if (!sent.ok) console.error(`[handoff] ${handoff} ended (${r.status}) but session ${r.session} was not told: ${sent.error}`);
 }
@@ -413,6 +497,7 @@ async function opened(row: any): Promise<void> {
   if (row.driver === 'session' && row.target === 'mac-screen' && row.app === 'Terminal') {
     try {
       const before = await loginTtys();
+      const wins = new Set(await windowIds('Terminal').catch(() => [] as number[]));
       // `open -a Terminal <folder>` opens a new window at that folder and brings it forward. AppleScript's
       // `do script` would too, but the agent has no Automation grant for Terminal, so it fails.
       await run('/usr/bin/open', ['-a', 'Terminal', process.env.HOME || '/Users/jaredgantt'], { timeout: 10_000 });
@@ -422,10 +507,22 @@ async function opened(row: any): Promise<void> {
       const fresh = [...await loginTtys()].filter((t) => !before.has(t));
       if (fresh.length === 1) terminalWindows.set(row.id, fresh[0]);
       else console.warn(`[handoff] ${row.id}: ${fresh.length} new Terminal shells after opening one, so its window is not closed at the end`);
+      // Its window, so a handoff of this screen later shows and types into this window and no other.
+      const made = (await windowIds('Terminal').catch(() => [] as number[])).filter((w) => !wins.has(w));
+      if (made.length === 1) row.window_id = made[0];
+      else console.warn(`[handoff] ${row.id}: ${made.length} new Terminal windows after opening one, so it is not tied to one`);
     } catch (e: any) { await fail(row.id, `could not open a Terminal window: ${e.message}`); return; }
   }
-  try { await publish(row, { status: 'open', ...idle }); }
-  catch (e: any) { await fail(row.id, `could not screenshot ${row.target}: ${e.message}`); }
+  try {
+    if (!row.driver && await frontAsk(row.target, row.id)) {
+      console.log(`[handoff] ${row.id} queued behind another handoff on ${screenOf(row.target)}`);
+      await getClient().from('handoffs').update({ status: 'queued', updated_at: new Date().toISOString() }).eq('id', row.id).eq('status', 'new');
+      return;
+    }
+    const win = row.driver ? (row.window_id || null) : await pickWindow(row);
+    row.window_id = win;
+    await publish(row, { status: 'open', ...idle, ...(win ? { window_id: win } : {}) });
+  } catch (e: any) { await fail(row.id, `could not screenshot ${row.target}: ${e.message}`); }
 }
 
 async function act(a: any): Promise<void> {
@@ -435,12 +532,15 @@ async function act(a: any): Promise<void> {
     const { error } = await sb.from('handoff_actions').update({ done_at: new Date().toISOString(), text: null, ...fields }).eq('id', a.id);
     if (error) console.error(`[handoff] action ${a.id} not marked done: ${error.message}`);
   };
-  if (!h || h.status !== 'open') { await finish({ error: 'handoff is not open' }); return; }
-  arm(h.id);   // he did something: the expiry counts from now
-  if (a.kind === 'done' || a.kind === 'cancel') {
-    await sb.from('handoffs').update({ status: a.kind === 'done' ? 'done' : 'cancelled', suggest: null, updated_at: new Date().toISOString() }).eq('id', h.id);
+  const ending = a.kind === 'done' || a.kind === 'cancel';
+  if (!h || !(h.status === 'open' || (ending && h.status === 'queued'))) { await finish({ error: `handoff is ${h ? h.status : 'missing'}` }); return; }
+  if (h.status === 'open') arm(h.id);   // something was done on it: the expiry counts from now
+  if (ending) {
+    const bySession = a.source === 'session';
+    await sb.from('handoffs').update({ status: a.kind === 'done' ? 'done' : 'cancelled', suggest: null, updated_at: new Date().toISOString(),
+      ...(bySession && a.text ? { error: String(a.text).slice(0, 300) } : {}) }).eq('id', h.id);
     await finish({});
-    await tellSession(h.id);
+    await tellSession(h.id, bySession);
     return;
   }
   const screen = screenFor(h.target);
@@ -504,21 +604,60 @@ export function start(targets: string[]): void {
   const unknown = targets.filter((t) => !SCREENS[t]);
   if (unknown.length) throw new Error(`unknown handoff target(s): ${unknown.join(', ')}`);
   if (!targets.length) throw new Error('no handoff targets to answer');
+  answering = targets;
   const mine = (row: any) => targets.includes(row.target);
   onInserts('handoffs', opened, 0, mine);
   // A handoff left open across a restart has no screenshot held here: one is taken now, so his next tap
   // is checked against a screen this agent has seen.
   // One already past its expiry is expired instead, without a screenshot.
-  getClient().from('handoffs').select(`${ASK},created_at`).eq('status', 'open').in('target', targets)
+  getClient().from('handoffs').select(`${ASK},created_at,active_at`).eq('status', 'open').in('target', targets)
     .then(async ({ data, error }) => {
       if (error) { console.error(`[handoff] could not read open handoffs at start: ${error.message}`); return; }
       for (const h of (data || []) as any[]) {
-        const last = await lastActivity(h.id, h.created_at);
+        const last = await lastActivity(h.id, h.created_at, h.active_at);
         if (Date.now() - last >= EXPIRE_MS) { expire(h.id).catch((e: any) => console.error(`[handoff] ${h.id}: expiring failed: ${e.message}`)); continue; }
         arm(h.id, last);
         publish(h).catch((e: any) => console.error(`[handoff] ${h.id}: fresh screenshot at start failed: ${e.message}`));
       }
+      // One that ended while this agent was down left the next in line queued.
+      for (const t of new Set(targets.map(screenOf))) {
+        const any = targets.find((x) => screenOf(x) === t)!;
+        await promote(any).catch((e: any) => console.error(`[handoff] opening queued handoffs at start failed: ${e.message}`));
+      }
     });
   onInserts('handoff_actions', act, 0, mine);
   console.log(`[handoff-agent] answering ${targets.join(', ')}`);
+}
+
+// INPUT THROUGH A LIVE SCREEN SHARE (screenAgent.ts) is activity on the handoff it stands beside, the
+// share's own handoff or else the ask open on that screen: it keeps it from expiring and counts in its taps
+// and typing, as the same input from the tap screen does. Serialized per handoff so no count is lost.
+const inputChain = new Map<string, Promise<void>>();
+export function shareInput(handoff: string | null, kind: string): void {
+  const key = handoff || 'mac';
+  const next = (inputChain.get(key) || Promise.resolve()).then(async () => {
+    const sb = getClient();
+    let id = handoff;
+    if (id) {
+      const { data } = await sb.from('handoffs').select('status').eq('id', id).maybeSingle();
+      if (data?.status !== 'open') id = null;
+    }
+    id ||= await frontAsk('mac-screen');
+    if (!id) return;
+    const { data: h } = await sb.from('handoffs').select('taps,typed').eq('id', id).single();
+    if (!h) return;
+    const count = kind === 'text' ? { typed: (h.typed || 0) + 1 } : { taps: (h.taps || 0) + 1 };
+    const { error } = await sb.from('handoffs').update({ ...count, active_at: new Date().toISOString() }).eq('id', id).eq('status', 'open');
+    if (error) throw new Error(error.message);
+    arm(id);
+  }).catch((e: any) => console.error(`[handoff] screen-share input on ${handoff || 'the open handoff'} not recorded: ${e.message}`));
+  inputChain.set(key, next);
+}
+
+/** A screen share opening on a handoff brings that handoff's window forward, so the share starts on it. */
+export async function showHandoff(id: string): Promise<void> {
+  const { data: h } = await getClient().from('handoffs').select(`${ASK},status`).eq('id', id).maybeSingle();
+  if (!h || h.status !== 'open') return;
+  const screen = screenFor(h.target);
+  if (screen.show) await screen.show(h);
 }

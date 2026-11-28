@@ -18,6 +18,7 @@ import path from 'node:path';
 import { hostname } from 'node:os';
 import { getClient } from './client.js';
 import { onInserts } from './realtime.js';
+import { shareInput, showHandoff } from './handoffAgent.js';
 
 const BIN = process.env.SCREENSHARE_BIN || path.join(process.cwd(), 'hands/bin/screenshare');
 /** Each share is its own capture and encoder; more than this at once is a phone that lost track of one. */
@@ -48,6 +49,8 @@ async function share(row: any): Promise<void> {
     return;
   }
   console.log(`[screen] ${id.slice(0, 8)} heard ${Date.now() - t0} ms after it was asked`);
+  // A share opened on a handoff starts on that handoff's window, not on whatever is in front.
+  if (row.handoff) await showHandoff(row.handoff).catch((e: any) => console.error(`[screen] ${id.slice(0, 8)}: could not bring handoff ${row.handoff}'s window forward: ${e.message}`));
   const child = spawn(BIN, [], { stdio: ['pipe', 'pipe', 'pipe'] });
   live.set(id, child);
   if (row.source) liveSource.set(id, row.source);
@@ -67,6 +70,7 @@ async function share(row: any): Promise<void> {
       console.log(`[screen] ${id.slice(0, 8)} connected over ${m.path} after ${Date.now() - t0} ms`);
       update(id, { status: 'live', path: m.path, connect_ms: Date.now() - t0 });
     } else if (m.first_frame_ms != null) update(id, { first_frame_ms: m.first_frame_ms });
+    else if (m.input) shareInput(row.handoff || null, String(m.input));
     else if (m.end) {
       ended = true;
       const ok = NORMAL.has(m.end);

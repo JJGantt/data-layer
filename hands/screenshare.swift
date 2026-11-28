@@ -8,6 +8,7 @@
 //   stdout              {"answer": "<sdp>"}                once ICE gathering is complete (no trickle)
 //                       {"connected": true, "path": "host|srflx|prflx|relay"}
 //                       {"first_frame_ms": n}              capture start to the first frame handed to WebRTC
+//                       {"input": "click|up|text|key"}     each tap, key or typing he sent, once posted
 //                       {"end": "<why>", "stats": {...}}   then it exits
 //   data channel "input" (from the phone), fractions 0-1 of the display for x and y:
 //     {"t":"click","x","y","button"?:"right"} {"t":"down"|"move"|"up","x","y"} {"t":"scroll","x","y","dx","dy"}
@@ -120,6 +121,9 @@ func handle(_ m: [String: Any]) {
     guard let t = m["t"] as? String else { return }
     if t == "bye" { end("bye"); return }
     guard canPost() else { return }
+    // His input, for the handoff the share stands beside (screenAgent.ts): a tap, a key or typing keeps
+    // that handoff alive and counts on it, as the same input from the tap screen does.
+    if ["click", "up", "text", "key"].contains(t) { emit(["input": t]) }
     switch t {
     case "click":
         guard let p = point(m) else { return }

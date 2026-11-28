@@ -89,7 +89,7 @@ caller with no `HUB_SESSION_ID` (no session to wake) still waits for the end.
 
 | target | the screen | answered by |
 |---|---|---|
-| `mac-screen` | one app's front window (`app`, its owner name as `hands windows` lists it), on whichever display | `handoffMain.js` on the Mac (launchd `com.jaredgantt.handoff-agent`) |
+| `mac-screen` | one window of `app` (its owner name as `hands windows` lists it), on whichever display: `handoffs.window_id`, raised by id (`hands raise`) before every screenshot and input, so another window of that app in front is never what he sees or types into. Chosen when it opens: the Terminal window a drive opened (recorded at `open`, kept when the drive is handed over), else this session's newest window of that app, else that app's front window. A window Accessibility cannot raise (a system dialog's owner) is not recorded, and the app is shown as it stands. A recorded window that is gone fails the handoff | `handoffMain.js` on the Mac (launchd `com.jaredgantt.handoff-agent`) |
 | `mac-chrome` | his Chrome, found by pid (the main `Google Chrome` process with no `--user-data-dir`, since an on-demand second Chrome can be running and AppleScript's "Google Chrome" may mean either) and raised with `hands activate`, on the tab the requesting session's Chrome tools touched last (selected in that Chrome by pid, `hands chrome-tab`) (claude-config `chrome-tabs` record); with no record, its front window | the same |
 | `pi-browser` | the Pi's automation browser, over CDP on :9223 | data-http on the Pi (`HOME_AGENT=1` turns it on; `HANDOFF_TARGETS` overrides) |
 
@@ -105,14 +105,23 @@ it is now, so a restart never ends a handoff. A restart does end every live scre
 dies with the agent), so restart it with `bin/restart-handoff-agent`, which waits until no share is open.
 
 **A handoff nobody answers expires** 30 minutes (`HANDOFF_EXPIRE_MS`) after its last activity: when it
-opened, or his last action on it. It is cancelled with `expired: …`, its session is told like any other
+opened (or left the queue), his last action on it, or his last input through a screen share of the Mac
+(`active_at`, which the screen agent writes and counts in `taps` / `typed`). It is cancelled with `expired: …`, its session is told like any other
 end, and the expiry is counted as an occurrence. Screenshots are not activity, so the fresh ones taken at
 start never keep a forgotten handoff alive. The timer is held in memory per handoff and re-armed at start.
 
 **A session has one ask open at a time.** A new `request_handoff` from a session cancels its earlier asks
 still open (`superseded: …`), and `drive_screen` `open` cancels its asks on that target: he answered the
-old one some other way (at the Mac itself, usually) or the session moved on. The session is not told,
-since it is the one asking again. Without this every re-ask stays on his phone until it expires.
+old one some other way (at the Mac itself, usually) or the session moved on. An open one is cancelled
+through the agent (a `cancel` action with `source` `session`), so it is what opens the next in the queue;
+an end the session made itself is never sent back to it as a follow-up. Without this every re-ask stays
+on his phone until it expires.
+
+**A screen takes one ask at a time.** The Mac's display has one keyboard focus, so another session's ask
+open there (its keychain dialog holding the focus) would take his typing. An ask made while another is
+open on the same screen (both Mac targets are one screen) is `queued`: no screenshot, no push, and
+`request_handoff` answers that it is queued. When the open one ends however it ends, `tellSession` opens
+the oldest queued one, which is when it is pushed. A session's own drives never queue.
 
 `suggest` ([{label, text}]) on the request is values he will type that the session knows (his email, a
 card number): buttons on the phone that fill his text box. Never a password or a one-time code; the
@@ -128,7 +137,7 @@ brought to the front before every action, since another app may have come forwar
 A screen exists on one machine, so there is no fallback: a handoff whose machine is down is never
 claimed, and `sweepMissed` reports it.
 
-**Tables:** `handoffs` (the screen, its newest screenshot and `seq`, status `new → open → done |
+**Tables:** `handoffs` (the screen, its newest screenshot and `seq`, status `new → (queued →) open → done |
 cancelled | failed`) and `handoff_actions` (each tap, text, key, refresh, done, cancel). Typed text is in
 `handoff_actions.text` only until the agent has typed it; it is then nulled, and the session is told only
 how many times he typed.

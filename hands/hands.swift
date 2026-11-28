@@ -11,6 +11,8 @@
 //   hands type                   → types stdin as it is (any characters; nothing is echoed)
 //   hands key enter|tab|backspace|escape
 //   hands activate <pid>         → brings that process's app to the front, switching Space (one of two Chromes)
+//   hands raise <window id>      → brings that one window (a CGWindowID from `windows`) and its app to the
+//                                  front, and prints its {"x","y","w","h"}; fails when the window is gone
 //   hands chrome-tab <pid> <id>  → in the Chrome running as <pid>, makes the tab with that id (the
 //                                  extension's tab id) the active tab of its window and that window the
 //                                  front one; "missing" on stdout when no tab has it. By pid, because
@@ -42,6 +44,9 @@ func json(_ obj: [String: Any]) {
 // the pointer is left holding a button that never comes up, and while it waits for the release it
 // answers no Apple Event, so every script sent to it times out until a real click or keypress at the Mac.
 // So every event is followed by a pause, and the process stays alive after its last one (`settle`).
+@_silgen_name("_AXUIElementGetWindow")
+func _AXUIElementGetWindow(_ element: AXUIElement, _ id: UnsafeMutablePointer<CGWindowID>) -> AXError
+
 var posted = false
 func settle() { if posted { usleep(400_000) } }
 
@@ -108,6 +113,34 @@ case "activate":
     if AXUIElementSetAttributeValue(ax, kAXFrontmostAttribute as CFString, kCFBooleanTrue) != .success {
         guard app.activate(options: [.activateAllWindows]) else { fail("could not activate pid \(pid)") }
     }
+
+case "raise":
+    // One window, not the app's front one: a handoff on a Terminal window must not show or type into
+    // another session's Terminal window that happens to be in front. Accessibility names windows by
+    // element, not by CGWindowID, so the app's windows are matched through _AXUIElementGetWindow.
+    guard let v = args.dropFirst().first, let wid = UInt32(v) else { fail("usage: hands raise windowid") }
+    guard let info = (CGWindowListCopyWindowInfo([.optionIncludingWindow], CGWindowID(wid)) as? [[String: Any]])?.first,
+          let pid = info[kCGWindowOwnerPID as String] as? Int32 else { fail("window \(wid) is gone") }
+    let ax = AXUIElementCreateApplication(pid)
+    func find() -> AXUIElement? {
+        var list: CFTypeRef?
+        AXUIElementCopyAttributeValue(ax, kAXWindowsAttribute as CFString, &list)
+        for w in (list as? [AXUIElement]) ?? [] {
+            var id: CGWindowID = 0
+            if _AXUIElementGetWindow(w, &id) == .success && id == wid { return w }
+        }
+        return nil
+    }
+    // A window on another Space is not among the app's windows until the switch to it: the app is
+    // brought forward first (which switches Space) and the windows looked at again.
+    AXUIElementSetAttributeValue(ax, kAXFrontmostAttribute as CFString, kCFBooleanTrue)
+    var hit = find()
+    for _ in 0..<6 where hit == nil { usleep(250_000); hit = find() }
+    guard let win = hit else { fail("window \(wid) is not among its app's windows (minimized?)") }
+    AXUIElementSetAttributeValue(win, kAXMainAttribute as CFString, kCFBooleanTrue)
+    AXUIElementPerformAction(win, kAXRaiseAction as CFString)
+    guard let r = info[kCGWindowBounds as String] as? [String: CGFloat] else { fail("window \(wid) has no bounds") }
+    json(["x": r["X"] ?? 0, "y": r["Y"] ?? 0, "w": r["Width"] ?? 0, "h": r["Height"] ?? 0])
 
 case "chrome-tab":
     let v = Array(args.dropFirst())

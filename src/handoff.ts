@@ -123,11 +123,13 @@ export async function requestHandoff(target: string, note: string, f: Framing = 
   if (sid) await supersede(sid);
   const drivenId = sid ? await drivenScreen(sid, target, f.app || null) : null;
   if (drivenId) {
+    const busy = await screenBusy(target);
     const { data: h, error } = await getClient().from('handoffs')
-      .update({ driver: null, note: note.slice(0, 300), region: reg || null, selector: f.selector || null,
+      .update({ driver: null, ...(busy ? { status: 'queued' } : {}), note: note.slice(0, 300), region: reg || null, selector: f.selector || null,
         suggest: suggest.length ? suggest : null, updated_at: new Date().toISOString() })
       .eq('id', drivenId).eq('driver', 'session').in('status', ['new', 'open']).select('id,target,seq').maybeSingle();
     if (error) console.error(`[handoff] could not hand over driven screen ${drivenId}: ${error.message}`);
+    if (h && busy) return QUEUED(h.id);
     if (h) {
       const { error: ins } = await getClient().from('handoff_actions')
         .insert({ handoff: h.id, target: h.target, seq: h.seq, full: true, source: 'session', kind: 'refresh' });
@@ -146,6 +148,7 @@ export async function requestHandoff(target: string, note: string, f: Framing = 
   // Up on his phone (or failed before it got there): that is all the session waits for.
   const r = await until(data.id, (x) => x.status !== 'new');
   if (ended(r)) return endedMessage(r);
+  if (r.status === 'queued') return QUEUED(data.id);
   return `Handed to Jared (handoff ${data.id}). End your turn now and do not wait for it: when he presses Done or `
     + `Cancel, a message starting "[Handoff ${data.id}]" arrives saying how it ended, and that starts your next turn.`;
 }
@@ -157,13 +160,33 @@ export async function requestHandoff(target: string, note: string, f: Framing = 
  * again already knows. `target` narrows it to the asks on one screen.
  */
 async function supersede(session: string, target?: string): Promise<void> {
-  let q = getClient().from('handoffs')
-    .update({ status: 'cancelled', error: 'superseded: the session asked again', suggest: null, updated_at: new Date().toISOString() })
-    .eq('session', session).is('driver', null).in('status', ['new', 'open']);
+  const why = 'superseded: the session asked again';
+  let q = getClient().from('handoffs').select('id,target,seq,status').eq('session', session).is('driver', null)
+    .in('status', ['new', 'queued', 'open']);
   if (target) q = q.eq('target', target);
-  const { error } = await q;
-  if (error) console.error(`[handoff] could not retire session ${session}'s earlier handoffs: ${error.message}`);
+  const { data, error } = await q;
+  if (error) { console.error(`[handoff] could not read session ${session}'s earlier handoffs: ${error.message}`); return; }
+  for (const h of data || []) {
+    // An open one ends through its agent, which is what opens the next queued handoff on that screen; a
+    // cancel from the session is not reported back to it. One not on screen yet is simply ended.
+    const { error: e } = h.status === 'open'
+      ? await getClient().from('handoff_actions').insert({ handoff: h.id, target: h.target, seq: h.seq, source: 'session', kind: 'cancel', text: why })
+      : await getClient().from('handoffs').update({ status: 'cancelled', error: why, suggest: null, updated_at: new Date().toISOString() })
+        .eq('id', h.id).in('status', ['new', 'queued']);
+    if (e) console.error(`[handoff] could not retire handoff ${h.id}: ${e.message}`);
+  }
 }
+
+/** Whether another ask is open on the same physical screen (both Mac targets are the Mac's display). */
+async function screenBusy(target: string): Promise<boolean> {
+  const same = target.startsWith('mac-') ? ['mac-screen', 'mac-chrome'] : [target];
+  const { data, error } = await getClient().from('handoffs').select('id').is('driver', null).eq('status', 'open').in('target', same).limit(1);
+  if (error) { console.error(`[handoff] could not read the open handoffs on ${target}: ${error.message}`); return false; }
+  return !!data?.length;
+}
+
+const QUEUED = (id: string) => `Queued (handoff ${id}): another session's handoff is open on that screen, and this one goes to Jared `
+  + `when that one ends. End your turn now and do not wait for it: a message starting "[Handoff ${id}]" arrives when he finishes.`;
 
 /** The newest screen this session is driving on that target (and app), still open, or null. */
 async function drivenScreen(session: string, target: string, app: string | null): Promise<string | null> {
