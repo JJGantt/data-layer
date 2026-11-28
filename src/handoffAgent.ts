@@ -142,6 +142,12 @@ function macWindow(fixedApp?: string): Screen {
   const front = async (h: Ask) => {
     const app = fixedApp || h.app;
     if (!app) throw new Error('mac-screen needs the app whose window to show');
+    // A SYSTEM AUTHENTICATION DIALOG ON SCREEN WINS. It floats above every app, so it is what he sees and
+    // taps on whatever the handoff named, and raising that app beneath it moves the keyboard focus to the
+    // app: his tap on the dialog's field would land, and his typing then go into the window behind it.
+    // So nothing is raised while one is up, and the screen it is on is the one shown.
+    const dialog = (await hands(['dialog']).catch(() => '')).trim();
+    if (dialog) return { ...JSON.parse(dialog), dialog: true } as Rect & { dialog?: boolean };
     if (h.target === 'mac-chrome') {
       const pid = await mainChromePid();
       if (!pid) throw new Error('his Chrome is not running');
@@ -188,7 +194,11 @@ function macWindow(fixedApp?: string): Screen {
       const at = win ? [win.x + win.w / 2, win.y + win.h / 2] : [1, 1];   // no window: the main display
       const scr = JSON.parse(await hands(['screen', String(at[0]), String(at[1])])) as Rect;
       const png = await captureRect(scr);
-      return { png, ...pngSize(png), rect: scr, focus: regionOf(h) };
+      // Framed on the dialog when one is up: it is what he has to answer, wherever the session's region was.
+      const d = win && (win as any).dialog ? win : null;
+      const focus = d ? { x: Math.max(0, (d.x - scr.x) / scr.w - 0.03), y: Math.max(0, (d.y - scr.y) / scr.h - 0.03),
+        w: Math.min(1, d.w / scr.w + 0.06), h: Math.min(1, d.h / scr.h + 0.06) } : regionOf(h);
+      return { png, ...pngSize(png), rect: scr, focus };
     },
     async tap(h, rect, fx, fy) {
       // Another app may have come to the front since the screenshot (he went to the Mac): the click is

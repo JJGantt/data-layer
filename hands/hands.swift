@@ -6,6 +6,7 @@
 //   hands window <app> [title]   → {"app","x","y","w","h"}: the screen area covering every on-screen
 //                                  window of that app (exact owner name, as `windows` lists it), only
 //                                  those whose title contains `title` when one is given
+//   hands dialog                 → {"app","x","y","w","h"} of a system authentication dialog on screen, or nothing
 //   hands screen <x> <y>         → {"x","y","w","h"}: the whole display that point is on
 //   hands click <x> <y>          → a left click at that global point
 //   hands type                   → types stdin as it is (any characters; nothing is echoed)
@@ -89,6 +90,18 @@ case "windows", "window":
     if cmd == "window" {
         guard let b = box else { fail("no window of \(want ?? "?")\(titled.map { " titled \($0)" } ?? "") on screen") }
         json(["app": want!, "x": b.minX, "y": b.minY, "w": b.width, "h": b.height])
+    }
+
+case "dialog":
+    // A system authentication dialog on screen (SecurityAgent's "wants to make changes", the Touch ID
+    // sheet): {"app","x","y","w","h"}, or nothing. It floats above every app (layer > 0), so it is always
+    // what he sees, and raising any app beneath it only takes the keyboard focus away from it.
+    let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []
+    for w in list {
+        guard let app = w[kCGWindowOwnerName as String] as? String, ["SecurityAgent", "coreautha"].contains(app),
+              let r = w[kCGWindowBounds as String] as? [String: CGFloat], (r["Width"] ?? 0) > 40 else { continue }
+        json(["app": app, "x": r["X"] ?? 0, "y": r["Y"] ?? 0, "w": r["Width"] ?? 0, "h": r["Height"] ?? 0])
+        break
     }
 
 case "screen":
