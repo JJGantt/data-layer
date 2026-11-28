@@ -26,12 +26,27 @@ export type Target = typeof TARGETS[number];
 /** Backstop behind the realtime subscription: a channel can go deaf while reporting SUBSCRIBED. */
 const BACKSTOP_MS = 2 * 60_000;
 
-type Row = { id: string; status: string; taps: number; typed: number; error: string | null; seq: number; note?: string | null };
+type Row = { id: string; status: string; taps: number; typed: number; error: string | null; seq: number; note?: string | null;
+  updated_at?: string };
+
+/** How long realtime gets to deliver a change it could see before the backstop calls the channel deaf. */
+export const DELIVERY_GRACE_MS = 2_000;
+
+/** What a backstop read that found the row already there means. `deaf` (an error) only when the channel
+ *  was SUBSCRIBED and the change had been visible to it for DELIVERY_GRACE_MS with no event. A change
+ *  made before the channel was up, or within the grace, is a race the backstop won (an occurrence): the
+ *  drive path's 3 s backstop races a fresh channel's join on every `open`. */
+export function backstopMiss(subscribedAt: number | null, updatedAt: string | undefined, now: number): 'deaf' | 'race' {
+  if (subscribedAt == null) return 'race';
+  const changed = updatedAt ? Date.parse(updatedAt) : NaN;
+  const visibleSince = Number.isFinite(changed) ? Math.max(changed, subscribedAt) : subscribedAt;
+  return now - visibleSince >= DELIVERY_GRACE_MS ? 'deaf' : 'race';
+}
 
 const ended = (r: Row) => r.status === 'done' || r.status === 'cancelled' || r.status === 'failed';
 
 async function read(id: string): Promise<Row> {
-  const { data, error } = await getClient().from('handoffs').select('id,status,taps,typed,error,seq,note').eq('id', id).single();
+  const { data, error } = await getClient().from('handoffs').select('id,status,taps,typed,error,seq,note,updated_at').eq('id', id).single();
   if (error) throw new Error(`could not read handoff ${id}: ${error.message}`);
   return data as Row;
 }
@@ -42,6 +57,8 @@ function until(id: string, done: (r: Row) => boolean, backstopMs = BACKSTOP_MS):
   return new Promise((resolve) => {
     const sb = getClient();
     let finished = false;
+    let subscribedAt: number | null = null;
+    let channelStatus = 'joining';
     const finish = (r: Row) => {
       if (finished) return;
       finished = true;
@@ -53,13 +70,22 @@ function until(id: string, done: (r: Row) => boolean, backstopMs = BACKSTOP_MS):
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'handoffs', filter: `id=eq.${id}` },
         (p: any) => { if (done(p.new)) finish(p.new); })
       .subscribe((status) => {
+        channelStatus = status;
         // Read once subscribed, so an end that landed before the channel was up is not missed.
-        if (status === 'SUBSCRIBED') read(id).then((r) => { if (done(r)) finish(r); }).catch(() => {});
+        if (status === 'SUBSCRIBED') {
+          if (subscribedAt == null) subscribedAt = Date.now();
+          read(id).then((r) => { if (done(r)) finish(r); })
+            .catch((e) => { if (!finished) console.warn(`[handoff] read on subscribe failed (backstop retries): ${e.message}`); });
+        }
       });
     const backstop = setInterval(() => {
       read(id).then((r) => {
         if (!done(r) || finished) return;
-        console.error(`[handoff] ${id} reached ${r.status} without its update arriving over realtime`);
+        if (backstopMiss(subscribedAt, r.updated_at, Date.now()) === 'deaf') {
+          console.error(`[handoff] ${id} reached ${r.status} without its update arriving over realtime`);
+        } else {
+          console.warn(`[handoff] ${id} reached ${r.status} before realtime delivered it (channel ${channelStatus})`);
+        }
         finish(r);
       }).catch((e) => { if (!finished) console.error(`[handoff] backstop read failed: ${e.message}`); });
     }, backstopMs);
